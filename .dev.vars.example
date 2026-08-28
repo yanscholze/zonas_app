@@ -1,0 +1,23 @@
+# Copie para .dev.vars para testar localmente.
+# O plugin do Cloudflare injeta estas variáveis no Worker (interface Env em worker/index.ts).
+# Nunca versione o arquivo .dev.vars preenchido.
+
+# Conta do treinador. Estas duas variáveis só têm efeito na PRIMEIRA vez que a
+# aplicação sobe: a conta é semeada uma única vez. Depois disso, use
+# `npm run coach:reset-password` para mudar e-mail ou senha.
+COACH_EMAIL=
+COACH_INITIAL_PASSWORD=
+
+# Cifra os tokens de TODOS os provedores, não só os do Strava.
+STRAVA_CLIENT_ID=
+STRAVA_CLIENT_SECRET=
+STRAVA_TOKEN_ENCRYPTION_KEY=
+
+GARMIN_CONSUMER_KEY=
+GARMIN_CONSUMER_SECRET=
+GARMIN_ACTIVITY_API_ENABLED=false
+GARMIN_TRAINING_API_ENABLED=false
+
+ZEPP_APP_ID=
+ZEPP_APP_SECRET=
+ZEPP_WEBHOOK_SECRET=

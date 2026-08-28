@@ -1,0 +1,20 @@
+{
+  "name": "ZonasApp",
+  "short_name": "ZonasApp",
+  "description": "Treinos de corrida individualizados, zonas e acompanhamento.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#111111",
+  "theme_color": "#c99a35",
+  "lang": "pt-BR",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
