@@ -14,7 +14,23 @@ export const athletes = sqliteTable("athletes", {
   trainingDays: text("training_days"),
   integration: text("integration"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
-});
+  /**
+   * Quando o aluno foi inativado. Nulo enquanto ativo.
+   *
+   * Aluno que sai é inativado, nunca apagado: o histórico de treinos, testes e
+   * queixas continua valendo como registro do trabalho feito, e apagá-lo
+   * destruiria o passado do atleta e as estatísticas do treinador.
+   */
+  archivedAt: integer("archived_at"),
+  archivedReason: text("archived_reason"),
+}, (table) => ({
+  /**
+   * O nome do aluno é a chave que liga ficha, treinos, testes, provas e
+   * cobranças — `athlete_name` aparece em dezoito tabelas. Sem unicidade, dois
+   * homônimos compartilhariam silenciosamente todo o histórico um do outro.
+   */
+  nameIdx: uniqueIndex("athletes_name_idx").on(table.name),
+}));
 
 export const athleteProfiles = sqliteTable("athlete_profiles", {
   athleteName: text("athlete_name").primaryKey(),

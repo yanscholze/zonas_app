@@ -28,11 +28,6 @@ import {
   PROVIDERS,
   SUPPORTED_PROVIDER_LABELS,
   averagePaceSeconds,
-  createDeviceIngestTokensAthleteIndexSql,
-  createDeviceIngestTokensSql,
-  createExternalActivitiesAthleteIndexSql,
-  createExternalActivitiesIndexSql,
-  createExternalActivitiesSql,
   normalizeActivity,
   providerById,
   weekStartOf,
@@ -40,6 +35,8 @@ import {
   type ProviderDefinition,
   type ProviderId,
 } from "./integrations";
+import * as schema from "../db/schema";
+import { tableColumns, tableSql } from "../db/sql";
 
 interface Env {
   ASSETS: Fetcher;
@@ -83,7 +80,7 @@ const SECURITY_LOG_RETENTION_DAYS = 90;
 const SECURITY_LOG_RETENTION_MS = SECURITY_LOG_RETENTION_DAYS * 86_400_000;
 
 const allowedBodyKeys: Record<string, Set<string>> = {
-  "/api/athletes": new Set(["name","initials","distance","phase","week","nextWorkout","status","phone","email","trainingDays","integration"]),
+  "/api/athletes": new Set(["name","initials","distance","phase","week","nextWorkout","status","phone","email","trainingDays","integration","action","reason"]),
   "/api/athlete-profile": new Set(["athleteName","phone","birthDate","objective","integration","trainingDays"]),
   "/api/athlete-planning": new Set(["athleteName","plan","phase","weekNumber","totalWeeks"]),
   "/api/performance-tests": new Set(["athleteName","testDate","distanceKm","minutes","seconds","age","id","action","zones","tempoRuns"]),
@@ -180,107 +177,54 @@ function requireCoachApiAccess(request: Request): Response | null {
 
 type ApiIdentity = { role: "coach"; email: string } | { role: "student"; email: string; athleteName: string };
 
-const createAthletesSql = `CREATE TABLE IF NOT EXISTS athletes (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  initials TEXT NOT NULL,
-  distance TEXT NOT NULL,
-  phase TEXT NOT NULL,
-  week TEXT NOT NULL,
-  next_workout TEXT NOT NULL,
-  status TEXT,
-  phone TEXT,
-  email TEXT,
-  training_days TEXT,
-  integration TEXT,
-  created_at INTEGER NOT NULL
-)`;
 
-const createAthleteProfilesSql = `CREATE TABLE IF NOT EXISTS athlete_profiles (
-  athlete_name TEXT PRIMARY KEY,
-  phone TEXT,
-  birth_date TEXT,
-  objective TEXT,
-  integration TEXT,
-  training_days TEXT NOT NULL,
-  updated_at INTEGER NOT NULL
-)`;
-const createAthletePlanningSql = `CREATE TABLE IF NOT EXISTS athlete_planning (athlete_name TEXT PRIMARY KEY, plan TEXT NOT NULL, phase TEXT NOT NULL, week_number INTEGER NOT NULL, total_weeks INTEGER NOT NULL, updated_at INTEGER NOT NULL)`;
-const createPerformanceTestsSql = `CREATE TABLE IF NOT EXISTS performance_tests (id TEXT PRIMARY KEY, athlete_name TEXT NOT NULL, test_date TEXT NOT NULL, distance_km INTEGER NOT NULL, total_seconds INTEGER NOT NULL, age INTEGER NOT NULL, vam TEXT NOT NULL, vo2 TEXT NOT NULL, fc_max INTEGER NOT NULL, pace_seconds TEXT NOT NULL, zones TEXT NOT NULL, tempo_runs TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL)`;
-const createPerformanceTestsIndexSql = `CREATE INDEX IF NOT EXISTS performance_tests_athlete_date_idx ON performance_tests (athlete_name, test_date)`;
 
-const createTrainingWeeksSql = `CREATE TABLE IF NOT EXISTS training_weeks (
-  id TEXT PRIMARY KEY,
-  athlete_name TEXT NOT NULL,
-  week_start TEXT NOT NULL,
-  plan TEXT NOT NULL,
-  phase TEXT NOT NULL,
-  week_label TEXT NOT NULL,
-  training_days TEXT NOT NULL,
-  sessions TEXT NOT NULL,
-  status TEXT NOT NULL,
-  updated_at INTEGER NOT NULL
-)`;
-const createTrainingWeeksIndexSql = `CREATE UNIQUE INDEX IF NOT EXISTS training_weeks_athlete_start_idx ON training_weeks (athlete_name, week_start)`;
-const createTrainingWeekAuditSql = `CREATE TABLE IF NOT EXISTS training_week_audit (id TEXT PRIMARY KEY, athlete_name TEXT NOT NULL, week_start TEXT NOT NULL, actor_email TEXT NOT NULL, action TEXT NOT NULL, changed_fields TEXT NOT NULL, previous_snapshot TEXT, new_snapshot TEXT NOT NULL, created_at INTEGER NOT NULL)`;
-const createTrainingWeekAuditIndexSql = `CREATE INDEX IF NOT EXISTS training_week_audit_athlete_week_idx ON training_week_audit (athlete_name, week_start, created_at)`;
-const createPainReportsSql = `CREATE TABLE IF NOT EXISTS pain_reports (
-  id TEXT PRIMARY KEY,
-  athlete_name TEXT NOT NULL,
-  body_area TEXT NOT NULL,
-  intensity INTEGER NOT NULL,
-  training_impact TEXT NOT NULL,
-  note TEXT,
-  status TEXT NOT NULL,
-  created_at INTEGER NOT NULL
-)`;
-const createTrainingFeedbacksSql = `CREATE TABLE IF NOT EXISTS training_feedbacks (id TEXT PRIMARY KEY, athlete_name TEXT NOT NULL, week_start TEXT, workout_day TEXT, feeling TEXT NOT NULL, note TEXT, status TEXT NOT NULL, created_at INTEGER NOT NULL, reviewed_at INTEGER)`;
-const createTrainingFeedbacksStatusIndexSql = `CREATE INDEX IF NOT EXISTS training_feedbacks_status_created_idx ON training_feedbacks (status, created_at)`;
-const createTrainingFeedbacksAthleteIndexSql = `CREATE INDEX IF NOT EXISTS training_feedbacks_athlete_created_idx ON training_feedbacks (athlete_name, created_at)`;
-const createWorkoutExecutionsSql = `CREATE TABLE IF NOT EXISTS workout_executions (id TEXT PRIMARY KEY, athlete_name TEXT NOT NULL, week_start TEXT NOT NULL, workout_day TEXT NOT NULL, planned_minutes INTEGER, planned_km TEXT, actual_minutes INTEGER, actual_km TEXT, correct_percentage INTEGER NOT NULL, wrong_percentage INTEGER NOT NULL, classification TEXT NOT NULL, source TEXT NOT NULL, created_at INTEGER NOT NULL)`;
-const createWorkoutExecutionsAthleteIndexSql = `CREATE INDEX IF NOT EXISTS workout_executions_athlete_created_idx ON workout_executions (athlete_name, created_at)`;
-const createExternalIntegrationsSql = `CREATE TABLE IF NOT EXISTS external_integrations (id TEXT PRIMARY KEY, athlete_name TEXT NOT NULL, provider TEXT NOT NULL, external_athlete_id TEXT, scopes TEXT NOT NULL, access_token_encrypted TEXT NOT NULL, refresh_token_encrypted TEXT NOT NULL, expires_at INTEGER NOT NULL, status TEXT NOT NULL, last_sync_at INTEGER, updated_at INTEGER NOT NULL)`;
-const createExternalIntegrationsIndexSql = `CREATE UNIQUE INDEX IF NOT EXISTS external_integrations_athlete_provider_idx ON external_integrations (athlete_name, provider)`;
-const createFinancialSettingsSql = `CREATE TABLE IF NOT EXISTS financial_settings (id TEXT PRIMARY KEY, pix_key TEXT, pix_name TEXT, default_amount_cents INTEGER NOT NULL, due_day INTEGER NOT NULL, updated_at INTEGER NOT NULL)`;
-const createStudentPaymentsSql = `CREATE TABLE IF NOT EXISTS student_payments (id TEXT PRIMARY KEY, athlete_name TEXT NOT NULL, reference_month TEXT NOT NULL, amount_cents INTEGER NOT NULL, due_date TEXT NOT NULL, status TEXT NOT NULL, paid_at INTEGER, updated_at INTEGER NOT NULL)`;
-const createStudentPaymentsIndexSql = `CREATE UNIQUE INDEX IF NOT EXISTS student_payments_athlete_month_idx ON student_payments (athlete_name, reference_month)`;
-const createAthleteRacesSql = `CREATE TABLE IF NOT EXISTS athlete_races (id TEXT PRIMARY KEY, athlete_name TEXT NOT NULL, name TEXT NOT NULL, race_date TEXT NOT NULL, distance TEXT NOT NULL, city TEXT, goal TEXT, priority TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL)`;
-const createPersonalRecordsSql = `CREATE TABLE IF NOT EXISTS personal_records (id TEXT PRIMARY KEY, athlete_name TEXT NOT NULL, distance TEXT NOT NULL, result_time TEXT NOT NULL, race_date TEXT, event_name TEXT, updated_at INTEGER NOT NULL)`;
-const createAthleteAccessSql = `CREATE TABLE IF NOT EXISTS athlete_access (id TEXT PRIMARY KEY, athlete_name TEXT NOT NULL, email TEXT NOT NULL, status TEXT NOT NULL, invited_at INTEGER, activated_at INTEGER, last_access_at INTEGER, updated_at INTEGER NOT NULL)`;
-const createAthleteAccessAthleteIndexSql = `CREATE UNIQUE INDEX IF NOT EXISTS athlete_access_athlete_name_idx ON athlete_access (athlete_name)`;
-const createAthleteAccessEmailIndexSql = `CREATE UNIQUE INDEX IF NOT EXISTS athlete_access_email_idx ON athlete_access (email)`;
-const createAccessAuditLogSql = `CREATE TABLE IF NOT EXISTS access_audit_log (id TEXT PRIMARY KEY, athlete_name TEXT NOT NULL, actor_email TEXT NOT NULL, action TEXT NOT NULL, previous_status TEXT, new_status TEXT NOT NULL, previous_email TEXT, new_email TEXT NOT NULL, created_at INTEGER NOT NULL)`;
-const createAccessAuditLogIndexSql = `CREATE INDEX IF NOT EXISTS access_audit_log_athlete_created_idx ON access_audit_log (athlete_name, created_at)`;
-const createAccessRequestsSql = `CREATE TABLE IF NOT EXISTS access_requests (id TEXT PRIMARY KEY, email TEXT NOT NULL, name TEXT NOT NULL, phone TEXT, objective TEXT, distance TEXT NOT NULL, training_days TEXT NOT NULL, integration TEXT NOT NULL, status TEXT NOT NULL, reviewed_by TEXT, reviewed_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`;
-const createAccessRequestsEmailIndexSql = `CREATE UNIQUE INDEX IF NOT EXISTS access_requests_email_idx ON access_requests (email)`;
-const createAccessRequestsStatusIndexSql = `CREATE INDEX IF NOT EXISTS access_requests_status_idx ON access_requests (status, created_at)`;
-const createDataBackupsSql = `CREATE TABLE IF NOT EXISTS data_backups (id TEXT PRIMARY KEY, label TEXT NOT NULL, payload TEXT NOT NULL, record_count INTEGER NOT NULL, created_by TEXT NOT NULL, created_at INTEGER NOT NULL, restored_by TEXT, restored_at INTEGER)`;
-const createDataBackupsIndexSql = `CREATE INDEX IF NOT EXISTS data_backups_created_idx ON data_backups (created_at)`;
-const createRequestRateLimitsSql = `CREATE TABLE IF NOT EXISTS request_rate_limits (id TEXT PRIMARY KEY, actor_email TEXT NOT NULL, route TEXT NOT NULL, method TEXT NOT NULL, window_start INTEGER NOT NULL, request_count INTEGER NOT NULL, updated_at INTEGER NOT NULL)`;
-const createRequestRateLimitsIndexSql = `CREATE INDEX IF NOT EXISTS request_rate_limits_actor_window_idx ON request_rate_limits (actor_email, window_start)`;
-const createSecurityEventsSql = `CREATE TABLE IF NOT EXISTS security_events (id TEXT PRIMARY KEY, actor_email TEXT NOT NULL, event_type TEXT NOT NULL, route TEXT NOT NULL, details TEXT NOT NULL, created_at INTEGER NOT NULL)`;
-const createSecurityEventsIndexSql = `CREATE INDEX IF NOT EXISTS security_events_created_idx ON security_events (created_at)`;
-const createRequestDeduplicationSql = `CREATE TABLE IF NOT EXISTS request_deduplication (id TEXT PRIMARY KEY, request_token TEXT NOT NULL, actor_email TEXT NOT NULL, route TEXT NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL)`;
-const createRequestDeduplicationIndexSql = `CREATE INDEX IF NOT EXISTS request_deduplication_expires_idx ON request_deduplication (expires_at)`;
-const createApplicationErrorsSql = `CREATE TABLE IF NOT EXISTS application_errors (id TEXT PRIMARY KEY, area TEXT NOT NULL, error_code TEXT NOT NULL, method TEXT NOT NULL, status_code INTEGER NOT NULL, created_at INTEGER NOT NULL)`;
-const createApplicationErrorsIndexSql = `CREATE INDEX IF NOT EXISTS application_errors_created_idx ON application_errors (created_at)`;
-const createPlanTemplateOverridesSql = `CREATE TABLE IF NOT EXISTS plan_template_overrides (id TEXT PRIMARY KEY, plan_name TEXT NOT NULL, week_number INTEGER NOT NULL, sessions_json TEXT NOT NULL, updated_by TEXT NOT NULL, updated_at INTEGER NOT NULL)`;
-const createPlanTemplateOverridesIndexSql = `CREATE UNIQUE INDEX IF NOT EXISTS plan_template_overrides_plan_week_idx ON plan_template_overrides (plan_name, week_number)`;
 const recoverableTables = ["athletes", "athlete_profiles", "athlete_planning", "performance_tests", "training_weeks", "pain_reports", "training_feedbacks", "workout_executions", "athlete_races", "personal_records", "financial_settings", "student_payments"] as const;
 
+
+/**
+ * Garante que as tabelas existam, a partir do schema Drizzle.
+ *
+ * Antes cada uma destas instruções era uma constante SQL escrita à mão aqui,
+ * paralela à declaração em `db/schema.ts`. As duas podiam divergir em silêncio
+ * — e divergiam: `pain_reports` e `workout_executions` ganharam colunas no
+ * schema que nunca chegaram ao SQL do Worker. Agora há uma fonte só.
+ */
+/**
+ * Tabelas já conferidas nesta instância do Worker.
+ *
+ * O esquema não muda enquanto o processo vive, então conferir uma vez basta.
+ * Sem esta memória, cada requisição repetiria um `PRAGMA table_info` por
+ * tabela — trabalho inútil no caminho quente de toda chamada de API.
+ */
+const tabelasConferidas = new Set<string>();
+
+async function ensureTables(env: Env, ...tabelas: Array<Parameters<typeof tableSql>[0]>): Promise<void> {
+  const pendentes = tabelas.filter(tabela => !tabelasConferidas.has(nomeDaTabela(tabela)));
+  if (!pendentes.length) return;
+
+  const instrucoes = pendentes.flatMap(tabela => tableSql(tabela));
+  await env.DB.batch(instrucoes.map(sql => env.DB.prepare(sql)));
+
+  // Um banco criado por uma versão anterior não ganha colunas novas com
+  // `CREATE TABLE IF NOT EXISTS`; este passo completa o que falta sem tocar
+  // no que já está gravado.
+  for (const tabela of pendentes) {
+    await ensureColumns(env, nomeDaTabela(tabela), tableColumns(tabela));
+    tabelasConferidas.add(nomeDaTabela(tabela));
+  }
+}
+
+function nomeDaTabela(tabela: Parameters<typeof tableSql>[0]): string {
+  return tableSql(tabela)[0].match(/EXISTS (\w+)/)?.[1] ?? "";
+}
+
 async function ensureRecoverableData(env: Env) {
-  await env.DB.batch([
-    env.DB.prepare(createAthletesSql), env.DB.prepare(createAthleteProfilesSql), env.DB.prepare(createAthletePlanningSql), env.DB.prepare(createPerformanceTestsSql), env.DB.prepare(createPerformanceTestsIndexSql), env.DB.prepare(createTrainingWeeksSql), env.DB.prepare(createTrainingWeeksIndexSql),
-    env.DB.prepare(createPainReportsSql), env.DB.prepare(createTrainingFeedbacksSql), env.DB.prepare(createTrainingFeedbacksStatusIndexSql), env.DB.prepare(createTrainingFeedbacksAthleteIndexSql), env.DB.prepare(createWorkoutExecutionsSql), env.DB.prepare(createWorkoutExecutionsAthleteIndexSql), env.DB.prepare(createAthleteRacesSql), env.DB.prepare(createPersonalRecordsSql),
-    env.DB.prepare(createFinancialSettingsSql), env.DB.prepare(createStudentPaymentsSql), env.DB.prepare(createStudentPaymentsIndexSql), env.DB.prepare(createDataBackupsSql), env.DB.prepare(createDataBackupsIndexSql),
-  ]);
+  await ensureTables(env, schema.athletes, schema.athleteProfiles, schema.athletePlanning, schema.performanceTests, schema.trainingWeeks, schema.painReports, schema.trainingFeedbacks, schema.workoutExecutions, schema.athleteRaces, schema.personalRecords, schema.financialSettings, schema.studentPayments, schema.dataBackups);
 }
 
 async function ensureTrafficProtection(env: Env) {
-  await env.DB.batch([
-    env.DB.prepare(createRequestRateLimitsSql), env.DB.prepare(createRequestRateLimitsIndexSql),
-    env.DB.prepare(createSecurityEventsSql), env.DB.prepare(createSecurityEventsIndexSql),
-  ]);
+  await ensureTables(env, schema.requestRateLimits, schema.securityEvents);
 }
 
 /**
@@ -306,7 +250,7 @@ const idempotentWriteRoutes = new Set([
 async function preventDuplicateSubmission(request: Request, url: URL, env: Env, actorEmail: string): Promise<Response | null> {
   if (["GET","HEAD","OPTIONS"].includes(request.method.toUpperCase())) return null;
   if (idempotentWriteRoutes.has(url.pathname)) return null;
-  await env.DB.batch([env.DB.prepare(createRequestDeduplicationSql), env.DB.prepare(createRequestDeduplicationIndexSql)]);
+  await ensureTables(env, schema.requestDeduplication);
   const body = await request.clone().text();
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${request.method}|${url.pathname}|${body}`));
   const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
@@ -390,7 +334,7 @@ async function securityEventsApi(request: Request, env: Env): Promise<Response> 
 
 async function recordApplicationError(env: Env, request: Request, area: string, errorCode: string, statusCode = 503): Promise<void> {
   try {
-    await env.DB.batch([env.DB.prepare(createApplicationErrorsSql), env.DB.prepare(createApplicationErrorsIndexSql)]);
+    await ensureTables(env, schema.applicationErrors);
     const now = Date.now();
     await env.DB.batch([
       env.DB.prepare("DELETE FROM application_errors WHERE created_at < ?").bind(now - SECURITY_LOG_RETENTION_MS),
@@ -407,7 +351,7 @@ async function applicationFailure(env: Env, request: Request, area: string, erro
 
 async function applicationErrorsApi(request: Request, env: Env): Promise<Response> {
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
-  await env.DB.batch([env.DB.prepare(createApplicationErrorsSql), env.DB.prepare(createApplicationErrorsIndexSql)]);
+  await ensureTables(env, schema.applicationErrors);
   const now = Date.now();
   await env.DB.prepare("DELETE FROM application_errors WHERE created_at < ?").bind(now - SECURITY_LOG_RETENTION_MS).run();
   const since = now - 86_400_000;
@@ -472,13 +416,7 @@ async function backupsApi(request: Request, env: Env): Promise<Response> {
 }
 
 async function ensureAthleteAccess(env: Env) {
-  await env.DB.batch([
-    env.DB.prepare(createAthleteAccessSql),
-    env.DB.prepare(createAthleteAccessAthleteIndexSql),
-    env.DB.prepare(createAthleteAccessEmailIndexSql),
-    env.DB.prepare(createAccessAuditLogSql),
-    env.DB.prepare(createAccessAuditLogIndexSql),
-  ]);
+  await ensureTables(env, schema.athleteAccess, schema.accessAuditLog);
 }
 
 /**
@@ -755,11 +693,7 @@ async function athleteAccessApi(request: Request, env: Env): Promise<Response> {
 }
 
 async function ensureAccessRequests(env: Env) {
-  await env.DB.batch([
-    env.DB.prepare(createAccessRequestsSql),
-    env.DB.prepare(createAccessRequestsEmailIndexSql),
-    env.DB.prepare(createAccessRequestsStatusIndexSql),
-  ]);
+  await ensureTables(env, schema.accessRequests);
 }
 
 async function accessRequestApi(request: Request, env: Env, sessionEmail: string, sessionName: string): Promise<Response> {
@@ -796,7 +730,7 @@ async function accessRequestApi(request: Request, env: Env, sessionEmail: string
 
 async function accessRequestsCoachApi(request: Request, env: Env): Promise<Response> {
   await Promise.all([ensureAccessRequests(env), ensureAthleteAccess(env)]);
-  await env.DB.batch([env.DB.prepare(createAthletesSql),env.DB.prepare(createAthleteProfilesSql),env.DB.prepare(createAthletePlanningSql)]);
+  await ensureTables(env, schema.athletes, schema.athleteProfiles, schema.athletePlanning);
   if (request.method === "GET") {
     const result = await env.DB.prepare("SELECT * FROM access_requests ORDER BY CASE status WHEN 'Pendente' THEN 0 ELSE 1 END, created_at DESC LIMIT 100").all();
     return Response.json({ requests: result.results });
@@ -837,7 +771,7 @@ async function accessRequestsCoachApi(request: Request, env: Env): Promise<Respo
 
 async function studentDashboardApi(request: Request, env: Env, athleteName: string): Promise<Response> {
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
-  await env.DB.batch([env.DB.prepare(createTrainingWeeksSql), env.DB.prepare(createTrainingWeeksIndexSql), env.DB.prepare(createAthleteProfilesSql), env.DB.prepare(createAthleteRacesSql), env.DB.prepare(createPersonalRecordsSql)]);
+  await ensureTables(env, schema.trainingWeeks, schema.athleteProfiles, schema.athleteRaces, schema.personalRecords);
   const brazilNow = new Date(Date.now() - 3 * 60 * 60 * 1000);
   const brazilDay = brazilNow.getUTCDay() || 7;
   brazilNow.setUTCDate(brazilNow.getUTCDate() - brazilDay + 1);
@@ -853,7 +787,7 @@ async function studentDashboardApi(request: Request, env: Env, athleteName: stri
 
 async function studentProfileApi(request: Request, env: Env, athleteName: string): Promise<Response> {
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
-  await env.DB.batch([env.DB.prepare(createAthletesSql), env.DB.prepare(createAthleteProfilesSql), env.DB.prepare(createAthletePlanningSql)]);
+  await ensureTables(env, schema.athletes, schema.athleteProfiles, schema.athletePlanning);
   const [athlete, profile, planning] = await Promise.all([
     env.DB.prepare("SELECT name,distance,phase,email FROM athletes WHERE name = ? LIMIT 1").bind(athleteName).first(),
     env.DB.prepare("SELECT phone,birth_date,objective,integration,training_days,updated_at FROM athlete_profiles WHERE athlete_name = ? LIMIT 1").bind(athleteName).first(),
@@ -864,7 +798,7 @@ async function studentProfileApi(request: Request, env: Env, athleteName: string
 
 async function studentPerformanceTestsApi(request: Request, env: Env, athleteName: string): Promise<Response> {
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
-  await env.DB.batch([env.DB.prepare(createPerformanceTestsSql), env.DB.prepare(createPerformanceTestsIndexSql)]);
+  await ensureTables(env, schema.performanceTests);
   const tests = await env.DB.prepare("SELECT id,test_date,distance_km,total_seconds,vam,vo2,fc_max,pace_seconds,zones,tempo_runs,status FROM performance_tests WHERE athlete_name = ? ORDER BY test_date DESC,created_at DESC").bind(athleteName).all();
   return Response.json({ tests: tests.results });
 }
@@ -875,7 +809,7 @@ async function studentIntegrationPreferenceApi(request: Request, env: Env, athle
   const integration = boundedText(input.integration, 40);
   const allowed = ["Strava","Garmin","Amazfit","Apple Saúde / Apple Watch","Sem integração"];
   if (!allowed.includes(integration)) return Response.json({ error:"invalid_integration" }, { status:400 });
-  await env.DB.prepare(createAthleteProfilesSql).run();
+  await ensureTables(env, schema.athleteProfiles);
   const existing = await env.DB.prepare("SELECT training_days FROM athlete_profiles WHERE athlete_name = ? LIMIT 1").bind(athleteName).first() as {training_days?:string}|null;
   await env.DB.prepare(`INSERT INTO athlete_profiles (athlete_name,phone,birth_date,objective,integration,training_days,updated_at)
     VALUES (?,NULL,NULL,NULL,?,?,?) ON CONFLICT(athlete_name) DO UPDATE SET integration=excluded.integration,updated_at=excluded.updated_at`)
@@ -899,13 +833,50 @@ async function studentRacesRecordsApi(request: Request, env: Env, athleteName: s
 }
 
 async function athletesApi(request: Request, env: Env): Promise<Response> {
-  await env.DB.batch([env.DB.prepare(createAthletesSql),env.DB.prepare(createAthletePlanningSql),env.DB.prepare(createAthleteAccessSql),env.DB.prepare(createAthleteAccessAthleteIndexSql)]);
+  await ensureTables(env, schema.athletes, schema.athletePlanning, schema.athleteAccess);
+  const url = new URL(request.url);
   if (request.method === "GET") {
-    const result = await env.DB.prepare("SELECT athletes.*, athlete_access.status AS access_status, athlete_planning.plan AS saved_plan, athlete_planning.phase AS planning_phase, athlete_planning.week_number AS planning_week_number, athlete_planning.total_weeks AS planning_total_weeks FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name = athletes.name LEFT JOIN athlete_planning ON athlete_planning.athlete_name = athletes.name ORDER BY athletes.created_at DESC").all();
-    return Response.json({ athletes: result.results });
+    // Por padrão a lista traz só quem está ativo. Os inativos continuam no
+    // banco com todo o histórico e aparecem quando pedidos explicitamente.
+    const incluir = boundedText(url.searchParams.get("include"), 20);
+    const filtro = incluir === "archived" ? "WHERE athletes.archived_at IS NOT NULL"
+      : incluir === "all" ? ""
+      : "WHERE athletes.archived_at IS NULL";
+    const result = await env.DB.prepare(`SELECT athletes.*, athlete_access.status AS access_status, athlete_planning.plan AS saved_plan, athlete_planning.phase AS planning_phase, athlete_planning.week_number AS planning_week_number, athlete_planning.total_weeks AS planning_total_weeks FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name = athletes.name LEFT JOIN athlete_planning ON athlete_planning.athlete_name = athletes.name ${filtro} ORDER BY athletes.created_at DESC`).all();
+    const totais = await env.DB.prepare("SELECT SUM(CASE WHEN archived_at IS NULL THEN 1 ELSE 0 END) AS ativos, SUM(CASE WHEN archived_at IS NOT NULL THEN 1 ELSE 0 END) AS inativos FROM athletes").first() as { ativos?: number; inativos?: number } | null;
+    return Response.json({ athletes: result.results, counts: { active: Number(totais?.ativos ?? 0), archived: Number(totais?.inativos ?? 0) } });
   }
   if (request.method === "POST") {
     const input = await request.json() as Record<string, unknown>;
+    const acao = boundedText(input.action, 20);
+
+    // Inativar em vez de excluir: o aluno some da operação do dia a dia, mas
+    // treinos, testes e queixas permanecem como registro do que foi feito.
+    if (acao === "archive" || acao === "restore") {
+      const alvo = boundedText(input.name, 120);
+      if (!alvo) return Response.json({ error: "athlete_required" }, { status: 400 });
+      const existe = await env.DB.prepare("SELECT name FROM athletes WHERE name = ? LIMIT 1").bind(alvo).first();
+      if (!existe) return Response.json({ error: "athlete_not_found" }, { status: 404 });
+      const arquivando = acao === "archive";
+      const agora = Date.now();
+      await env.DB.prepare("UPDATE athletes SET archived_at = ?, archived_reason = ? WHERE name = ?")
+        .bind(arquivando ? agora : null, arquivando ? (boundedText(input.reason, 200) || null) : null, alvo).run();
+
+      // O acesso acompanha a situação do aluno: um aluno inativo não entra, e
+      // reativar não devolve o acesso sozinho — isso continua sendo decisão do
+      // treinador na aba de contas.
+      await ensureAthleteAccess(env);
+      if (arquivando) {
+        await env.DB.prepare("UPDATE athlete_access SET status = 'Bloqueado', updated_at = ? WHERE athlete_name = ?").bind(agora, alvo).run();
+        const conta = await env.DB.prepare("SELECT id FROM user_accounts WHERE athlete_name = ? LIMIT 1").bind(alvo).first() as { id?: string } | null;
+        if (conta?.id) {
+          await env.DB.prepare("UPDATE user_accounts SET status = 'Bloqueado', updated_at = ? WHERE id = ?").bind(agora, conta.id).run();
+          await env.DB.prepare("DELETE FROM user_sessions WHERE user_id = ?").bind(conta.id).run();
+        }
+      }
+      return Response.json({ name: alvo, archived: arquivando, archivedAt: arquivando ? agora : null });
+    }
+
     const name = boundedText(input.name, 120);
     const initials = boundedText(input.initials, 8);
     const distance = boundedText(input.distance, 30);
@@ -915,6 +886,8 @@ async function athletesApi(request: Request, env: Env): Promise<Response> {
     const trainingDays = Array.isArray(input.trainingDays) ? input.trainingDays.map(day => boundedText(day, 12)).filter(Boolean).slice(0, 7) : [];
     if (!name) return Response.json({ error: "name_required" }, { status: 400 });
     if (!initials || !distance || !phase || !week) return Response.json({ error: "required_fields" }, { status: 400 });
+    const jaExiste = await env.DB.prepare("SELECT name FROM athletes WHERE name = ? LIMIT 1").bind(name).first();
+    if (jaExiste) return Response.json({ error: "athlete_name_taken", message: "Já existe um aluno com este nome. Use o nome completo para diferenciar." }, { status: 409 });
     const id = crypto.randomUUID();
     const createdAt = Date.now();
     await env.DB.prepare(`INSERT INTO athletes
@@ -928,7 +901,7 @@ async function athletesApi(request: Request, env: Env): Promise<Response> {
 }
 
 async function athleteProfileApi(request: Request, env: Env): Promise<Response> {
-  await env.DB.prepare(createAthleteProfilesSql).run();
+  await ensureTables(env, schema.athleteProfiles);
   const url = new URL(request.url);
   if (request.method === "GET") {
     const athleteName = boundedText(url.searchParams.get("athlete"), 120);
@@ -953,7 +926,7 @@ async function athleteProfileApi(request: Request, env: Env): Promise<Response> 
 }
 
 async function athletePlanningApi(request:Request,env:Env):Promise<Response>{
-  await env.DB.prepare(createAthletePlanningSql).run();
+  await ensureTables(env, schema.athletePlanning);
   const url=new URL(request.url);
   if(request.method==="GET"){
     const athleteName=boundedText(url.searchParams.get("athlete"),120);
@@ -974,7 +947,7 @@ async function athletePlanningApi(request:Request,env:Env):Promise<Response>{
 }
 
 async function planTemplateOverridesApi(request:Request,env:Env):Promise<Response>{
-  await env.DB.batch([env.DB.prepare(createPlanTemplateOverridesSql),env.DB.prepare(createPlanTemplateOverridesIndexSql)]);
+  await ensureTables(env, schema.planTemplateOverrides);
   const allowedPlans=["Iniciantes","5 km Bronze","5 km Prata","5 km Ouro","5 km Elite","10 km Lion","Meia Start","Meia Finish","One Marathon","Full Marathon"];
   const url=new URL(request.url);
   if(request.method==="GET"){
@@ -996,7 +969,7 @@ async function planTemplateOverridesApi(request:Request,env:Env):Promise<Respons
 }
 
 async function performanceTestsApi(request: Request, env: Env): Promise<Response> {
-  await env.DB.batch([env.DB.prepare(createPerformanceTestsSql), env.DB.prepare(createPerformanceTestsIndexSql)]);
+  await ensureTables(env, schema.performanceTests);
   const url = new URL(request.url);
   if (request.method === "GET") {
     const athleteName = boundedText(url.searchParams.get("athlete"), 120);
@@ -1045,12 +1018,7 @@ async function performanceTestsApi(request: Request, env: Env): Promise<Response
 }
 
 async function trainingWeeksApi(request: Request, env: Env): Promise<Response> {
-  await env.DB.batch([
-    env.DB.prepare(createTrainingWeeksSql),
-    env.DB.prepare(createTrainingWeeksIndexSql),
-    env.DB.prepare(createTrainingWeekAuditSql),
-    env.DB.prepare(createTrainingWeekAuditIndexSql),
-  ]);
+  await ensureTables(env, schema.trainingWeeks, schema.trainingWeekAudit);
   const url = new URL(request.url);
   if (request.method === "GET") {
     const athlete = url.searchParams.get("athlete");
@@ -1127,34 +1095,9 @@ async function trainingWeeksApi(request: Request, env: Env): Promise<Response> {
 }
 
 /** Histórico de cada movimento de um relato de dor. */
-const createPainReportUpdatesSql = `CREATE TABLE IF NOT EXISTS pain_report_updates (
-  id TEXT PRIMARY KEY,
-  report_id TEXT NOT NULL,
-  actor_email TEXT NOT NULL,
-  action TEXT NOT NULL,
-  note TEXT,
-  created_at INTEGER NOT NULL
-)`;
-const createPainReportUpdatesIndexSql =
-  `CREATE INDEX IF NOT EXISTS pain_report_updates_report_idx ON pain_report_updates (report_id, created_at)`;
 
 async function ensurePainReports(env: Env) {
-  await env.DB.batch([
-    env.DB.prepare(createPainReportsSql),
-    env.DB.prepare(createPainReportUpdatesSql),
-    env.DB.prepare(createPainReportUpdatesIndexSql),
-  ]);
-  // Acompanhamento acrescentado depois: um relato de dor precisa de trajetória,
-  // não só de registro. Só adiciona colunas; os relatos existentes continuam.
-  await ensureColumns(env, "pain_reports", {
-    reviewed_by: "TEXT",
-    reviewed_at: "INTEGER",
-    contacted_at: "INTEGER",
-    coach_note: "TEXT",
-    resolution: "TEXT",
-    resolved_at: "INTEGER",
-    linked_week_start: "TEXT",
-  });
+  await ensureTables(env, schema.painReports, schema.painReportUpdates);
 }
 
 /** Estados pelos quais um relato caminha, do aviso do aluno até a alta. */
@@ -1265,7 +1208,7 @@ async function painReportsApi(request: Request, env: Env): Promise<Response> {
 }
 
 async function ensureTrainingFeedbacks(env: Env) {
-  await env.DB.batch([env.DB.prepare(createTrainingFeedbacksSql),env.DB.prepare(createTrainingFeedbacksStatusIndexSql),env.DB.prepare(createTrainingFeedbacksAthleteIndexSql)]);
+  await ensureTables(env, schema.trainingFeedbacks);
 }
 
 async function studentFeedbacksApi(request: Request, env: Env, athleteName: string): Promise<Response> {
@@ -1312,7 +1255,10 @@ async function feedbacksApi(request: Request, env: Env): Promise<Response> {
  * reescreve — os registros gravados permanecem intactos.
  */
 async function ensureColumns(env: Env, table: string, columns: Record<string, string>): Promise<void> {
-  const info = await env.DB.prepare(`PRAGMA table_info(${table})`).all();
+  const consulta = env.DB.prepare(`PRAGMA table_info(${table})`);
+  // Bancos que não expõem PRAGMA (os dublês dos testes) não têm o que reparar.
+  if (typeof consulta.all !== "function") return;
+  const info = await consulta.all();
   const existentes = new Set((info.results as Array<{ name?: string }>).map(row => String(row.name)));
   const faltando = Object.entries(columns).filter(([nome]) => !existentes.has(nome));
   if (!faltando.length) return;
@@ -1321,16 +1267,7 @@ async function ensureColumns(env: Env, table: string, columns: Record<string, st
 }
 
 async function ensureWorkoutExecutions(env: Env) {
-  await env.DB.batch([env.DB.prepare(createWorkoutExecutionsSql), env.DB.prepare(createWorkoutExecutionsAthleteIndexSql)]);
-  // Colunas acrescentadas quando o treino passou a ter conclusão explícita e a
-  // receber as métricas vindas das integrações.
-  await ensureColumns(env, "workout_executions", {
-    status: "TEXT",
-    note: "TEXT",
-    average_heart_rate: "INTEGER",
-    average_pace_seconds: "INTEGER",
-    external_activity_id: "TEXT",
-  });
+  await ensureTables(env, schema.workoutExecutions);
 }
 
 function workoutAccuracy(plannedMinutes: number | null, plannedKm: number | null, actualMinutes: number | null, actualKm: number | null) {
@@ -1344,8 +1281,13 @@ function workoutAccuracy(plannedMinutes: number | null, plannedKm: number | null
 async function studentWorkoutExecutionsApi(request: Request, env: Env, athleteName: string): Promise<Response> {
   await ensureWorkoutExecutions(env);
   if (request.method === "GET") {
-    const result = await env.DB.prepare("SELECT * FROM workout_executions WHERE athlete_name = ? ORDER BY created_at DESC LIMIT 30").bind(athleteName).all();
-    return Response.json({ executions: result.results });
+    const url = new URL(request.url);
+    const dias = Math.min(90, Math.max(1, Number(url.searchParams.get("days")) || 7));
+    const desde = Date.now() - dias * 86_400_000;
+    const result = await env.DB.prepare(
+      "SELECT * FROM workout_executions WHERE athlete_name = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 30",
+    ).bind(athleteName, desde).all();
+    return Response.json({ executions: result.results, days: dias });
   }
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
   const input = await request.json() as Record<string, unknown>;
@@ -1450,7 +1392,7 @@ async function workoutExecutionsApi(request: Request, env: Env): Promise<Respons
 
 async function integrationOverviewApi(request: Request, env: Env): Promise<Response> {
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
-  await env.DB.batch([env.DB.prepare(createAthletesSql), env.DB.prepare(createAthleteProfilesSql), env.DB.prepare(createAthleteAccessSql), env.DB.prepare(createWorkoutExecutionsSql)]);
+  await ensureTables(env, schema.athletes, schema.athleteProfiles, schema.athleteAccess, schema.workoutExecutions);
   const result = await env.DB.prepare(`SELECT athletes.name AS athlete_name,
     COALESCE(athlete_profiles.integration, athletes.integration, 'Sem integração') AS integration,
     COALESCE(athlete_access.status, 'Não liberado') AS access_status,
@@ -1474,8 +1416,12 @@ async function integrationReadinessApi(request:Request,env:Env):Promise<Response
   ]});
 }
 
-async function ensureFinancial(env:Env){await env.DB.batch([env.DB.prepare(createFinancialSettingsSql),env.DB.prepare(createStudentPaymentsSql),env.DB.prepare(createStudentPaymentsIndexSql)])}
-const currentReferenceMonth=()=>new Date().toISOString().slice(0,7);
+const currentReferenceMonth = () => new Date().toISOString().slice(0, 7);
+
+async function ensureFinancial(env: Env) {
+  await ensureTables(env, schema.financialSettings, schema.studentPayments);
+}
+
 async function financialApi(request:Request,env:Env):Promise<Response>{
   await ensureFinancial(env);const url=new URL(request.url);const month=boundedText(url.searchParams.get("month"),7)||currentReferenceMonth();
   if(request.method==="GET"){
@@ -1502,6 +1448,7 @@ async function financialApi(request:Request,env:Env):Promise<Response>{
   }
   return Response.json({error:"invalid_action"},{status:400});
 }
+
 async function studentFinancialApi(request:Request,env:Env,athleteName:string):Promise<Response>{if(request.method!=="GET")return new Response("Method not allowed",{status:405});await ensureFinancial(env);const [settings,payment]=await Promise.all([env.DB.prepare("SELECT pix_key,pix_name FROM financial_settings WHERE id='default' LIMIT 1").first(),env.DB.prepare("SELECT reference_month,amount_cents,due_date,status,paid_at FROM student_payments WHERE athlete_name=? ORDER BY reference_month DESC LIMIT 1").bind(athleteName).first()]);return Response.json({settings:settings??null,payment:payment??null})}
 
 const bytesToBase64 = (bytes:Uint8Array) => btoa(String.fromCharCode(...bytes));
@@ -1541,28 +1488,9 @@ async function decryptIntegrationToken(value: string, secret: string): Promise<s
  * Fluxos OAuth em andamento. Substitui `oauth_states` porque o Garmin usa PKCE
  * e precisa guardar o `code_verifier` até o retorno da autorização.
  */
-const createOauthFlowsSql = `CREATE TABLE IF NOT EXISTS oauth_flows (
-  state_hash TEXT PRIMARY KEY,
-  athlete_name TEXT NOT NULL,
-  actor_email TEXT NOT NULL,
-  provider TEXT NOT NULL,
-  code_verifier TEXT,
-  redirect_uri TEXT NOT NULL,
-  expires_at INTEGER NOT NULL,
-  created_at INTEGER NOT NULL
-)`;
 
 async function ensureIntegrationTables(env: Env) {
-  await env.DB.batch([
-    env.DB.prepare(createExternalIntegrationsSql),
-    env.DB.prepare(createExternalIntegrationsIndexSql),
-    env.DB.prepare(createOauthFlowsSql),
-    env.DB.prepare(createExternalActivitiesSql),
-    env.DB.prepare(createExternalActivitiesIndexSql),
-    env.DB.prepare(createExternalActivitiesAthleteIndexSql),
-    env.DB.prepare(createDeviceIngestTokensSql),
-    env.DB.prepare(createDeviceIngestTokensAthleteIndexSql),
-  ]);
+  await ensureTables(env, schema.externalIntegrations, schema.oauthFlows, schema.externalActivities, schema.deviceIngestTokens);
 }
 
 function providerCredentials(env: Env, provider: ProviderDefinition): { clientId?: string; clientSecret?: string } {
@@ -1977,7 +1905,7 @@ async function integrationsCoachApi(request: Request, env: Env): Promise<Respons
 }
 
 async function racesRecordsApi(request: Request, env: Env): Promise<Response> {
-  await env.DB.batch([env.DB.prepare(createAthleteRacesSql),env.DB.prepare(createPersonalRecordsSql)]);
+  await ensureTables(env, schema.athleteRaces, schema.personalRecords);
   const url=new URL(request.url);
   if(request.method==="GET"){
     const athlete=String(url.searchParams.get("athlete")||"");

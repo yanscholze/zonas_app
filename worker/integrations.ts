@@ -99,45 +99,15 @@ export function providerById(id: string): ProviderDefinition | null {
 
 /* -------------------------------------------------------------------------- */
 /* Tabelas                                                                     */
+/*                                                                             */
+/* As tabelas destas integrações são declaradas em `db/schema.ts`, junto com o  */
+/* resto do esquema, e criadas a partir de lá — não há SQL duplicado aqui.      */
 /* -------------------------------------------------------------------------- */
 
-/** Atividades já normalizadas, para não repetir o parsing de cada provedor. */
-export const createExternalActivitiesSql = `CREATE TABLE IF NOT EXISTS external_activities (
-  id TEXT PRIMARY KEY,
-  athlete_name TEXT NOT NULL,
-  provider TEXT NOT NULL,
-  external_activity_id TEXT NOT NULL,
-  started_at INTEGER NOT NULL,
-  sport TEXT NOT NULL,
-  distance_meters INTEGER,
-  moving_seconds INTEGER,
-  elapsed_seconds INTEGER,
-  average_heart_rate INTEGER,
-  average_pace_seconds INTEGER,
-  raw_payload TEXT,
-  matched_week_start TEXT,
-  matched_workout_day TEXT,
-  created_at INTEGER NOT NULL
-)`;
 
-export const createExternalActivitiesIndexSql =
-  `CREATE UNIQUE INDEX IF NOT EXISTS external_activities_provider_activity_idx ON external_activities (provider, external_activity_id)`;
 
-export const createExternalActivitiesAthleteIndexSql =
-  `CREATE INDEX IF NOT EXISTS external_activities_athlete_started_idx ON external_activities (athlete_name, started_at)`;
 
-/** Token que o Atalho do iOS usa para enviar treinos do Apple Saúde. */
-export const createDeviceIngestTokensSql = `CREATE TABLE IF NOT EXISTS device_ingest_tokens (
-  token_hash TEXT PRIMARY KEY,
-  athlete_name TEXT NOT NULL,
-  provider TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  last_used_at INTEGER,
-  revoked_at INTEGER
-)`;
 
-export const createDeviceIngestTokensAthleteIndexSql =
-  `CREATE INDEX IF NOT EXISTS device_ingest_tokens_athlete_idx ON device_ingest_tokens (athlete_name, provider)`;
 
 /* -------------------------------------------------------------------------- */
 /* Normalização                                                                */

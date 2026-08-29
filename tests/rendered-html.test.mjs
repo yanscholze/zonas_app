@@ -1711,7 +1711,9 @@ test("adds new execution columns without rewriting existing rows", async () => {
   assert.match(worker, /PRAGMA table_info/);
   assert.match(worker, /ALTER TABLE \$\{table\} ADD COLUMN/);
   assert.doesNotMatch(worker, /DROP COLUMN|DROP TABLE workout_executions/);
-  assert.match(worker, /ensureColumns\(env, "workout_executions"/);
+  // O reparo de colunas agora é derivado do schema, para toda tabela garantida.
+  assert.match(worker, /await ensureColumns\(env, nomeDaTabela\(tabela\), tableColumns\(tabela\)\)/);
+  assert.match(worker, /ensureTables\(env, schema\.workoutExecutions\)/);
 });
 
 test("lets the student read back their own feedback history", async () => {
@@ -1728,13 +1730,89 @@ test("gives every pain report a trackable history", async () => {
   for (const acao of ["review", "contact", "link_week", "resolve", "reopen"]) {
     assert.ok(worker.includes(`acao === "${acao}"`), `falta a ação ${acao}`);
   }
-  assert.match(worker, /CREATE TABLE IF NOT EXISTS pain_report_updates/);
+  assert.match(worker, /ensureTables\(env, schema\.painReports, schema\.painReportUpdates\)/);
   assert.match(worker, /async function registraMovimentoDor/);
   // O vínculo com a planilha só aceita uma semana que exista para aquele atleta.
   assert.match(worker, /week_not_found_for_athlete/);
-  assert.match(worker, /ensureColumns\(env, "pain_reports"/);
+
   assert.match(client, /function PainCenter/);
   assert.match(client, /Marcar como verificado/);
   assert.match(client, /Vincular semana/);
   assert.match(client, /HISTÓRICO/);
+});
+
+test("keeps one single source of truth for the database schema", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const integrations = await readFile(new URL("../worker/integrations.ts", import.meta.url), "utf8");
+  // O esquema vinha declarado duas vezes: tabelas Drizzle em db/schema.ts e
+  // constantes CREATE TABLE escritas à mão aqui. As duas divergiram de fato —
+  // pain_reports e workout_executions ganharam colunas só de um lado.
+  // Ignora as menções em comentários; o que não pode existir é SQL literal.
+  const semComentarios = (fonte) => fonte.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  assert.doesNotMatch(semComentarios(worker), /CREATE TABLE IF NOT EXISTS/);
+  assert.doesNotMatch(semComentarios(integrations), /CREATE TABLE IF NOT EXISTS/);
+  assert.doesNotMatch(worker, /const create[A-Z]\w*Sql/);
+  assert.match(worker, /import \* as schema from "\.\.\/db\/schema"/);
+  assert.match(worker, /import \{ tableColumns, tableSql \} from "\.\.\/db\/sql"/);
+  // Conferir o esquema é trabalho de uma vez por instância, não de toda chamada.
+  assert.match(worker, /const tabelasConferidas = new Set<string>\(\)/);
+  assert.match(worker, /if \(!pendentes\.length\) return;/);
+});
+
+test("generates the same columns the schema declares", async () => {
+  // Garante que o SQL gerado cobre cada coluna declarada, sem sobra nem falta.
+  const { execSync } = await import("node:child_process");
+  const saida = execSync(
+    `npx tsx -e "import * as s from './db/schema.ts';import {createTableSql,tableColumns} from './db/sql.ts';` +
+    `let n=0;for(const t of Object.values(s)){try{const sql=createTableSql(t);const cols=Object.keys(tableColumns(t));` +
+    `for(const c of cols){if(!sql.includes(c+' '))throw new Error('coluna ausente: '+c)}n++}catch(e){if(String(e).includes('coluna ausente'))throw e}}` +
+    `console.log(n)"`,
+    { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8", timeout: 120000 },
+  );
+  const tabelas = Number(saida.trim().split("\n").pop());
+  assert.ok(tabelas >= 25, `esperava ao menos 25 tabelas geradas, veio ${tabelas}`);
+});
+
+/* -------------------------------------------------------------------------- *
+ * Inativação de aluno, histórico recente e integridade do nome
+ * -------------------------------------------------------------------------- */
+
+test("inactivates an athlete instead of deleting, keeping the history", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Não existe exclusão de aluno: apagar destruiria treinos, testes e queixas.
+  assert.doesNotMatch(worker, /DELETE FROM athletes/);
+  assert.match(schema, /archivedAt: integer\("archived_at"\)/);
+  assert.match(worker, /acao === "archive" \|\| acao === "restore"/);
+  // Inativar tira o acesso na hora; reativar não devolve sozinho.
+  assert.match(worker, /UPDATE user_accounts SET status = 'Bloqueado'/);
+  assert.match(worker, /DELETE FROM user_sessions WHERE user_id = \?/);
+  // A lista traz só ativos por padrão, com filtro para ver os inativos.
+  assert.match(worker, /WHERE athletes\.archived_at IS NULL/);
+  assert.match(worker, /incluir === "archived"/);
+  assert.match(client, /className=\{situation===item\?"selected":""\}/);
+  assert.match(client, /Alunos inativos mantêm todo o histórico/);
+});
+
+test("refuses a second athlete with the same name", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  // `athlete_name` liga ficha, treinos, testes, provas e cobranças: dois
+  // homônimos compartilhariam em silêncio todo o histórico um do outro.
+  assert.match(worker, /athlete_name_taken/);
+  assert.match(worker, /SELECT name FROM athletes WHERE name = \? LIMIT 1/);
+  assert.match(schema, /uniqueIndex\("athletes_name_idx"\)\.on\(table\.name\)/);
+});
+
+test("shows the student the last seven days without turning it into a wall", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  assert.match(worker, /Number\(url\.searchParams\.get\("days"\)\) \|\| 7/);
+  assert.match(worker, /created_at >= \?/);
+  assert.match(client, /function RecentWorkouts/);
+  assert.match(client, /ÚLTIMOS 7 DIAS/);
+  // O registro mostra o que veio do relógio, não só a porcentagem.
+  assert.match(client, /average_pace_seconds/);
+  assert.match(client, /average_heart_rate/);
 });
