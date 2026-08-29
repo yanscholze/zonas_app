@@ -18,6 +18,8 @@
   --text: #f6f3ea;
   --muted: #9c9991;
   --red: #f16b5e;
+  /* Altura da faixa que avisa em qual área de treinador se está. */
+  --faixa-visita: 46px;
   --green: #62cc91;
 }
 
@@ -11513,19 +11515,34 @@ input {
 }
 
 /* Faixa dentro da área do treinador, para não haver dúvida de onde se está. */
+/*
+   A faixa fica FORA do fluxo do grid de propósito.
+   `.shell` é `grid-template-columns: 232px 1fr`; como filho comum, a faixa
+   ocupava a segunda célula — o lugar do conteúdo — e empurrava `.content` para
+   a linha de baixo, com a largura da barra lateral e fora da tela.
+*/
 .dev-visiting-banner {
-  position: sticky;
+  position: fixed;
   top: 0;
+  left: 0;
+  right: 0;
   z-index: 25;
   display: flex;
   align-items: center;
   gap: 12px;
-  flex-wrap: wrap;
   background: #23221e;
   border-bottom: 1px solid #5d4d2c;
   color: var(--gold2);
-  padding: 9px 18px;
+  padding: 0 18px;
+  height: var(--faixa-visita);
   font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.dev-visiting-banner > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .dev-visiting-banner b {
@@ -11541,4 +11558,24 @@ input {
   padding: 6px 12px;
   font-size: 12px;
   cursor: pointer;
+}
+
+/* Abre espaço para a faixa sem que ela vire uma célula do grid. */
+.shell.com-visita {
+  padding-top: var(--faixa-visita);
+}
+
+.shell.com-visita .sidebar {
+  top: var(--faixa-visita);
+  height: calc(100vh - var(--faixa-visita));
+}
+
+@media (max-width: 760px) {
+  .dev-visiting-banner {
+    font-size: 11.5px;
+    padding: 7px 12px;
+  }
+  .shell.com-visita {
+    padding-top: var(--faixa-visita);
+  }
 }

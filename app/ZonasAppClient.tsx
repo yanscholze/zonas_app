@@ -373,7 +373,7 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
   if (student) return <><aside className="coach-student-preview"><div><small>PRÉVIA DO PROFESSOR</small><b>Visualizando como aluno</b></div><label>Aluno<select value={previewAthleteName} onChange={event=>setPreviewAthleteName(event.target.value)}>{athleteRecords.map(athlete=><option key={athlete.name}>{athlete.name}</option>)}</select></label><button onClick={()=>setStudent(false)}>Voltar ao professor</button></aside><StudentView onBack={() => setStudent(false)} athleteName={previewAthleteName||athleteRecords[0]?.name||"Aluno"} /></>;
 
   return (
-    <div className="shell">
+    <div className={`shell${visitando ? " com-visita" : ""}`}>
       <aside className="sidebar">
         <div className="brand"><span>Z</span><div><strong>ZONASAPP</strong><small>PLATAFORMA DE TREINO</small></div></div>
         <nav>{nav.map(item => <button key={item} className={active === item ? "active" : ""} onClick={() => setActive(item)}><i>{navIcon(item)}</i>{item}</button>)}

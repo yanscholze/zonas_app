@@ -1950,3 +1950,18 @@ test("only the maintenance account can list or visit coaches", async () => {
   assert.equal((await chamar(studentCookie)).status, 403);
   assert.equal((await worker.fetch(new Request("https://zonasapp.example/api/dev/coaches"), env, ctx)).status, 401);
 });
+
+test("keeps the visiting banner out of the coach grid", async () => {
+  const css = await readCss("../app/globals.css");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // `.shell` é um grid de duas colunas. Como filho comum, a faixa ocupava a
+  // segunda célula — o lugar do conteúdo — e empurrava `.content` para a linha
+  // de baixo, com a largura da barra lateral e fora da tela: só a faixa
+  // aparecia.
+  assert.match(css, /\.dev-visiting-banner\{position:fixed/);
+  assert.match(css, /--faixa-visita:\d+px/);
+  // O espaço é reservado por padding, não por uma célula do grid.
+  assert.match(css, /\.shell\.com-visita\{padding-top:var\(--faixa-visita\)\}/);
+  assert.match(css, /\.shell\.com-visita \.sidebar\{top:var\(--faixa-visita\)/);
+  assert.match(client, /className=\{`shell\$\{visitando \? " com-visita" : ""\}`\}/);
+});
