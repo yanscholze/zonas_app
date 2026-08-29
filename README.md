@@ -193,6 +193,20 @@ o valor, e nunca inclui hash de senha nem token de sessão: nem quem mantém o
 sistema precisa deles para diagnosticar, e devolvê-los transformaria a rota num
 alvo. Treinador e aluno recebem `403 dev_access_required`.
 
+### Áreas de treinador
+
+A partir do painel de manutenção é possível criar treinadores e **entrar na área
+de qualquer um deles**, vendo-a exatamente como aquela pessoa vê. A visita fica
+registrada na sessão — não no navegador — para que o recorte dos dados seja
+decidido pelo servidor, e cada entrada gera um evento de segurança. Enquanto a
+visita durar, uma faixa no topo diz de quem é a área aberta.
+
+Cada treinador enxerga apenas os próprios alunos: `athletes.coach_email` guarda
+esse vínculo, e as demais tabelas se ligam ao aluno por `athlete_name`. Alunos
+cadastrados antes desta separação são atribuídos uma única vez ao treinador de
+`COACH_EMAIL`. A conta de manutenção, sem visitar ninguém, continua vendo todos
+— é o modo de diagnóstico.
+
 ## Estrutura principal
 
 - `app/`: interface e fluxos do professor e do aluno

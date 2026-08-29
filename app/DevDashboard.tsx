@@ -48,7 +48,16 @@ const relativo = (ms: number) => {
   return horas < 24 ? `${horas} h atrás` : `${Math.round(horas / 24)} d atrás`;
 };
 
-export default function DevDashboard({ session, onExit }: { session: Session; onExit: () => void }) {
+type Treinador = { id: string; email: string; name: string; status: string; last_login_at: number | null; alunos_ativos: number };
+type Visita = { email: string; name: string; userId: string } | null;
+
+export default function DevDashboard({ session, onExit }: { session: Session; onExit: (visitando: Visita) => void }) {
+  const [treinadores, setTreinadores] = useState<Treinador[]>([]);
+  const [visitando, setVisitando] = useState<Visita>(null);
+  const [semDono, setSemDono] = useState(0);
+  const [criando, setCriando] = useState(false);
+  const [novo, setNovo] = useState({ name: "", email: "" });
+  const [senhaNova, setSenhaNova] = useState<{ email: string; senha: string } | null>(null);
   const [dados, setDados] = useState<Diagnostico | null>(null);
   const [erro, setErro] = useState("");
   const [aba, setAba] = useState<"resumo" | "contas" | "erros" | "seguranca" | "banco">("resumo");
@@ -56,10 +65,41 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
 
   const carregar = useCallback(async () => {
     setAtualizando(true);
-    try { setDados(await api.get<Diagnostico>("/api/dev/overview")); setErro(""); }
+    try {
+      const [diagnostico, carteiras] = await Promise.all([
+        api.get<Diagnostico>("/api/dev/overview"),
+        api.get<{ coaches: Treinador[]; visitando: Visita; alunosSemDono: number }>("/api/dev/coaches"),
+      ]);
+      setDados(diagnostico);
+      setTreinadores(carteiras.coaches || []);
+      setVisitando(carteiras.visitando ?? null);
+      setSemDono(carteiras.alunosSemDono ?? 0);
+      setErro("");
+    }
     catch (e) { setErro(describeError(e, "Não foi possível carregar o diagnóstico.")); }
     finally { setAtualizando(false); }
   }, []);
+
+  /** Entrar na área de um treinador: o recorte dos dados é decidido no servidor. */
+  const visitar = async (email: string) => {
+    try {
+      const r = await api.post<{ visitando: Visita }>("/api/dev/coaches", { action: "visit", email });
+      setVisitando(r.visitando ?? null);
+      onExit(r.visitando ?? null);
+    } catch (e) { setErro(describeError(e, "Não foi possível abrir a área deste treinador.")); }
+  };
+
+  const criarTreinador = async () => {
+    if (novo.name.trim().length < 3 || !novo.email.includes("@")) {
+      setErro("Informe nome e e-mail do treinador."); return;
+    }
+    try {
+      const r = await api.post<{ email: string; temporaryPassword: string }>("/api/dev/coaches", { action: "create", ...novo });
+      setSenhaNova({ email: r.email, senha: r.temporaryPassword });
+      setNovo({ name: "", email: "" }); setCriando(false); setErro("");
+      await carregar();
+    } catch (e) { setErro(describeError(e, "Não foi possível criar o treinador.")); }
+  };
 
   useEffect(() => { void carregar(); }, [carregar]);
 
@@ -80,7 +120,7 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
           <button onClick={() => void carregar()} disabled={atualizando}>
             {atualizando ? "Atualizando…" : "↻ Atualizar"}
           </button>
-          <button onClick={onExit}>Ir para o painel do treinador →</button>
+          <button onClick={() => onExit(visitando)}>Ir para o painel do treinador →</button>
           <button className="dev-signout" onClick={() => void signOut()}>Sair</button>
         </div>
       </header>
@@ -101,6 +141,49 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
 
       {!dados ? <p className="dev-loading">Carregando diagnóstico…</p> : <>
         {aba === "resumo" && <>
+          <section className="dev-panel dev-coaches">
+            <h2>Áreas de treinador</h2>
+            <p className="dev-hint">
+              Abra a área de um treinador para vê-la exatamente como ele vê. Cada um enxerga apenas os
+              próprios alunos; quem age continua sendo esta conta, e a visita fica registrada.
+            </p>
+
+            {visitando && <div className="dev-visiting">
+              Visitando <b>{visitando.name}</b>
+              <button onClick={() => onExit(visitando)}>Abrir a área →</button>
+            </div>}
+
+            <div className="dev-coach-grid">
+              {treinadores.map(t => (
+                <article key={t.id} className={visitando?.email === t.email ? "atual" : ""}>
+                  <b>{t.name}</b>
+                  <small>{t.email}</small>
+                  <span>{t.alunos_ativos} aluno(s) ativo(s){t.status !== "Ativo" ? ` · ${t.status}` : ""}</span>
+                  <button onClick={() => void visitar(t.email)}>
+                    {visitando?.email === t.email ? "Abrir novamente" : "Entrar nesta área"}
+                  </button>
+                </article>
+              ))}
+              <article className="dev-coach-novo">
+                {criando ? <>
+                  <input value={novo.name} onChange={e => setNovo({ ...novo, name: e.target.value })} placeholder="Nome do treinador" />
+                  <input type="email" value={novo.email} onChange={e => setNovo({ ...novo, email: e.target.value })} placeholder="email@exemplo.com" />
+                  <div>
+                    <button onClick={() => void criarTreinador()}>Criar</button>
+                    <button onClick={() => { setCriando(false); setNovo({ name: "", email: "" }); }}>Cancelar</button>
+                  </div>
+                </> : <button onClick={() => setCriando(true)}>+ Novo treinador</button>}
+              </article>
+            </div>
+
+            {senhaNova && <p className="dev-senha">
+              Senha temporária de <b>{senhaNova.email}</b>: <code>{senhaNova.senha}</code> — aparece uma única vez.
+              <button onClick={() => setSenhaNova(null)}>Já anotei</button>
+            </p>}
+
+            {semDono > 0 && <p className="dev-hint">{semDono} aluno(s) ainda sem treinador dono.</p>}
+          </section>
+
           <section className="dev-cards">
             <article className={semErros ? "ok" : "alerta"}>
               <small>ERROS · 24 H</small>

@@ -8,7 +8,6 @@ import {
   createSession,
   destroySession,
   destroySessionsForUser,
-  ensureAuthTables,
   ensureCoachAccount,
   ensureDevAccount,
   expiredSessionCookie,
@@ -22,6 +21,7 @@ import {
   registerFailedAttempt,
   registerSuccessfulLogin,
   sessionCookie,
+  setImpersonation,
   setPassword,
   verifyPassword,
 } from "./auth";
@@ -107,6 +107,7 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/auth/password": new Set(["currentPassword","newPassword"]),
   "/api/accounts": new Set(["action","email","name","athleteName","password"]),
   "/api/integrations": new Set(["action","provider","athleteName","payload"]),
+  "/api/dev/coaches": new Set(["action","email","name","password"]),
   "/api/student/integrations": new Set(["action","provider"]),
 };
 
@@ -178,6 +179,50 @@ function requireCoachApiAccess(request: Request): Response | null {
   return null;
 }
 
+/**
+ * De quem é a carteira que esta requisição enxerga.
+ *
+ * Um treinador vê os próprios alunos. A conta de manutenção vê a carteira do
+ * treinador que estiver visitando e, sem visita nenhuma, vê tudo — é o modo de
+ * diagnóstico. `null` significa "sem recorte".
+ */
+function carteiraDe(request: Request): string | null {
+  const identity = resolvedIdentities.get(request) ?? null;
+  if (identity?.role === "coach") return identity.email;
+  if (identity?.role === "dev") return identity.visitandoEmail ?? null;
+  return null;
+}
+
+/**
+ * Recorte SQL dos alunos de um treinador.
+ *
+ * O recorte é estrito. Um primeiro rascunho incluía também os alunos sem dono,
+ * para não esconder os que existiam antes desta separação — mas com mais de um
+ * treinador isso fazia os mesmos alunos aparecerem em todas as carteiras. Os
+ * alunos antigos são atribuídos ao treinador principal uma única vez, por
+ * `atribuiAlunosSemDono`, e a partir daí cada um vê só os seus.
+ */
+function recorteDeAlunos(carteira: string | null, coluna = "athletes.coach_email"): { clausula: string; valores: string[] } {
+  if (!carteira) return { clausula: "", valores: [] };
+  return { clausula: `${coluna} = ?`, valores: [carteira] };
+}
+
+let alunosAtribuidos = false;
+
+/**
+ * Dá dono aos alunos cadastrados antes de existir separação por treinador.
+ *
+ * Roda uma vez por instância e só age sobre linhas sem dono, então repetir é
+ * inofensivo e nenhum vínculo já definido é sobrescrito.
+ */
+async function atribuiAlunosSemDono(env: Env): Promise<void> {
+  if (alunosAtribuidos) return;
+  const principal = coachEmailOf(env);
+  if (!principal) return;
+  await env.DB.prepare("UPDATE athletes SET coach_email = ? WHERE coach_email IS NULL").bind(principal).run();
+  alunosAtribuidos = true;
+}
+
 /** Só a conta de manutenção alcança o diagnóstico. */
 function requireDevApiAccess(request: Request): Response | null {
   const identity = resolvedIdentities.get(request) ?? null;
@@ -187,7 +232,7 @@ function requireDevApiAccess(request: Request): Response | null {
 }
 
 type ApiIdentity =
-  | { role: "dev"; email: string }
+  | { role: "dev"; email: string; visitandoEmail?: string }
   | { role: "coach"; email: string }
   | { role: "student"; email: string; athleteName: string };
 
@@ -446,7 +491,8 @@ async function ensureAthleteAccess(env: Env) {
 async function resolveApiIdentity(request: Request, env: Env): Promise<ApiIdentity | null> {
   const session = await identityFromRequest(env.DB, request);
   if (!session) return null;
-  if (session.role === "coach" || session.role === "dev") return { role: session.role, email: session.email };
+  if (session.role === "dev") return { role: "dev", email: session.email, visitandoEmail: session.visitando?.email };
+  if (session.role === "coach") return { role: "coach", email: session.email };
   await ensureAthleteAccess(env);
   const row = await env.DB.prepare(
     "SELECT athlete_name FROM athlete_access WHERE athlete_name = ? AND status = 'Ativo' LIMIT 1",
@@ -854,16 +900,21 @@ async function studentRacesRecordsApi(request: Request, env: Env, athleteName: s
 
 async function athletesApi(request: Request, env: Env): Promise<Response> {
   await ensureTables(env, schema.athletes, schema.athletePlanning, schema.athleteAccess);
+  await atribuiAlunosSemDono(env);
   const url = new URL(request.url);
   if (request.method === "GET") {
     // Por padrão a lista traz só quem está ativo. Os inativos continuam no
     // banco com todo o histórico e aparecem quando pedidos explicitamente.
     const incluir = boundedText(url.searchParams.get("include"), 20);
-    const filtro = incluir === "archived" ? "WHERE athletes.archived_at IS NOT NULL"
+    const situacao = incluir === "archived" ? "athletes.archived_at IS NOT NULL"
       : incluir === "all" ? ""
-      : "WHERE athletes.archived_at IS NULL";
-    const result = await env.DB.prepare(`SELECT athletes.*, athlete_access.status AS access_status, athlete_planning.plan AS saved_plan, athlete_planning.phase AS planning_phase, athlete_planning.week_number AS planning_week_number, athlete_planning.total_weeks AS planning_total_weeks FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name = athletes.name LEFT JOIN athlete_planning ON athlete_planning.athlete_name = athletes.name ${filtro} ORDER BY athletes.created_at DESC`).all();
-    const totais = await env.DB.prepare("SELECT SUM(CASE WHEN archived_at IS NULL THEN 1 ELSE 0 END) AS ativos, SUM(CASE WHEN archived_at IS NOT NULL THEN 1 ELSE 0 END) AS inativos FROM athletes").first() as { ativos?: number; inativos?: number } | null;
+      : "athletes.archived_at IS NULL";
+    const carteira = recorteDeAlunos(carteiraDe(request));
+    const condicoes = [situacao, carteira.clausula].filter(Boolean);
+    const filtro = condicoes.length ? `WHERE ${condicoes.join(" AND ")}` : "";
+    const result = await env.DB.prepare(`SELECT athletes.*, athlete_access.status AS access_status, athlete_planning.plan AS saved_plan, athlete_planning.phase AS planning_phase, athlete_planning.week_number AS planning_week_number, athlete_planning.total_weeks AS planning_total_weeks FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name = athletes.name LEFT JOIN athlete_planning ON athlete_planning.athlete_name = athletes.name ${filtro} ORDER BY athletes.created_at DESC`).bind(...carteira.valores).all();
+    const totaisSql = `SELECT SUM(CASE WHEN archived_at IS NULL THEN 1 ELSE 0 END) AS ativos, SUM(CASE WHEN archived_at IS NOT NULL THEN 1 ELSE 0 END) AS inativos FROM athletes${carteira.clausula ? ` WHERE ${carteira.clausula.replace(/athletes\./g, "")}` : ""}`;
+    const totais = await env.DB.prepare(totaisSql).bind(...carteira.valores).first() as { ativos?: number; inativos?: number } | null;
     return Response.json({ athletes: result.results, counts: { active: Number(totais?.ativos ?? 0), archived: Number(totais?.inativos ?? 0) } });
   }
   if (request.method === "POST") {
@@ -910,10 +961,12 @@ async function athletesApi(request: Request, env: Env): Promise<Response> {
     if (jaExiste) return Response.json({ error: "athlete_name_taken", message: "Já existe um aluno com este nome. Use o nome completo para diferenciar." }, { status: 409 });
     const id = crypto.randomUUID();
     const createdAt = Date.now();
+    // O aluno nasce na carteira de quem o cadastrou. Se a manutenção cadastra
+    // sem estar visitando ninguém, o aluno fica sem dono e aparece para todos.
     await env.DB.prepare(`INSERT INTO athletes
-      (id, name, initials, distance, phase, week, next_workout, status, phone, email, training_days, integration, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(id, name, initials, distance, phase, week, nextWorkout, boundedText(input.status, 120) || null, boundedText(input.phone, 30) || null, boundedText(input.email, 254).toLowerCase() || null, JSON.stringify(trainingDays), boundedText(input.integration, 40) || null, createdAt)
+      (id, name, initials, distance, phase, week, next_workout, status, phone, email, training_days, integration, created_at, coach_email)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(id, name, initials, distance, phase, week, nextWorkout, boundedText(input.status, 120) || null, boundedText(input.phone, 30) || null, boundedText(input.email, 254).toLowerCase() || null, JSON.stringify(trainingDays), boundedText(input.integration, 40) || null, createdAt, carteiraDe(request))
       .run();
     return Response.json({ id, createdAt }, { status: 201 });
   }
@@ -1940,7 +1993,7 @@ async function integrationsCoachApi(request: Request, env: Env): Promise<Respons
  */
 async function devOverviewApi(request: Request, env: Env): Promise<Response> {
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
-  await ensureAuthTables(env.DB);
+  await ensureTables(env, schema.userAccounts, schema.userSessions);
   await ensureTables(env, schema.applicationErrors, schema.securityEvents, schema.requestRateLimits, schema.requestDeduplication);
   await ensureIntegrationTables(env);
 
@@ -2004,6 +2057,73 @@ async function devOverviewApi(request: Request, env: Env): Promise<Response> {
     atividadesPorProvedor: atividades.results,
     volumes,
   });
+}
+
+
+/**
+ * Treinadores existentes e visita a um deles.
+ *
+ * A visita é registrada na sessão da manutenção, não no navegador: assim é o
+ * servidor que decide o recorte dos dados, e não a interface. Quem age continua
+ * sendo a conta de manutenção, e é o e-mail dela que vai para a auditoria.
+ */
+async function devCoachesApi(request: Request, env: Env): Promise<Response> {
+  await ensureTables(env, schema.userAccounts, schema.userSessions, schema.athletes);
+  await atribuiAlunosSemDono(env);
+
+  if (request.method === "GET") {
+    const treinadores = await env.DB.prepare(
+      `SELECT user_accounts.id, user_accounts.email, user_accounts.name, user_accounts.status, user_accounts.last_login_at,
+              (SELECT COUNT(*) FROM athletes WHERE athletes.coach_email = user_accounts.email AND athletes.archived_at IS NULL) AS alunos_ativos
+         FROM user_accounts WHERE role = 'coach' ORDER BY name`,
+    ).all();
+    const semDono = await env.DB.prepare("SELECT COUNT(*) AS total FROM athletes WHERE coach_email IS NULL").first() as { total?: number } | null;
+    const sessao = await identityFromRequest(env.DB, request);
+    return Response.json({
+      coaches: treinadores.results,
+      visitando: sessao?.role === "dev" ? sessao.visitando ?? null : null,
+      alunosSemDono: Number(semDono?.total ?? 0),
+    });
+  }
+
+  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+  const input = await request.json() as Record<string, unknown>;
+  const acao = boundedText(input.action, 20) || "visit";
+  const token = readSessionToken(request);
+  if (!token) return Response.json({ error: "authentication_required" }, { status: 401 });
+
+  if (acao === "stop") {
+    await setImpersonation(env.DB, token, null);
+    return Response.json({ visitando: null });
+  }
+
+  if (acao === "create") {
+    const email = boundedText(input.email, 254).toLowerCase();
+    const name = boundedText(input.name, 120);
+    const senha = boundedText(input.password, 200);
+    if (!isValidEmail(email)) return Response.json({ error: "invalid_email" }, { status: 400 });
+    if (name.length < 3) return Response.json({ error: "name_too_short" }, { status: 400 });
+    const problema = passwordProblem(senha || generateTemporaryPassword() + "a1");
+    const senhaFinal = senha || `${generateTemporaryPassword()}a1`;
+    if (senha && problema) return Response.json({ error: problema, minLength: MIN_PASSWORD_LENGTH }, { status: 400 });
+    if (await accountByEmail(env.DB, email)) return Response.json({ error: "email_already_registered" }, { status: 409 });
+    await createAccount(env.DB, { email, name, role: "coach", password: senhaFinal, mustChangePassword: true, status: "Ativo" });
+    return Response.json({ created: true, email, name, temporaryPassword: senhaFinal }, { status: 201 });
+  }
+
+  if (acao === "visit") {
+    const email = boundedText(input.email, 254).toLowerCase();
+    const alvo = await env.DB.prepare("SELECT id, email, name FROM user_accounts WHERE email = ? AND role = 'coach' LIMIT 1").bind(email).first() as { id?: string; email?: string; name?: string } | null;
+    if (!alvo?.id) return Response.json({ error: "coach_not_found" }, { status: 404 });
+    await setImpersonation(env.DB, token, alvo.id);
+    // Visitar a área de outra pessoa é um ato que precisa deixar rastro.
+    await ensureTables(env, schema.securityEvents);
+    await env.DB.prepare("INSERT INTO security_events (id, actor_email, event_type, route, details, created_at) VALUES (?, ?, 'Manutenção visitou um treinador', '/api/dev/coaches', ?, ?)")
+      .bind(crypto.randomUUID(), normalizedAuthenticatedEmail(request) ?? "manutenção", `Área de ${alvo.email}`, Date.now()).run();
+    return Response.json({ visitando: { email: alvo.email, name: alvo.name, userId: alvo.id } });
+  }
+
+  return Response.json({ error: "unknown_action" }, { status: 400 });
 }
 
 async function racesRecordsApi(request: Request, env: Env): Promise<Response> {
@@ -2101,7 +2221,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
     // ficam antes de qualquer resolução de identidade.
     if (url.pathname.startsWith("/api/auth/")) {
       try {
-        await ensureAuthTables(env.DB);
+        await ensureTables(env, schema.userAccounts, schema.userSessions);
         const coachAccount = await ensureCoachAccount(env.DB, coachEmailOf(env), env.COACH_INITIAL_PASSWORD);
         await ensureDevAccount(env.DB, env.DEV_LOGIN, env.DEV_INITIAL_PASSWORD);
         if (coachAccount === "not_configured") {
@@ -2128,7 +2248,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
     // A partir daqui toda rota precisa saber quem está falando.
     if (url.pathname.startsWith("/api/")) {
       try {
-        await ensureAuthTables(env.DB);
+        await ensureTables(env, schema.userAccounts, schema.userSessions);
         await ensureCoachAccount(env.DB, coachEmailOf(env), env.COACH_INITIAL_PASSWORD);
         await ensureDevAccount(env.DB, env.DEV_LOGIN, env.DEV_INITIAL_PASSWORD);
         resolvedIdentities.set(request, await resolveApiIdentity(request, env));
@@ -2198,6 +2318,15 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
       if (limited) return limited;
       const invalid = await validateApiEnvelope(request, url); if (invalid) return invalid;
       const duplicate = await preventDuplicateSubmission(request, url, env, actorEmail); if (duplicate) return duplicate;
+    }
+
+    if (url.pathname === "/api/dev/coaches") {
+      const negado = requireDevApiAccess(request);
+      if (negado) return negado;
+      try {
+        const invalido = await validateApiEnvelope(request, url); if (invalido) return invalido;
+        return await devCoachesApi(request, env);
+      } catch { return await applicationFailure(env, request, "treinadores", "dev_coaches_unavailable"); }
     }
 
     if (url.pathname === "/api/dev/overview") {

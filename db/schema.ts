@@ -23,6 +23,16 @@ export const athletes = sqliteTable("athletes", {
    */
   archivedAt: integer("archived_at"),
   archivedReason: text("archived_reason"),
+  /**
+   * Treinador dono deste aluno.
+   *
+   * O sistema nasceu para um treinador só e nenhuma tabela guardava esse
+   * vínculo. Como todas as outras se ligam ao aluno por `athlete_name`, marcar
+   * o dono aqui basta para separar as carteiras: o que cada treinador enxerga
+   * decorre de quais alunos são dele. Nulo significa um aluno anterior a esta
+   * coluna, que continua pertencendo ao treinador principal.
+   */
+  coachEmail: text("coach_email"),
 }, (table) => ({
   /**
    * O nome do aluno é a chave que liga ficha, treinos, testes, provas e
@@ -205,6 +215,14 @@ export const userSessions = sqliteTable("user_sessions", {
   tokenHash: text("token_hash").primaryKey(), userId: text("user_id").notNull(), email: text("email").notNull(),
   expiresAt: integer("expires_at").notNull(), createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   lastSeenAt: integer("last_seen_at", { mode: "timestamp_ms" }).notNull(),
+  /**
+   * Treinador que a conta de manutenção está visitando.
+   *
+   * Fica na sessão, e não no navegador, para que o servidor decida o que
+   * mostrar: quem está de fato agindo continua sendo o `user_id`, e é esse
+   * nome que vai para os registros de auditoria.
+   */
+  impersonatingUserId: text("impersonating_user_id"),
 }, (table) => ({
   expiresIdx: index("user_sessions_expires_idx").on(table.expiresAt),
 }));

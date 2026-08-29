@@ -45,7 +45,11 @@ export type UserAccount = {
 };
 
 export type SessionIdentity =
-  | { role: "dev"; email: string; userId: string; name: string; mustChangePassword: boolean }
+  /**
+   * Conta de manutenção. `visitando` diz qual treinador ela está vendo no
+   * momento; quem age continua sendo a própria conta de manutenção.
+   */
+  | { role: "dev"; email: string; userId: string; name: string; mustChangePassword: boolean; visitando?: { email: string; name: string; userId: string } }
   | { role: "coach"; email: string; userId: string; name: string; mustChangePassword: boolean }
   | { role: "student"; email: string; userId: string; name: string; athleteName: string; mustChangePassword: boolean };
 
@@ -59,47 +63,16 @@ interface AuthDatabase {
   batch(statements: unknown[]): Promise<unknown>;
 }
 
-export const createUserAccountsSql = `CREATE TABLE IF NOT EXISTS user_accounts (
-  id TEXT PRIMARY KEY,
-  email TEXT NOT NULL,
-  name TEXT NOT NULL,
-  role TEXT NOT NULL,
-  athlete_name TEXT,
-  password_hash TEXT NOT NULL,
-  password_salt TEXT NOT NULL,
-  password_iterations INTEGER NOT NULL,
-  status TEXT NOT NULL,
-  must_change_password INTEGER NOT NULL DEFAULT 0,
-  failed_attempts INTEGER NOT NULL DEFAULT 0,
-  locked_until INTEGER,
-  last_login_at INTEGER,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-)`;
 
-export const createUserAccountsEmailIndexSql =
-  `CREATE UNIQUE INDEX IF NOT EXISTS user_accounts_email_idx ON user_accounts (email)`;
 
-export const createUserSessionsSql = `CREATE TABLE IF NOT EXISTS user_sessions (
-  token_hash TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  email TEXT NOT NULL,
-  expires_at INTEGER NOT NULL,
-  created_at INTEGER NOT NULL,
-  last_seen_at INTEGER NOT NULL
-)`;
 
-export const createUserSessionsExpiryIndexSql =
-  `CREATE INDEX IF NOT EXISTS user_sessions_expires_idx ON user_sessions (expires_at)`;
 
-export async function ensureAuthTables(db: AuthDatabase): Promise<void> {
-  await db.batch([
-    db.prepare(createUserAccountsSql),
-    db.prepare(createUserAccountsEmailIndexSql),
-    db.prepare(createUserSessionsSql),
-    db.prepare(createUserSessionsExpiryIndexSql),
-  ]);
-}
+/**
+ * As tabelas de autenticação são criadas pelo Worker a partir de
+ * `db/schema.ts`, como todas as outras. Este módulo cuida apenas das regras de
+ * senha e sessão — declarar SQL aqui recriaria a duplicação que já custou uma
+ * coluna faltante em produção.
+ */
 
 /* -------------------------------------------------------------------------- */
 /* Senhas                                                                      */
@@ -221,6 +194,12 @@ export async function destroySession(db: AuthDatabase, token: string): Promise<v
   await db.prepare("DELETE FROM user_sessions WHERE token_hash = ?").bind(await sha256Hex(token)).run();
 }
 
+/** Registra, na sessão da manutenção, qual treinador ela está visitando. */
+export async function setImpersonation(db: AuthDatabase, token: string, targetUserId: string | null): Promise<void> {
+  await db.prepare("UPDATE user_sessions SET impersonating_user_id = ? WHERE token_hash = ?")
+    .bind(targetUserId, await sha256Hex(token)).run();
+}
+
 export async function destroySessionsForUser(db: AuthDatabase, userId: string): Promise<void> {
   await db.prepare("DELETE FROM user_sessions WHERE user_id = ?").bind(userId).run();
 }
@@ -237,8 +216,8 @@ export async function identityFromRequest(db: AuthDatabase, request: Request): P
   const tokenHash = await sha256Hex(token);
   const now = Date.now();
   const session = await db.prepare(
-    "SELECT user_id, expires_at FROM user_sessions WHERE token_hash = ? LIMIT 1",
-  ).bind(tokenHash).first() as { user_id?: string; expires_at?: number } | null;
+    "SELECT user_id, expires_at, impersonating_user_id FROM user_sessions WHERE token_hash = ? LIMIT 1",
+  ).bind(tokenHash).first() as { user_id?: string; expires_at?: number; impersonating_user_id?: string | null } | null;
   if (!session?.user_id || Number(session.expires_at ?? 0) <= now) return null;
 
   const account = await db.prepare("SELECT * FROM user_accounts WHERE id = ? LIMIT 1").bind(session.user_id).first() as UserAccount | null;
@@ -247,8 +226,19 @@ export async function identityFromRequest(db: AuthDatabase, request: Request): P
   await db.prepare("UPDATE user_sessions SET last_seen_at = ? WHERE token_hash = ?").bind(now, tokenHash).run();
 
   const mustChangePassword = Number(account.must_change_password) === 1;
-  if (account.role === "coach" || account.role === "dev") {
-    return { role: account.role, email: account.email, userId: account.id, name: account.name, mustChangePassword };
+  if (account.role === "dev") {
+    // A visita é resolvida aqui para que o resto do sistema receba a identidade
+    // já pronta, sem precisar saber que existe manutenção.
+    let visitando: { email: string; name: string; userId: string } | undefined;
+    if (session.impersonating_user_id) {
+      const alvo = await db.prepare("SELECT id, email, name, role FROM user_accounts WHERE id = ? AND role = 'coach' LIMIT 1")
+        .bind(session.impersonating_user_id).first() as { id?: string; email?: string; name?: string } | null;
+      if (alvo?.id && alvo.email) visitando = { userId: alvo.id, email: alvo.email, name: alvo.name ?? alvo.email };
+    }
+    return { role: "dev", email: account.email, userId: account.id, name: account.name, mustChangePassword, visitando };
+  }
+  if (account.role === "coach") {
+    return { role: "coach", email: account.email, userId: account.id, name: account.name, mustChangePassword };
   }
   if (!account.athlete_name) return null;
   return {

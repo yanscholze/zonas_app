@@ -11369,3 +11369,176 @@ input {
     flex: 1;
   }
 }
+
+/* --- Seleção de área de treinador (manutenção) ---------------------------- */
+
+.dev-coaches .dev-hint {
+  max-width: 74ch;
+}
+
+.dev-visiting {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  border: 1px solid #5d4d2c;
+  background: #23221e;
+  border-radius: 9px;
+  padding: 11px 14px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.dev-visiting b {
+  color: var(--gold2);
+}
+
+.dev-visiting button {
+  margin-left: auto;
+  border: 1px solid var(--gold);
+  background: var(--gold);
+  color: #15120c;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dev-coach-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
+  gap: 10px;
+}
+
+.dev-coach-grid article {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  display: grid;
+  gap: 4px;
+  align-content: start;
+}
+
+.dev-coach-grid article.atual {
+  border-color: #5d4d2c;
+  background: #1b1a17;
+}
+
+.dev-coach-grid b {
+  font-size: 14px;
+}
+
+.dev-coach-grid small {
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.dev-coach-grid span {
+  font-size: 12px;
+  color: var(--gold2);
+  margin-bottom: 6px;
+}
+
+.dev-coach-grid button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dev-coach-grid button:hover {
+  border-color: var(--gold);
+  color: var(--gold2);
+}
+
+.dev-coach-novo {
+  justify-content: center;
+  border-style: dashed !important;
+}
+
+.dev-coach-novo input {
+  background: #0f0f10;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 11px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.dev-coach-novo > div {
+  display: flex;
+  gap: 6px;
+}
+
+.dev-coach-novo > div button {
+  flex: 1;
+}
+
+.dev-senha {
+  border: 1px solid var(--gold);
+  background: rgba(215, 170, 57, 0.08);
+  border-radius: 9px;
+  padding: 11px 14px;
+  margin-top: 12px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dev-senha code {
+  background: #0f0f10;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 14px;
+  user-select: all;
+}
+
+.dev-senha button {
+  margin-left: auto;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  border-radius: 7px;
+  padding: 7px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Faixa dentro da área do treinador, para não haver dúvida de onde se está. */
+.dev-visiting-banner {
+  position: sticky;
+  top: 0;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: #23221e;
+  border-bottom: 1px solid #5d4d2c;
+  color: var(--gold2);
+  padding: 9px 18px;
+  font-size: 12.5px;
+}
+
+.dev-visiting-banner b {
+  color: var(--gold2);
+}
+
+.dev-visiting-banner button {
+  margin-left: auto;
+  border: 1px solid #5d4d2c;
+  background: transparent;
+  color: var(--gold2);
+  border-radius: 7px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}

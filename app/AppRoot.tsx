@@ -15,14 +15,15 @@ import DevDashboard from "./DevDashboard";
  */
 export default function AppRoot() {
   const [modoTreinador, setModoTreinador] = useState(false);
+  const [visitando, setVisitando] = useState<{ name: string; email: string } | null>(null);
 
   return (
     <AuthGate>
       {(session) => {
         if (session.role === "dev") {
           return modoTreinador
-            ? <ZonasAppClient session={session} onLeaveDev={() => setModoTreinador(false)} />
-            : <DevDashboard session={session} onExit={() => setModoTreinador(true)} />;
+            ? <ZonasAppClient session={session} onLeaveDev={() => setModoTreinador(false)} visitando={visitando} />
+            : <DevDashboard session={session} onExit={(alvo) => { setVisitando(alvo); setModoTreinador(true); }} />;
         }
         return session.role === "coach"
           ? <ZonasAppClient session={session} />

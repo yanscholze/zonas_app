@@ -1789,7 +1789,9 @@ test("inactivates an athlete instead of deleting, keeping the history", async ()
   assert.match(worker, /UPDATE user_accounts SET status = 'Bloqueado'/);
   assert.match(worker, /DELETE FROM user_sessions WHERE user_id = \?/);
   // A lista traz só ativos por padrão, com filtro para ver os inativos.
-  assert.match(worker, /WHERE athletes\.archived_at IS NULL/);
+  // A condição virou composta ao ganhar o recorte por treinador.
+  assert.match(worker, /athletes\.archived_at IS NULL/);
+  assert.match(worker, /condicoes\.length \? `WHERE \$\{condicoes\.join\(" AND "\)\}` : ""/);
   assert.match(worker, /incluir === "archived"/);
   assert.match(client, /className=\{situation===item\?"selected":""\}/);
   assert.match(client, /Alunos inativos mantêm todo o histórico/);
@@ -1882,4 +1884,69 @@ test("gives the maintenance account both views", async () => {
   for (const aba of ["Resumo", "Erros", "Contas", "Segurança", "Banco"]) {
     assert.ok(dash.includes(aba), `falta a aba ${aba}`);
   }
+});
+
+/* -------------------------------------------------------------------------- *
+ * Carteiras por treinador e visita da conta de manutenção
+ * -------------------------------------------------------------------------- */
+
+test("separates each coach's athletes into their own book", async () => {
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // Nenhuma tabela guardava o vínculo com o treinador: o sistema nasceu para
+  // um só. Como todas se ligam ao aluno por athlete_name, marcar o dono em
+  // `athletes` basta para separar o que cada treinador enxerga.
+  assert.match(schema, /coachEmail: text\("coach_email"\)/);
+  assert.match(worker, /function carteiraDe\(request: Request\)/);
+  // O recorte é estrito: incluir os alunos sem dono faria os mesmos aparecerem
+  // em todas as carteiras.
+  assert.match(worker, /clausula: `\$\{coluna\} = \?`/);
+  assert.doesNotMatch(worker, /OR \$\{coluna\} IS NULL/);
+  // Os alunos anteriores à separação ganham o treinador principal, uma vez só.
+  assert.match(worker, /UPDATE athletes SET coach_email = \? WHERE coach_email IS NULL/);
+  assert.match(worker, /if \(alunosAtribuidos\) return;/);
+  // Aluno novo nasce na carteira de quem o cadastrou.
+  assert.match(worker, /createdAt, carteiraDe\(request\)\)/);
+});
+
+test("keeps the visit on the session, not in the browser", async () => {
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // Quem decide o recorte é o servidor; a interface não escolhe o que vê.
+  assert.match(schema, /impersonatingUserId: text\("impersonating_user_id"\)/);
+  assert.match(auth, /export async function setImpersonation/);
+  assert.match(auth, /AND role = 'coach' LIMIT 1/);
+  // Visitar a área de outra pessoa deixa rastro.
+  assert.match(worker, /Manutenção visitou um treinador/);
+  // Só a manutenção alcança a rota.
+  assert.match(worker, /url\.pathname === "\/api\/dev\/coaches"[\s\S]{0,120}requireDevApiAccess/);
+});
+
+test("says out loud whose area is open", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const dash = await readFile(new URL("../app/DevDashboard.tsx", import.meta.url), "utf8");
+  // Operar na área de outra pessoa sem aviso é como se perde a noção de onde
+  // se está — e de quem vai receber a alteração.
+  assert.match(client, /dev-visiting-banner/);
+  assert.match(client, /Você está na área de/);
+  assert.match(dash, /Entrar nesta área/);
+  assert.match(dash, /\+ Novo treinador/);
+});
+
+test("only the maintenance account can list or visit coaches", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("dev-coaches", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const prepare = (sql) => statement(() => (sql.includes("FROM athlete_access") ? { athlete_name: "Ana Souza", status: "Ativo" } : null));
+  const env = {
+    ASSETS: { fetch: async () => new Response("", { status: 404 }) },
+    DB: { prepare: withSession(prepare), async batch(i) { for (const x of i) await x.run(); return []; } },
+  };
+  const ctx = { waitUntil() {}, passThroughOnException() {} };
+  const chamar = (cookie) => worker.fetch(
+    new Request("https://zonasapp.example/api/dev/coaches", { headers: { ...cookie } }), env, ctx);
+  assert.equal((await chamar(coachCookie)).status, 403);
+  assert.equal((await chamar(studentCookie)).status, 403);
+  assert.equal((await worker.fetch(new Request("https://zonasapp.example/api/dev/coaches"), env, ctx)).status, 401);
 });

@@ -284,7 +284,7 @@ function shiftIsoDate(value:string,days:number){const date=new Date(`${value}T12
 function weekDateLabel(start:string){const end=shiftIsoDate(start,6);const format=(value:string,withYear=false)=>new Intl.DateTimeFormat("pt-BR",{day:"2-digit",month:"short",...(withYear?{year:"numeric"}:{}) ,timeZone:"UTC"}).format(new Date(`${value}T12:00:00Z`)).replace(" de "," ");return `${format(start)} – ${format(end,true)}`}
 function brazilCalendar(){const now=new Date(Date.now()-3*60*60*1000);const day=now.getUTCDay();const keys=["DOM","SEG","TER","QUA","QUI","SEX","SÁB"];return{key:keys[day],label:new Intl.DateTimeFormat("pt-BR",{weekday:"long",day:"2-digit",month:"long",timeZone:"America/Sao_Paulo"}).format(new Date())}}
 
-export default function ZonasAppClient({ session, onLeaveDev }: { session: Session; onLeaveDev?: () => void }) {
+export default function ZonasAppClient({ session, onLeaveDev, visitando }: { session: Session; onLeaveDev?: () => void; visitando?: { name: string; email: string } | null }) {
   const [active, setActive] = useState("Painel");
   const [mobileMenu, setMobileMenu] = useState(false);
   const coachInitials = initialsOf(session.name);
@@ -385,6 +385,10 @@ export default function ZonasAppClient({ session, onLeaveDev }: { session: Sessi
         <div className="coach"><b>{coachInitials}</b><span><strong>{session.name}</strong><small>Treinador</small></span></div>
       </aside>
 
+      {visitando && <div className="dev-visiting-banner">
+        <span>Você está na área de <b>{visitando.name}</b> · {visitando.email}</span>
+        {onLeaveDev && <button onClick={onLeaveDev}>Voltar ao diagnóstico</button>}
+      </div>}
       {mobileMenu && <div className="coach-more-sheet" onClick={() => setMobileMenu(false)}>
         <section onClick={event => event.stopPropagation()}>
           <header><b>Outras seções</b><button aria-label="Fechar" onClick={() => setMobileMenu(false)}>×</button></header>
