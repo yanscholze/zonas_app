@@ -46,3 +46,9 @@ next-env.d.ts
 
 # cache incremental do TypeScript
 *.tsbuildinfo
+
+# skills instaladas no ambiente de desenvolvimento (npx skills add).
+# São ferramenta de quem edita o projeto, não parte do produto entregue.
+.agents/
+.claude/skills/
+skills-lock.json
