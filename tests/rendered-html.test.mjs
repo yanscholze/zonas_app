@@ -2105,7 +2105,7 @@ test("blames the right side when a stored token cannot be read", async () => {
   const client = await readFile(new URL("../app/api-client.ts", import.meta.url), "utf8");
   // Token que não decifra é problema desta instalação — a chave mudou —, não do
   // Strava. Reportar "falha no Strava" mandaria quem investiga para o lado errado.
-  assert.match(worker, /if \(!accessToken\) return \{ imported: 0, error: "token_unreadable" \};/);
+  assert.match(worker, /if \(!acesso\) return \{ erro: "token_unreadable" \};/);
   assert.match(client, /token_unreadable: "A autorização guardada não pode mais ser lida/);
   assert.match(client, /refresh_failed: "A autorização expirou e não pôde ser renovada/);
 });
@@ -2140,4 +2140,85 @@ test("never shows a connection as live when the service lost its credentials", a
   assert.match(worker, /const conexaoUtil = conexao && !pronto/);
   assert.match(worker, /status: "Suspensa", reason: "provider_not_configured"/);
   assert.match(client, /CONEXÃO SUSPENSA/);
+});
+
+/* -------------------------------------------------------------------------- *
+ * Integrações completas — webhook, importação genérica e envio de treino
+ * -------------------------------------------------------------------------- */
+
+test("answers the Strava subscription handshake and refuses a wrong token", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // O Strava valida a inscrição devolvendo `hub.challenge`; sem conferir o
+  // token combinado, qualquer um poderia inscrever um endpoint nosso.
+  assert.match(worker, /async function stravaWebhookApi/);
+  assert.match(worker, /"hub\.challenge": desafio/);
+  assert.match(worker, /token !== env\.STRAVA_WEBHOOK_VERIFY_TOKEN/);
+  // O evento diz de quem é a atividade pelo id do atleta no Strava.
+  assert.match(worker, /external_athlete_id = \? AND status = 'Conectado'/);
+  // Exclusão no Strava tira a atividade daqui também.
+  assert.match(worker, /evento\.aspect_type === "delete"/);
+  // A resposta sai antes do trabalho: o Strava reenvia se demorar.
+  assert.match(worker, /ctx\.waitUntil/);
+});
+
+test("shares one import path between the providers that have a list endpoint", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const integrations = await readFile(new URL("../worker/integrations.ts", import.meta.url), "utf8");
+  // A renovação de token vale para qualquer OAuth2, não só para o Strava.
+  assert.match(worker, /async function tokenValidoDe/);
+  assert.match(worker, /grant_type: "refresh_token"/);
+  assert.doesNotMatch(worker, /async function syncStravaActivities/);
+  assert.match(worker, /async function importarAtividades/);
+  // Cada provedor declara o próprio endpoint; quem não tem, não finge ter.
+  assert.match(integrations, /activitiesUrl: "https:\/\/www\.strava\.com\/api\/v3\/athlete\/activities"/);
+  assert.match(integrations, /activitiesUrl: "https:\/\/apis\.garmin\.com\/wellness-api\/rest\/activities"/);
+  assert.match(worker, /if \(!provider\.activitiesUrl\)/);
+});
+
+test("does not invent an API where the provider has none", async () => {
+  const integrations = await readFile(new URL("../worker/integrations.ts", import.meta.url), "utf8");
+  // O Zepp só expõe publicamente o SDK do relógio e uma API interna do
+  // aplicativo. Usar a segunda quebraria os termos e poria a conta do atleta
+  // em risco, então a importação passa pelo Strava.
+  assert.match(integrations, /id: "zepp"[\s\S]*?activitiesUrl: null/);
+  assert.match(integrations, /id: "zepp"[\s\S]*?canImportActivities: false/);
+  assert.match(integrations, /O caminho oficial é o Zepp enviar ao Strava/);
+  assert.doesNotMatch(integrations, /huami\.com\/v1\/sport/);
+  // A Apple também não tem endpoint de servidor: entra pelo Atalho do iOS.
+  assert.match(integrations, /id: "apple"[\s\S]*?activitiesUrl: null/);
+});
+
+test("translates a session into a Garmin workout", async () => {
+  const { execSync } = await import("node:child_process");
+  const saida = execSync(
+    `npx tsx -e "import {toGarminWorkout} from './worker/integrations.ts';` +
+    `console.log(JSON.stringify(toGarminWorkout('Intervalado','Limiar',[` +
+    `{kind:'simple',label:'Aquecimento',minutes:10,zone:'Z1'},` +
+    `{kind:'repeat',label:'Série',repetitions:3,effortMinutes:3,effortZone:'Z4',recoveryMinutes:2,recoveryZone:'Z1'},` +
+    `{kind:'simple',label:'Desaquecimento',minutes:8,zone:'Z1'}])))"`,
+    { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8", timeout: 180000 },
+  );
+  const w = JSON.parse(saida.trim().split("\n").pop());
+  // A repetição é expandida em passos, para o treino ficar legível no relógio.
+  assert.equal(w.steps.length, 8);
+  assert.equal(w.sport, "RUNNING");
+  assert.equal(w.steps[0].intensity, "WARMUP");
+  // "desaquecimento" contém "aquec": sem cuidado, o treino terminava marcado
+  // como aquecimento.
+  assert.equal(w.steps[w.steps.length - 1].intensity, "COOLDOWN");
+  assert.equal(w.steps[0].durationValue, 600);
+  assert.equal(w.steps[0].durationValueType, "SECOND");
+  assert.ok(w.steps.some((p) => p.intensity === "RECOVERY"));
+});
+
+test("refuses to send a Garmin workout until the program is approved", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // O endereço da Training API só vem no material que o Garmin entrega ao
+  // aprovar a conta. Inventar uma URL faria a integração parecer pronta.
+  assert.match(worker, /if \(env\.GARMIN_TRAINING_API_ENABLED !== "true"\) return \{ enviado: false, erro: "training_api_not_enabled" \};/);
+  assert.match(worker, /if \(!env\.GARMIN_TRAINING_API_URL\) return \{ enviado: false, erro: "training_api_url_missing" \};/);
+  assert.doesNotMatch(worker, /https:\/\/apis\.garmin\.com\/training-api/);
+  // O resto do caminho está pronto e passa a valer no dia da aprovação.
+  assert.match(worker, /const treino = toGarminWorkout\(/);
+  assert.match(worker, /action === "send_workout"/);
 });

@@ -27,6 +27,7 @@ import {
 } from "./auth";
 import {
   PROVIDERS,
+  toGarminWorkout,
   SUPPORTED_PROVIDER_LABELS,
   averagePaceSeconds,
   normalizeActivity,
@@ -49,10 +50,12 @@ interface Env {
   STRAVA_CLIENT_ID?: string;
   STRAVA_CLIENT_SECRET?: string;
   STRAVA_TOKEN_ENCRYPTION_KEY?: string;
+  STRAVA_WEBHOOK_VERIFY_TOKEN?: string;
   GARMIN_CONSUMER_KEY?: string;
   GARMIN_CONSUMER_SECRET?: string;
   GARMIN_ACTIVITY_API_ENABLED?: string;
   GARMIN_TRAINING_API_ENABLED?: string;
+  GARMIN_TRAINING_API_URL?: string;
   ZEPP_APP_ID?: string;
   ZEPP_APP_SECRET?: string;
   ZEPP_WEBHOOK_SECRET?: string;
@@ -106,7 +109,8 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/auth/register": new Set(["name","email","password"]),
   "/api/auth/password": new Set(["currentPassword","newPassword"]),
   "/api/accounts": new Set(["action","email","name","athleteName","password"]),
-  "/api/integrations": new Set(["action","provider","athleteName","payload"]),
+  "/api/integrations": new Set(["action","provider","athleteName","payload","weekStart","workoutDay"]),
+  "/api/integrations/strava/subscription": new Set(["action","id"]),
   "/api/dev/coaches": new Set(["action","email","name","password"]),
   "/api/student/integrations": new Set(["action","provider"]),
 };
@@ -1781,63 +1785,226 @@ async function storeActivity(env: Env, athleteName: string, provider: ProviderId
 }
 
 /**
- * Importa as atividades recentes do Strava. É o único provedor com importação
- * ativa hoje; Garmin e Zepp entram por webhook assim que forem liberados.
+ * Garante um token de acesso válido, renovando quando falta pouco para expirar.
+ *
+ * A renovação acontece no servidor e o token novo volta cifrado para o banco —
+ * o navegador nunca vê nenhum dos dois. Vale para qualquer provedor OAuth2,
+ * porque todos seguem o mesmo `refresh_token` grant.
  */
-async function syncStravaActivities(env: Env, athleteName: string): Promise<{ imported: number; error?: string }> {
-  if (!env.STRAVA_TOKEN_ENCRYPTION_KEY || !env.STRAVA_CLIENT_ID || !env.STRAVA_CLIENT_SECRET) {
-    return { imported: 0, error: "provider_setup_required" };
-  }
+async function tokenValidoDe(
+  env: Env, provider: ProviderDefinition, athleteName: string,
+): Promise<{ token: string } | { erro: string }> {
+  if (!env.STRAVA_TOKEN_ENCRYPTION_KEY) return { erro: "provider_setup_required" };
+  const { clientId, clientSecret } = providerCredentials(env, provider);
+  if (!clientId || !clientSecret || !provider.tokenUrl) return { erro: "provider_setup_required" };
+
   const row = await env.DB.prepare(
-    "SELECT access_token_encrypted, refresh_token_encrypted, expires_at FROM external_integrations WHERE athlete_name = ? AND provider = 'Strava' LIMIT 1",
-  ).bind(athleteName).first() as { access_token_encrypted?: string; refresh_token_encrypted?: string; expires_at?: number } | null;
-  if (!row?.access_token_encrypted) return { imported: 0, error: "not_connected" };
+    "SELECT access_token_encrypted, refresh_token_encrypted, expires_at FROM external_integrations WHERE athlete_name = ? AND provider = ? AND status = 'Conectado' LIMIT 1",
+  ).bind(athleteName, provider.label).first() as { access_token_encrypted?: string; refresh_token_encrypted?: string; expires_at?: number } | null;
+  if (!row?.access_token_encrypted) return { erro: "not_connected" };
 
-  let accessToken = await decryptIntegrationToken(row.access_token_encrypted, env.STRAVA_TOKEN_ENCRYPTION_KEY);
-  // Token que não decifra é problema desta instalação, não do Strava: acontece
-  // quando a chave de cifra muda. Dizer "falha no Strava" mandaria quem for
-  // investigar para o lado errado; o caminho certo é o atleta reconectar.
-  if (!accessToken) return { imported: 0, error: "token_unreadable" };
+  const acesso = await decryptIntegrationToken(row.access_token_encrypted, env.STRAVA_TOKEN_ENCRYPTION_KEY);
+  // Token que não decifra é problema desta instalação — a chave mudou —, e não
+  // do provedor. Dizer o contrário mandaria quem investiga para o lado errado.
+  if (!acesso) return { erro: "token_unreadable" };
 
-  // Renova no servidor quando falta menos de um minuto para expirar.
-  if (Number(row.expires_at ?? 0) - Date.now() < 60_000 && row.refresh_token_encrypted) {
-    const refreshToken = await decryptIntegrationToken(row.refresh_token_encrypted, env.STRAVA_TOKEN_ENCRYPTION_KEY);
-    const refreshed = await fetch(PROVIDERS.strava.tokenUrl as string, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: env.STRAVA_CLIENT_ID,
-        client_secret: env.STRAVA_CLIENT_SECRET,
-        refresh_token: refreshToken,
-        grant_type: "refresh_token",
-      }),
-    });
-    if (!refreshed.ok) return { imported: 0, error: "refresh_failed" };
-    const token = await refreshed.json() as Record<string, unknown>;
-    accessToken = String(token.access_token ?? "");
-    await env.DB.prepare(
-      "UPDATE external_integrations SET access_token_encrypted = ?, refresh_token_encrypted = ?, expires_at = ?, updated_at = ? WHERE athlete_name = ? AND provider = 'Strava'",
-    ).bind(
-      await encryptIntegrationToken(accessToken, env.STRAVA_TOKEN_ENCRYPTION_KEY),
-      await encryptIntegrationToken(String(token.refresh_token ?? refreshToken), env.STRAVA_TOKEN_ENCRYPTION_KEY),
-      Number(token.expires_at ?? 0) * 1000, Date.now(), athleteName,
-    ).run();
+  // Renova com um minuto de folga: uma requisição que sai válida e chega
+  // expirada custa uma ida perdida ao provedor.
+  if (Number(row.expires_at ?? 0) - Date.now() >= 60_000) return { token: acesso };
+  if (!row.refresh_token_encrypted) return { erro: "refresh_failed" };
+
+  const renovacao = await decryptIntegrationToken(row.refresh_token_encrypted, env.STRAVA_TOKEN_ENCRYPTION_KEY);
+  if (!renovacao) return { erro: "token_unreadable" };
+
+  const resposta = await fetch(provider.tokenUrl, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ client_id: clientId, client_secret: clientSecret, refresh_token: renovacao, grant_type: "refresh_token" }),
+  });
+  if (!resposta.ok) return { erro: "refresh_failed" };
+  const token = await resposta.json() as Record<string, unknown>;
+  const novoAcesso = String(token.access_token ?? "");
+  if (!novoAcesso) return { erro: "refresh_failed" };
+
+  const expiraEm = Number(token.expires_at)
+    ? Number(token.expires_at) * 1000
+    : Date.now() + Number(token.expires_in ?? 21_600) * 1000;
+  await env.DB.prepare(
+    "UPDATE external_integrations SET access_token_encrypted = ?, refresh_token_encrypted = ?, expires_at = ?, updated_at = ? WHERE athlete_name = ? AND provider = ?",
+  ).bind(
+    await encryptIntegrationToken(novoAcesso, env.STRAVA_TOKEN_ENCRYPTION_KEY),
+    await encryptIntegrationToken(String(token.refresh_token ?? renovacao), env.STRAVA_TOKEN_ENCRYPTION_KEY),
+    expiraEm, Date.now(), athleteName, provider.label,
+  ).run();
+  return { token: novoAcesso };
+}
+
+/** Monta a consulta de período do jeito que cada provedor espera. */
+function periodoDaConsulta(provider: ProviderDefinition, desde: number, ate: number): URLSearchParams {
+  const params = new URLSearchParams();
+  if (provider.id === "strava") {
+    params.set("after", String(Math.floor(desde / 1000)));
+    params.set("per_page", "50");
+  }
+  if (provider.id === "garmin") {
+    // A Health API exige a janela nos dois extremos, em segundos.
+    params.set("uploadStartTimeInSeconds", String(Math.floor(desde / 1000)));
+    params.set("uploadEndTimeInSeconds", String(Math.floor(ate / 1000)));
+  }
+  return params;
+}
+
+/**
+ * Importa as atividades de um provedor e as grava normalizadas.
+ *
+ * Serve Strava e Garmin com o mesmo caminho: os dois expõem uma lista por
+ * período autenticada por Bearer. O que muda — nome dos parâmetros e formato de
+ * cada atividade — está no catálogo e em `normalizeActivity`.
+ */
+async function importarAtividades(
+  env: Env, provider: ProviderDefinition, athleteName: string, dias = 30,
+): Promise<{ imported: number; scanned: number; error?: string }> {
+  if (!provider.activitiesUrl) {
+    return { imported: 0, scanned: 0, error: "import_not_available" };
+  }
+  const credencial = await tokenValidoDe(env, provider, athleteName);
+  if ("erro" in credencial) return { imported: 0, scanned: 0, error: credencial.erro };
+
+  const ate = Date.now();
+  const desde = ate - dias * 86_400_000;
+  const consulta = periodoDaConsulta(provider, desde, ate);
+  const resposta = await fetch(`${provider.activitiesUrl}?${consulta.toString()}`, {
+    headers: { authorization: `Bearer ${credencial.token}`, accept: "application/json" },
+  });
+  if (!resposta.ok) {
+    return { imported: 0, scanned: 0, error: resposta.status === 401 ? "authorization_rejected" : "provider_request_failed" };
   }
 
-  const since = Math.floor((Date.now() - 30 * 86_400_000) / 1000);
-  const activities = await fetch(`https://www.strava.com/api/v3/athlete/activities?after=${since}&per_page=50`, {
-    headers: { authorization: `Bearer ${accessToken}` },
-  });
-  if (!activities.ok) return { imported: 0, error: "strava_request_failed" };
-  const list = await activities.json() as Record<string, unknown>[];
+  const corpo = await resposta.json() as unknown;
+  const lista = Array.isArray(corpo)
+    ? corpo
+    : Array.isArray((corpo as Record<string, unknown>)?.[provider.activitiesPath])
+      ? (corpo as Record<string, unknown[]>)[provider.activitiesPath]
+      : [];
 
   let imported = 0;
-  for (const raw of Array.isArray(list) ? list.slice(0, 50) : []) {
-    if (await storeActivity(env, athleteName, "strava", raw)) imported += 1;
+  for (const bruta of lista.slice(0, 100)) {
+    if (bruta && typeof bruta === "object" && await storeActivity(env, athleteName, provider.id, bruta as Record<string, unknown>)) {
+      imported += 1;
+    }
   }
-  await env.DB.prepare("UPDATE external_integrations SET last_sync_at = ?, updated_at = ? WHERE athlete_name = ? AND provider = 'Strava'")
-    .bind(Date.now(), Date.now(), athleteName).run();
-  return { imported };
+  const agora = Date.now();
+  await env.DB.prepare("UPDATE external_integrations SET last_sync_at = ?, updated_at = ? WHERE athlete_name = ? AND provider = ?")
+    .bind(agora, agora, athleteName, provider.label).run();
+  return { imported, scanned: lista.length };
+}
+
+
+/**
+ * Webhook do Strava.
+ *
+ * Sem ele a atividade só entra quando alguém aperta "sincronizar". Com ele, o
+ * Strava avisa assim que o atleta termina o treino, e o resultado aparece para
+ * ele e para o treinador sem ninguém pedir.
+ *
+ * O Strava valida a inscrição com um GET portando `hub.challenge`, que precisa
+ * ser devolvido tal como veio, e depois entrega os eventos por POST.
+ */
+async function stravaWebhookApi(request: Request, url: URL, env: Env, ctx: ExecutionContext): Promise<Response> {
+  // Verificação da inscrição.
+  if (request.method === "GET") {
+    const modo = url.searchParams.get("hub.mode");
+    const token = url.searchParams.get("hub.verify_token");
+    const desafio = url.searchParams.get("hub.challenge");
+    if (modo !== "subscribe" || !desafio) return Response.json({ error: "invalid_subscription" }, { status: 400 });
+    // Sem o token combinado, qualquer um poderia inscrever um endpoint nosso.
+    if (!env.STRAVA_WEBHOOK_VERIFY_TOKEN || token !== env.STRAVA_WEBHOOK_VERIFY_TOKEN) {
+      return Response.json({ error: "invalid_verify_token" }, { status: 403 });
+    }
+    return Response.json({ "hub.challenge": desafio });
+  }
+
+  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+
+  const evento = await request.json().catch(() => null) as {
+    object_type?: string; object_id?: number; aspect_type?: string; owner_id?: number;
+  } | null;
+  // O Strava reenvia o evento se não receber 200 rápido, então a resposta sai
+  // antes do trabalho e a importação segue em segundo plano.
+  if (!evento?.owner_id || evento.object_type !== "activity") return Response.json({ received: true });
+
+  ctx.waitUntil((async () => {
+    try {
+      await ensureIntegrationTables(env);
+      // O evento identifica o atleta pelo id dele no Strava, que guardamos na
+      // conexão — é esse vínculo que diz de quem é a atividade.
+      const vinculo = await env.DB.prepare(
+        "SELECT athlete_name FROM external_integrations WHERE provider = 'Strava' AND external_athlete_id = ? AND status = 'Conectado' LIMIT 1",
+      ).bind(String(evento.owner_id)).first() as { athlete_name?: string } | null;
+      if (!vinculo?.athlete_name) return;
+
+      if (evento.aspect_type === "delete") {
+        await env.DB.prepare("DELETE FROM external_activities WHERE provider = 'Strava' AND external_activity_id = ?")
+          .bind(String(evento.object_id)).run();
+        return;
+      }
+      // Criação ou atualização: reimporta a janela curta, que já cobre o
+      // treino recém-terminado e é idempotente por causa do INSERT OR IGNORE.
+      await importarAtividades(env, PROVIDERS.strava, vinculo.athlete_name, 2);
+    } catch (erro) {
+      await recordApplicationError(env, request, "webhook do Strava", "strava_webhook_failed", 500);
+      void erro;
+    }
+  })());
+
+  return Response.json({ received: true });
+}
+
+/**
+ * Inscreve ou remove o webhook do Strava. Ação do treinador, feita uma vez por
+ * instalação — o Strava aceita uma inscrição por aplicativo.
+ */
+async function stravaSubscriptionApi(request: Request, url: URL, env: Env): Promise<Response> {
+  if (!env.STRAVA_CLIENT_ID || !env.STRAVA_CLIENT_SECRET) {
+    return Response.json({ error: "provider_setup_required", missing: ["STRAVA_CLIENT_ID", "STRAVA_CLIENT_SECRET"] }, { status: 503 });
+  }
+  if (!env.STRAVA_WEBHOOK_VERIFY_TOKEN) {
+    return Response.json({ error: "webhook_token_required", missing: ["STRAVA_WEBHOOK_VERIFY_TOKEN"] }, { status: 503 });
+  }
+  const base = "https://www.strava.com/api/v3/push_subscriptions";
+  const credenciais = { client_id: env.STRAVA_CLIENT_ID, client_secret: env.STRAVA_CLIENT_SECRET };
+
+  if (request.method === "GET") {
+    const r = await fetch(`${base}?${new URLSearchParams(credenciais).toString()}`);
+    const corpo = await r.json().catch(() => []);
+    return Response.json({ subscriptions: corpo, callbackUrl: `${url.origin}/api/integrations/strava/webhook` });
+  }
+  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+
+  const input = await request.json() as Record<string, unknown>;
+  const acao = boundedText(input.action, 20) || "subscribe";
+
+  if (acao === "unsubscribe") {
+    const id = boundedText(input.id, 40);
+    if (!id) return Response.json({ error: "subscription_required" }, { status: 400 });
+    const r = await fetch(`${base}/${encodeURIComponent(id)}?${new URLSearchParams(credenciais).toString()}`, { method: "DELETE" });
+    return Response.json({ removed: r.ok }, { status: r.ok ? 200 : 502 });
+  }
+
+  const r = await fetch(base, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      ...credenciais,
+      callback_url: `${url.origin}/api/integrations/strava/webhook`,
+      verify_token: env.STRAVA_WEBHOOK_VERIFY_TOKEN,
+    }),
+  });
+  const corpo = await r.json().catch(() => ({}));
+  // O Strava precisa alcançar o callback pela internet para validar: em
+  // desenvolvimento local a inscrição falha, e isso não é defeito do código.
+  if (!r.ok) return Response.json({ error: "subscription_refused", detail: corpo }, { status: 502 });
+  return Response.json({ subscribed: true, subscription: corpo });
 }
 
 /* --- Apple Saúde: token de ingestão para o Atalho do iOS ------------------- */
@@ -1947,11 +2114,11 @@ async function studentIntegrationsApi(request: Request, env: Env, athleteName: s
   }
 
   if (action === "sync") {
-    if (provider.id !== "strava") {
+    if (!provider.activitiesUrl) {
       return Response.json({ error: "sync_not_available", provider: provider.id, reason: provider.notes }, { status: 409 });
     }
-    const result = await syncStravaActivities(env, athleteName);
-    if (result.error) return Response.json({ error: result.error }, { status: 409 });
+    const result = await importarAtividades(env, provider, athleteName);
+    if (result.error) return Response.json({ error: result.error, provider: provider.id }, { status: 409 });
     return Response.json(result);
   }
 
@@ -1972,6 +2139,61 @@ async function studentIntegrationsApi(request: Request, env: Env, athleteName: s
   }
 
   return Response.json({ error: "unknown_action" }, { status: 400 });
+}
+
+
+/**
+ * Envia um treino da semana liberada para o Garmin Connect do atleta.
+ *
+ * O endereço da Training API não está em documentação pública — ele vem no
+ * material que o Garmin entrega quando aprova a conta no Developer Program.
+ * Por isso o endpoint é uma variável de ambiente: inventar uma URL aqui daria a
+ * impressão de que a integração está pronta quando ela ainda não pode funcionar.
+ * Todo o resto — autorização, renovação de token, tradução do treino e registro
+ * do envio — já está feito e passa a valer no dia em que a variável existir.
+ */
+async function enviarTreinoParaGarmin(
+  env: Env, athleteName: string, weekStart: string, workoutDay: string, actorEmail: string,
+): Promise<{ enviado: boolean; erro?: string; detalhe?: unknown }> {
+  const provider = PROVIDERS.garmin;
+  if (!providerIsReady(env, provider)) return { enviado: false, erro: "provider_setup_required" };
+  if (env.GARMIN_TRAINING_API_ENABLED !== "true") return { enviado: false, erro: "training_api_not_enabled" };
+  if (!env.GARMIN_TRAINING_API_URL) return { enviado: false, erro: "training_api_url_missing" };
+
+  const semana = await env.DB.prepare(
+    "SELECT sessions, plan, week_label FROM training_weeks WHERE athlete_name = ? AND week_start = ? AND status = 'Liberada' LIMIT 1",
+  ).bind(athleteName, weekStart).first() as { sessions?: string; plan?: string; week_label?: string } | null;
+  if (!semana?.sessions) return { enviado: false, erro: "released_workout_not_found" };
+
+  let sessao: Record<string, unknown> | undefined;
+  try { sessao = (JSON.parse(semana.sessions) as Record<string, Record<string, unknown>>)[workoutDay]; }
+  catch { return { enviado: false, erro: "invalid_workout_plan" }; }
+  if (!sessao || sessao.removed) return { enviado: false, erro: "planned_session_not_found" };
+
+  const etapas = Array.isArray(sessao.steps) ? sessao.steps as Array<Record<string, unknown>> : [];
+  if (!etapas.length) return { enviado: false, erro: "workout_without_steps" };
+
+  const credencial = await tokenValidoDe(env, provider, athleteName);
+  if ("erro" in credencial) return { enviado: false, erro: credencial.erro };
+
+  const treino = toGarminWorkout(
+    String(sessao.title ?? sessao.type ?? "Treino"),
+    `${semana.plan ?? ""} · ${semana.week_label ?? ""} · ${workoutDay}`.trim(),
+    etapas,
+  );
+
+  const resposta = await fetch(env.GARMIN_TRAINING_API_URL, {
+    method: "POST",
+    headers: { authorization: `Bearer ${credencial.token}`, "content-type": "application/json" },
+    body: JSON.stringify(treino),
+  });
+  const detalhe = await resposta.json().catch(() => ({}));
+  if (!resposta.ok) return { enviado: false, erro: "training_api_rejected", detalhe };
+
+  await ensureTables(env, schema.securityEvents);
+  await env.DB.prepare("INSERT INTO security_events (id, actor_email, event_type, route, details, created_at) VALUES (?, ?, 'Treino enviado ao Garmin', '/api/integrations', ?, ?)")
+    .bind(crypto.randomUUID(), actorEmail, `${athleteName} · ${weekStart} · ${workoutDay}`, Date.now()).run();
+  return { enviado: true, detalhe };
 }
 
 /** Visão do treinador: quem conectou o quê, e o que ainda depende de cadastro. */
@@ -2008,6 +2230,27 @@ async function integrationsCoachApi(request: Request, env: Env): Promise<Respons
   const action = boundedText(input.action, 20);
   const provider = providerById(boundedText(input.provider, 20));
   const athleteName = boundedText(input.athleteName, 120);
+
+  // Enviar o treino ao relógio: hoje só a Garmin recebe treino planejado.
+  if (action === "send_workout") {
+    const weekStart = boundedText(input.weekStart, 10);
+    const workoutDay = boundedText(input.workoutDay, 12);
+    if (!athleteName || !isIsoDate(weekStart) || !workoutDay) {
+      return Response.json({ error: "workout_reference_required" }, { status: 400 });
+    }
+    const resultado = await enviarTreinoParaGarmin(env, athleteName, weekStart, workoutDay, normalizedAuthenticatedEmail(request) ?? "sistema");
+    if (!resultado.enviado) return Response.json({ error: resultado.erro, detail: resultado.detalhe }, { status: 409 });
+    return Response.json({ sent: true });
+  }
+
+  // Importar por ordem do treinador, sem depender de o atleta abrir o app.
+  if (action === "sync") {
+    if (!provider || !athleteName) return Response.json({ error: "unknown_action" }, { status: 400 });
+    const resultado = await importarAtividades(env, provider, athleteName);
+    if (resultado.error) return Response.json({ error: resultado.error, provider: provider.id }, { status: 409 });
+    return Response.json(resultado);
+  }
+
   if (action !== "disconnect" || !provider || !athleteName) {
     return Response.json({ error: "unknown_action" }, { status: 400 });
   }
@@ -2304,6 +2547,13 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
       catch { return await applicationFailure(env, request, "sessão", "database_unavailable"); }
     }
 
+    // Chamado pelo Strava, não pelo navegador: autentica-se pelo token de
+    // verificação combinado, não por sessão.
+    if (url.pathname === "/api/integrations/strava/webhook") {
+      try { return await stravaWebhookApi(request, url, env, ctx); }
+      catch { return await applicationFailure(env, request, "webhook do Strava", "strava_webhook_failed"); }
+    }
+
     if (url.pathname.startsWith("/api/integrations/callback/")) {
       try { return await integrationCallbackApi(request, url, env, url.pathname.split("/").pop() || ""); }
       catch { return await applicationFailure(env, request, "conexão com o aplicativo", "integration_connection_failed"); }
@@ -2374,6 +2624,11 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
       if (negado) return negado;
       try { return await devOverviewApi(request, env); }
       catch { return await applicationFailure(env, request, "diagnóstico", "dev_overview_unavailable"); }
+    }
+
+    if (url.pathname === "/api/integrations/strava/subscription") {
+      try { return await stravaSubscriptionApi(request, url, env); }
+      catch { return await applicationFailure(env, request, "inscrição do Strava", "strava_subscription_failed"); }
     }
 
     if (url.pathname === "/api/integrations") {

@@ -16,13 +16,19 @@ DEV_INITIAL_PASSWORD=
 # Cifra os tokens de TODOS os provedores, não só os do Strava.
 STRAVA_CLIENT_ID=
 STRAVA_CLIENT_SECRET=
+# Segredo que o Strava devolve ao validar o webhook. Escolha qualquer texto.
+STRAVA_WEBHOOK_VERIFY_TOKEN=
 STRAVA_TOKEN_ENCRYPTION_KEY=
 
 GARMIN_CONSUMER_KEY=
 GARMIN_CONSUMER_SECRET=
 GARMIN_ACTIVITY_API_ENABLED=false
 GARMIN_TRAINING_API_ENABLED=false
+# Endereço da Training API, entregue pelo Garmin ao aprovar a conta.
+GARMIN_TRAINING_API_URL=
 
+# O Zepp não tem API pública de leitura: as corridas chegam via Strava.
+# Estas variáveis existem para o dia em que houver um caminho oficial.
 ZEPP_APP_ID=
 ZEPP_APP_SECRET=
 ZEPP_WEBHOOK_SECRET=

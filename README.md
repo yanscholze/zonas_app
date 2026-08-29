@@ -243,23 +243,53 @@ tempo, frequência cardíaca e ritmo médio — e já chegam ligadas à semana e
 do treino planejado. A gravação é idempotente: reenviar a mesma atividade não a
 duplica.
 
-### Dependências externas
+### O que falta em cada integração
 
-O que falta para cada integração sair do papel não é código:
+O código das quatro está pronto. O que resta são cadastros e uma aprovação —
+mais o passo que só o atleta pode dar: autorizar o acesso à conta dele.
 
-| Serviço | Depende de | Situação |
+| Serviço | Falta para funcionar | De quem depende |
 | --- | --- | --- |
-| Strava | Cadastrar o aplicativo no portal do Strava e preencher `STRAVA_CLIENT_ID` e `STRAVA_CLIENT_SECRET` | Só isso |
-| Apple Saúde | Nada externo — funciona com `STRAVA_TOKEN_ENCRYPTION_KEY` definida | Pronta |
-| Garmin | **Aprovação no Garmin Connect Developer Program**, mais `GARMIN_CONSUMER_KEY`/`SECRET` e o aval das APIs Activity e Training | Fora do nosso controle |
-| Amazfit / Zepp | Confirmar no portal Zepp quais recursos a conta tem, mais `ZEPP_APP_ID`/`SECRET` | Depende do que a conta libera |
+| **Strava** | Cadastrar o aplicativo no portal e preencher `STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET` e `STRAVA_WEBHOOK_VERIFY_TOKEN` | Do treinador, em minutos |
+| **Apple Saúde** | Nada. Basta `STRAVA_TOKEN_ENCRYPTION_KEY` definida | Pronta |
+| **Garmin** | Aprovação no Garmin Connect Developer Program; depois `GARMIN_CONSUMER_KEY`/`SECRET`, e para enviar treinos também `GARMIN_TRAINING_API_URL` e `GARMIN_TRAINING_API_ENABLED=true` | Do Garmin |
+| **Amazfit / Zepp** | Não há caminho direto — ver abaixo | — |
 
-Enquanto as variáveis de um provedor não existem, ele aparece como
-"Credenciais não configuradas" e a tentativa de conectar responde
-`503 provider_setup_required` dizendo quais faltam — em vez de abrir um fluxo
-que morreria no meio.
+Em todos os casos, o último passo é do atleta: entrar em *Mais → Integrações* e
+autorizar. Sem essa autorização não existe token, e sem token não há importação.
 
-### Apple Saúde
+#### Strava
+
+Fluxo completo: OAuth2, renovação de token no servidor, importação por período e
+**webhook**. Com o webhook inscrito, a atividade entra sozinha assim que o
+atleta termina o treino — sem ninguém apertar "sincronizar". A inscrição é feita
+uma vez por `POST /api/integrations/strava/subscription`, e o Strava precisa
+alcançar o endereço público da aplicação para validá-la: em desenvolvimento
+local ela falha, e isso é esperado.
+
+#### Garmin
+
+Autorização com PKCE, renovação de token, importação pela Activity API e
+tradução do treino da Zonas-App para o formato de treino estruturado da Garmin
+— tudo implementado e testado. O envio fica bloqueado até existir
+`GARMIN_TRAINING_API_URL`, porque **o endereço da Training API não é público**:
+vem no material que o Garmin entrega ao aprovar a conta. Preferimos deixar isso
+explícito a inventar uma URL e dar a impressão de que a integração está pronta.
+
+#### Amazfit / Zepp
+
+Não existe API pública de leitura de atividades. O que o Zepp publica é o SDK
+para aplicativos que rodam no relógio; a API que o aplicativo usa é interna e só
+seria alcançável por engenharia reversa, o que quebraria os termos de uso e
+poria em risco a conta do atleta.
+
+O caminho oficial é indireto e já funciona: **o Zepp exporta para o Strava**, e
+a Zonas-App importa do Strava. O atleta liga Zepp → Strava uma vez no aplicativo
+do relógio, e as corridas passam a chegar. Por isso o Zepp aparece na interface
+sem importação própria, com essa explicação, em vez de um botão que não levaria
+a lugar nenhum.
+
+### Apple Saúde### Apple Saúde
 
 O HealthKit só existe dentro do iPhone e não tem API que um servidor possa
 chamar. Por isso a Apple não usa OAuth aqui: o atleta gera um token de ingestão
