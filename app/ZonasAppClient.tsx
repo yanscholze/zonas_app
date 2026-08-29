@@ -228,7 +228,7 @@ const phases = ["Todas", "Adaptação", "Base", "Desenvolvimento", "Específica"
 const planNames = ["Todas","Iniciantes","5 km Bronze","5 km Prata","5 km Ouro","5 km Elite","10 km Lion","Meia Start","Meia Finish","One Marathon","Full Marathon"];
 const defaultPlanForDistance = (distance:string) => distance === "Iniciantes" ? "Iniciantes" : distance === "5 km" ? "5 km Bronze" : distance === "10 km" ? "10 km Lion" : distance === "Meia" ? "Meia Start" : distance === "Maratona" ? "One Marathon" : "Sem base";
 const athletePlan = (athlete:Athlete) => athlete.plan || defaultPlanForDistance(athlete.distance);
-const nav = ["Painel", "Cadastros", "Alunos", "Calendário", "Planilhas", "Testes e zonas", "Lesões", "Provas", "Financeiro", "Integrações", "Contas", "Segurança"];
+const nav = ["Painel", "Cadastros", "Alunos", "Calendário", "Planilhas", "Testes e zonas", "Provas", "Financeiro", "Integrações", "Contas", "Segurança"];
 
 /** Um provedor de integração como a área do aluno o exibe. */
 type ProviderCard = {
@@ -260,7 +260,7 @@ function greeting(): string {
 
 /** No celular a barra inferior mostra apenas os quatro primeiros itens de `nav`. */
 const MOBILE_VISIBLE_NAV = 4;
-const navIcon = (item: string) => item === "Painel" ? "⌂" : item === "Alunos" ? "◉" : item === "Calendário" ? "□" : item === "Planilhas" ? "▤" : item === "Provas" ? "⚑" : item === "Financeiro" ? "$" : item === "Lesões" ? "♡" : item === "Integrações" ? "⌚" : item === "Contas" ? "☰" : item === "Segurança" ? "◇" : "↗";
+const navIcon = (item: string) => item === "Painel" ? "⌂" : item === "Alunos" ? "◉" : item === "Calendário" ? "□" : item === "Planilhas" ? "▤" : item === "Provas" ? "⚑" : item === "Financeiro" ? "$" : item === "Integrações" ? "⌚" : item === "Contas" ? "☰" : item === "Segurança" ? "◇" : "↗";
 
 function pace(seconds: number) {
   if (!Number.isFinite(seconds) || seconds <= 0) return "—";
@@ -298,6 +298,8 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
   const [seconds, setSeconds] = useState(0);
   const [age, setAge] = useState(30);
   const [selectedAthlete, setSelectedAthlete] = useState<Athlete | null>(null);
+  /** Lesão aberta para acompanhamento, venha do aviso ou da ficha do aluno. */
+  const [painCase, setPainCase] = useState<{ id: string; athleteName: string } | null>(null);
   const [newAthlete, setNewAthlete] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState<TrainingPlan | null>(null);
   const [athleteRecords, setAthleteRecords] = useState(athletes);
@@ -403,21 +405,21 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
 
       <main className="content">
         <header className="top"><div><small>{brazilCalendar().label.toUpperCase()}</small><h1>{active === "Painel" ? `${greeting()}, ${session.name.split(" ")[0]}` : active}</h1></div><div className="top-actions">{active === "Alunos" && <button className="gold" onClick={() => setNewAthlete(true)}>+ Novo aluno</button>}<button className="coach-alert-button" onClick={()=>setActive("Painel")} aria-label="Abrir avisos do professor">🔔 <b>{painReports.length+pendingRaces.filter(race=>race.status==="Aguardando análise").length+pendingTests.filter(test=>test.status!=="Aprovado").length+pendingAccess.length}</b><span>avisos</span></button>{onLeaveDev&&<button className="coach-signout" onClick={onLeaveDev}>← Diagnóstico</button>}<button className="coach-signout" onClick={()=>void signOut()} title={session.email}>Sair</button></div></header>
-        {active === "Painel" && <><MobileCoachHome go={setActive} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} coachName={session.name}/><CoachNotificationCenter go={setActive} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests} pendingAccess={pendingAccess}/><Dashboard go={setActive} chooseDistance={(d) => { setDistanceFilter(d); setActive("Alunos"); }} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests}/><PendingTestShortcut tests={pendingTests} open={()=>setActive("Testes e zonas")}/><WorkoutAccuracy/><TrainingFeedbacks/></>}
+        {active === "Painel" && <><MobileCoachHome go={setActive} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} coachName={session.name}/><CoachNotificationCenter go={setActive} openPain={setPainCase} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests} pendingAccess={pendingAccess}/><Dashboard go={setActive} chooseDistance={(d) => { setDistanceFilter(d); setActive("Alunos"); }} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests}/><PendingTestShortcut tests={pendingTests} open={()=>setActive("Testes e zonas")}/><WorkoutAccuracy/><TrainingFeedbacks/></>}
         {active === "Cadastros" && <><InviteLink/><AccessRequests onApproved={()=>{setPendingAccess(current=>current.slice(1));fetch("/api/athletes").then(r=>r.ok?r.json():{athletes:[]}).then(data=>{const saved=(data.athletes||[]).map((a:any)=>({name:a.name,initials:a.initials,distance:a.distance,plan:a.saved_plan||defaultPlanForDistance(a.distance),phase:a.planning_phase||a.phase,week:a.planning_week_number?`${a.planning_week_number} de ${a.planning_total_weeks}`:a.week,next:a.next_workout,flag:a.status||undefined}));setAthleteRecords(current=>[...saved,...current.filter(a=>!saved.some((s:Athlete)=>s.name===a.name))])})}}/></>} 
         {active === "Alunos" && <Athletes filtered={filtered} allAthletes={athleteRecords} distance={distanceFilter} phase={phaseFilter} plan={planFilter} setDistance={setDistanceFilter} setPhase={setPhaseFilter} setPlan={setPlanFilter} openProfile={setSelectedAthlete} situation={situationFilter} setSituation={setSituationFilter} counts={athleteCounts} onArchiveChange={()=>refreshAthleteRecords()} />}
         {active === "Testes e zonas" && <PendingTestCenter athletes={athleteRecords} openCalendar={(name)=>{sessionStorage.setItem("zonasapp:calendar-athlete",name);setActive("Calendário")}} />}
         {active === "Testes e zonas" && <TestCalculator athletes={athleteRecords} testDistance={testDistance} setTestDistance={setTestDistance} minutes={minutes} setMinutes={setMinutes} seconds={seconds} setSeconds={setSeconds} age={age} setAge={setAge} calc={calc} />}
         {active === "Calendário" && <Calendar />}
         {active === "Planilhas" && <PlanLibrary open={setSelectedTemplate} />}
-        {active === "Lesões" && <PainCenter athletes={athleteRecords} />}
         {active === "Provas" && <Races races={pendingRaces} onChange={setPendingRaces} />}
         {active === "Financeiro" && <><FinancialQuickSetup/><FinancialCenter /></>}
         {active === "Integrações" && <CoachIntegrations />}
         {active === "Contas" && <AccountsCenter athletes={athleteRecords} />}
         {active === "Segurança" && <><SecurityCenter /><ErrorMonitor /></>}
       </main>
-      {selectedAthlete && <AthleteProfile athlete={selectedAthlete} close={() => setSelectedAthlete(null)} />}
+      {selectedAthlete && <AthleteProfile athlete={selectedAthlete} close={() => setSelectedAthlete(null)} onOpenPain={id => setPainCase({ id, athleteName: selectedAthlete.name })} />}
+      {painCase && <PainCaseScreen reportId={painCase.id} athleteName={painCase.athleteName} close={() => { setPainCase(null); window.dispatchEvent(new Event("zonasapp:athletes-refresh")); }} />}
       {newAthlete && <NewAthlete close={() => setNewAthlete(false)} save={async (athlete, details) => { const response = await fetch("/api/athletes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...athlete, nextWorkout: athlete.next, status: athlete.flag, ...details }) }); if (!response.ok) throw new Error("save_failed");const totalWeeks=Number(athlete.week.match(/de (\d+)/)?.[1]||12);const planning=await fetch("/api/athlete-planning",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({athleteName:athlete.name,plan:athletePlan(athlete),phase:athlete.phase,weekNumber:1,totalWeeks})});if(!planning.ok)throw new Error("planning_failed"); setAthleteRecords(current => [athlete, ...current]); setNewAthlete(false); }} />}
       {selectedTemplate && <PlanDetails plan={selectedTemplate} close={()=>setSelectedTemplate(null)} />}
     </div>
@@ -579,14 +581,14 @@ function AccountsCenter({ athletes }: { athletes: Athlete[] }) {
 
 
 /**
- * Painel de dores e lesões.
+ * Acompanhamento de uma lesão.
  *
- * É uma área própria, e não um cartão dentro do painel geral, porque
- * acompanhar uma queixa é trabalho: escolher o caso, ler o que já houve,
- * registrar o que aconteceu e mudar a situação. Lista à esquerda, caso aberto à
- * direita — o treinador percorre vários sem perder o lugar.
+ * Uma queixa não é um assunto solto: ela pertence a um atleta e só faz sentido
+ * ao lado da ficha dele. Por isso não há seção própria — a tela abre a partir
+ * do aviso no painel ou de dentro do aluno, e some quando o caso é encerrado,
+ * ficando no histórico dele.
  */
-function PainCenter({ athletes }: { athletes: Athlete[] }) {
+function PainCaseScreen({ reportId, athleteName, close }: { reportId: string; athleteName: string; close: () => void }) {
   type Relato = {
     id: string; athlete_name: string; body_area: string; intensity: number;
     training_impact: string; note?: string; status: string; created_at: number;
@@ -597,215 +599,189 @@ function PainCenter({ athletes }: { athletes: Athlete[] }) {
 
   const SITUACOES = ["Novo", "Em análise", "Verificado", "Resolvido"] as const;
 
-  const [relatos, setRelatos] = useState<Relato[]>([]);
-  const [selecionado, setSelecionado] = useState<string>("");
+  const [caso, setCaso] = useState<Relato | null>(null);
   const [historico, setHistorico] = useState<Movimento[]>([]);
   const [semanas, setSemanas] = useState<Array<{ week_start: string; week_label: string; status: string }>>([]);
   const [relato, setRelato] = useState("");
-  const [situacao, setSituacao] = useState<string>("");
+  const [situacao, setSituacao] = useState("");
   const [semana, setSemana] = useState("");
   const [estado, setEstado] = useState<"carregando" | "pronto" | "salvando">("carregando");
   const [erro, setErro] = useState("");
   const [aviso, setAviso] = useState("");
-  const [filtro, setFiltro] = useState<"Abertos" | "Todos" | "Resolvidos">("Abertos");
 
-  const carregar = (manter = "") => api.get<{ reports: Relato[] }>("/api/pain-reports")
-    .then(d => {
-      const lista = d.reports || [];
-      setRelatos(lista);
+  const carregar = async () => {
+    try {
+      const [detalhe, doAluno] = await Promise.all([
+        api.get<{ report: Relato; history: Movimento[] }>(`/api/pain-reports?id=${encodeURIComponent(reportId)}`),
+        api.get<{ weeks: Array<{ week_start: string; week_label: string; status: string }> }>(
+          `/api/training-weeks?athlete=${encodeURIComponent(athleteName)}`).catch(() => ({ weeks: [] })),
+      ]);
+      setCaso(detalhe.report);
+      setSituacao(detalhe.report.status);
+      setHistorico(detalhe.history || []);
+      setSemanas(doAluno.weeks || []);
       setEstado("pronto");
-      if (manter) {
-        const atual = lista.find(r => r.id === manter);
-        if (atual) setSituacao(atual.status);
-      }
-    })
-    .catch(error => { setErro(describeError(error)); setEstado("pronto"); });
-  useEffect(() => { carregar(); }, []);
-
-  const abrirCaso = async (r: Relato) => {
-    setSelecionado(r.id); setRelato(""); setSituacao(r.status); setSemana(""); setErro(""); setAviso("");
-    const [detalhe, doAluno] = await Promise.all([
-      api.get<{ history: Movimento[] }>(`/api/pain-reports?id=${encodeURIComponent(r.id)}`).catch(() => ({ history: [] })),
-      api.get<{ weeks: Array<{ week_start: string; week_label: string; status: string }> }>(
-        `/api/training-weeks?athlete=${encodeURIComponent(r.athlete_name)}`).catch(() => ({ weeks: [] })),
-    ]);
-    setHistorico(detalhe.history || []);
-    setSemanas(doAluno.weeks || []);
+    } catch (error) { setErro(describeError(error)); setEstado("pronto"); }
   };
+  useEffect(() => { void carregar(); }, [reportId]);
 
-  const recarregarHistorico = async (id: string) => {
-    const d = await api.get<{ history: Movimento[] }>(`/api/pain-reports?id=${encodeURIComponent(id)}`).catch(() => ({ history: [] }));
-    setHistorico(d.history || []);
-  };
+  const mudouSituacao = Boolean(caso && situacao && situacao !== caso.status);
 
-  const aberto = relatos.find(r => r.id === selecionado) ?? null;
-  const mudouSituacao = Boolean(aberto && situacao && situacao !== aberto.status);
-
-  /** Salvar o que aconteceu e, se for o caso, a nova situação — num gesto só. */
-  const registrar = async () => {
-    if (!aberto) return;
-    if (!relato.trim() && !mudouSituacao) {
-      setErro("Escreva o que aconteceu ou mude a situação do caso.");
-      return;
-    }
+  const enviar = async (extra: Record<string, unknown>, mensagem: string) => {
     setEstado("salvando"); setErro("");
     try {
-      await api.post("/api/pain-reports", {
-        action: "update", id: aberto.id,
-        status: situacao || aberto.status,
-        ...(relato.trim() ? { note: relato.trim() } : {}),
-      });
-      await carregar(aberto.id);
-      await recarregarHistorico(aberto.id);
-      setRelato("");
-      setAviso("Registrado.");
+      await api.post("/api/pain-reports", { id: reportId, ...(relato.trim() ? { note: relato.trim() } : {}), ...extra });
+      await carregar();
+      setRelato(""); setAviso(mensagem);
+      window.dispatchEvent(new Event("zonasapp:pain-refresh"));
     } catch (error) { setErro(describeError(error)); }
     finally { setEstado("pronto"); }
   };
 
-  const registrarContato = async () => {
-    if (!aberto) return;
-    setEstado("salvando"); setErro("");
-    try {
-      await api.post("/api/pain-reports", { action: "contact", id: aberto.id, ...(relato.trim() ? { note: relato.trim() } : {}) });
-      await carregar(aberto.id); await recarregarHistorico(aberto.id);
-      setRelato(""); setAviso("Conversa registrada.");
-    } catch (error) { setErro(describeError(error)); }
-    finally { setEstado("pronto"); }
+  const registrar = () => {
+    if (!relato.trim() && !mudouSituacao) { setErro("Escreva o que aconteceu ou mude a situação do caso."); return; }
+    void enviar({ action: "update", status: situacao || caso?.status }, "Registrado.");
   };
-
-  const vincularSemana = async () => {
-    if (!aberto || !semana) { setErro("Escolha a semana que você ajustou."); return; }
-    setEstado("salvando"); setErro("");
-    try {
-      await api.post("/api/pain-reports", { action: "link_week", id: aberto.id, weekStart: semana, ...(relato.trim() ? { note: relato.trim() } : {}) });
-      await carregar(aberto.id); await recarregarHistorico(aberto.id);
-      setRelato(""); setSemana(""); setAviso("Ajuste vinculado à semana.");
-    } catch (error) { setErro(describeError(error)); }
-    finally { setEstado("pronto"); }
-  };
-
-  const visiveis = relatos.filter(r =>
-    filtro === "Todos" ? true : filtro === "Resolvidos" ? r.status === "Resolvido" : r.status !== "Resolvido");
-  const abertosTotal = relatos.filter(r => r.status !== "Resolvido").length;
-  const gravesTotal = relatos.filter(r => r.status !== "Resolvido" && r.intensity >= 7).length;
-  const semRespostaTotal = relatos.filter(r => r.status === "Novo").length;
 
   const quando = (ms?: number) => ms ? new Date(Number(ms)).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "";
   const soData = (ms?: number) => ms ? new Date(Number(ms)).toLocaleDateString("pt-BR") : "";
   const classeSituacao = (s: string) => s === "Resolvido" ? "ok" : s === "Verificado" ? "review" : s === "Em análise" ? "analise" : "pending";
 
-  return <section className="pain-dash">
-    <header className="pain-dash-head">
-      <div>
-        <span className="overline">SAÚDE DOS ATLETAS</span>
-        <h2>Dores e lesões</h2>
-        <p>Registre o que aconteceu e mantenha a situação de cada caso em dia.</p>
-      </div>
-      <div className="pain-dash-metrics">
-        <article><b>{abertosTotal}</b><small>em aberto</small></article>
-        <article className={semRespostaTotal ? "alerta" : ""}><b>{semRespostaTotal}</b><small>sem resposta</small></article>
-        <article className={gravesTotal ? "grave" : ""}><b>{gravesTotal}</b><small>intensidade 7+</small></article>
-      </div>
-    </header>
+  return <div className="overlay" onMouseDown={e => e.target === e.currentTarget && close()}>
+    <aside className="drawer pain-screen">
+      <header>
+        <div>
+          <span className="overline">ACOMPANHAMENTO DE LESÃO</span>
+          <h2>{caso ? `${caso.athlete_name} · ${caso.body_area}` : "Carregando…"}</h2>
+          {caso && <p>{caso.training_impact} · intensidade {caso.intensity}/10 · relatado em {quando(caso.created_at)}</p>}
+        </div>
+        <button onClick={close}>×</button>
+      </header>
 
-    <div className="pain-dash-body">
-      <aside className="pain-dash-list">
-        <div className="pain-filters">
-          {(["Abertos", "Todos", "Resolvidos"] as const).map(f =>
-            <button key={f} className={filtro === f ? "selected" : ""} onClick={() => setFiltro(f)}>{f}</button>)}
+      {estado === "carregando" ? <p className="pain-dash-empty">Carregando o caso…</p> : !caso ? <p className="registration-error">{erro || "Caso não encontrado."}</p> : <>
+        {caso.note && <p className="pain-case-quote">“{caso.note}”</p>}
+
+        <div className="pain-dash-facts">
+          <span><small>CONVERSA</small>{caso.contacted_at ? soData(caso.contacted_at) : "ainda não"}</span>
+          <span><small>AVALIAÇÃO</small>{caso.coach_note || "ainda não"}</span>
+          <span><small>PLANILHA</small>{caso.linked_week_start ? `semana de ${caso.linked_week_start}` : "sem ajuste"}</span>
+          <span><small>DESFECHO</small>{caso.resolution || "em aberto"}</span>
         </div>
 
-        {estado === "carregando" ? <p className="pain-dash-empty">Carregando…</p>
-          : visiveis.length === 0 ? <p className="pain-dash-empty">Nenhum caso {filtro === "Resolvidos" ? "resolvido" : "em aberto"}.</p>
-          : visiveis.map(r => (
-            <button key={r.id} className={`pain-dash-item ${selecionado === r.id ? "atual" : ""} ${r.intensity >= 7 ? "grave" : ""}`} onClick={() => void abrirCaso(r)}>
-              <span className="pain-dash-mark">{r.intensity}</span>
-              <span>
-                <b>{r.athlete_name}</b>
-                <small>{r.body_area} · {soData(r.created_at)}</small>
-              </span>
-              <em className={classeSituacao(r.status)}>{r.status}</em>
-            </button>
-          ))}
-      </aside>
-
-      <div className="pain-dash-detail">
-        {!aberto ? <div className="pain-dash-vazio">
-          <b>Selecione um caso à esquerda</b>
-          <p>Você verá o relato do atleta, poderá escrever o que aconteceu e mudar a situação.</p>
-        </div> : <>
-          <header>
+        <div className="pain-dash-work">
+          <label className="pain-dash-status">
+            Situação do caso
             <div>
-              <h3>{aberto.athlete_name} · {aberto.body_area}</h3>
-              <small>{aberto.training_impact} · intensidade {aberto.intensity}/10 · relatado em {quando(aberto.created_at)}</small>
+              {SITUACOES.map(s => (
+                <button key={s} className={`${situacao === s ? "selected" : ""} ${classeSituacao(s)}`}
+                  onClick={() => { setSituacao(s); setAviso(""); setErro(""); }}>{s}</button>
+              ))}
             </div>
-            {athletes.some(a => a.name === aberto.athlete_name) &&
-              <a className="pain-contact" href={`https://wa.me/?text=${encodeURIComponent(`Olá ${aberto.athlete_name.split(" ")[0]}, vi seu relato de dor em ${aberto.body_area}. Como você está?`)}`} target="_blank" rel="noreferrer">WhatsApp ↗</a>}
-          </header>
+          </label>
 
-          {aberto.note && <p className="pain-case-quote">“{aberto.note}”</p>}
+          <label>
+            O que aconteceu?
+            <textarea value={relato} onChange={e => { setRelato(e.target.value); setErro(""); setAviso(""); }} maxLength={1000}
+              placeholder="Ex.: conversei com ela, a dor aparece após 20 min e melhora com gelo. Reduzi o volume desta semana." />
+          </label>
 
-          <div className="pain-dash-facts">
-            <span><small>CONVERSA</small>{aberto.contacted_at ? soData(aberto.contacted_at) : "ainda não"}</span>
-            <span><small>AVALIAÇÃO</small>{aberto.coach_note || "ainda não"}</span>
-            <span><small>PLANILHA</small>{aberto.linked_week_start ? `semana de ${aberto.linked_week_start}` : "sem ajuste"}</span>
-            <span><small>DESFECHO</small>{aberto.resolution || "em aberto"}</span>
+          {erro && <p className="registration-error">{erro}</p>}
+          {aviso && <p className="pain-ok">{aviso}</p>}
+
+          <div className="pain-dash-actions">
+            <button className="gold" disabled={estado === "salvando"} onClick={registrar}>
+              {estado === "salvando" ? "Salvando…" : mudouSituacao ? `Salvar como “${situacao}”` : "Salvar registro"}
+            </button>
+            <button disabled={estado === "salvando"} onClick={() => void enviar({ action: "contact" }, "Conversa registrada.")}>
+              Marcar que falei com o atleta
+            </button>
+            <a className="pain-contact" href={`https://wa.me/?text=${encodeURIComponent(`Olá ${caso.athlete_name.split(" ")[0]}, vi seu relato de dor em ${caso.body_area}. Como você está?`)}`} target="_blank" rel="noreferrer">WhatsApp ↗</a>
           </div>
 
-          <div className="pain-dash-work">
-            <label className="pain-dash-status">
-              Situação do caso
-              <div>
-                {SITUACOES.map(s => (
-                  <button key={s} className={`${situacao === s ? "selected" : ""} ${classeSituacao(s)}`} onClick={() => { setSituacao(s); setAviso(""); setErro(""); }}>{s}</button>
-                ))}
-              </div>
-            </label>
+          <details className="pain-dash-week">
+            <summary>Vincular a um ajuste na planilha</summary>
+            {semanas.length === 0
+              ? <p className="pain-sem-semana">Este aluno ainda não tem semana montada.</p>
+              : <div>
+                  <select value={semana} onChange={e => { setSemana(e.target.value); setErro(""); }}>
+                    <option value="">Escolha a semana ajustada…</option>
+                    {semanas.map(w => <option key={w.week_start} value={w.week_start}>
+                      {new Date(`${w.week_start}T12:00:00Z`).toLocaleDateString("pt-BR")} · {w.week_label} · {w.status}
+                    </option>)}
+                  </select>
+                  <button disabled={estado === "salvando" || !semana}
+                    onClick={() => semana ? void enviar({ action: "link_week", weekStart: semana }, "Ajuste vinculado.") : setErro("Escolha a semana que você ajustou.")}>
+                    Vincular
+                  </button>
+                </div>}
+          </details>
+        </div>
 
-            <label>
-              O que aconteceu?
-              <textarea value={relato} onChange={e => { setRelato(e.target.value); setErro(""); setAviso(""); }} maxLength={1000}
-                placeholder="Ex.: conversei com ela, a dor aparece após 20 min e melhora com gelo. Reduzi o volume desta semana." />
-            </label>
+        {historico.length > 0 && <div className="pain-dash-history">
+          <span className="overline">HISTÓRICO DO CASO</span>
+          {historico.map(h => <article key={h.id}>
+            <b>{h.action}</b>
+            <small>{quando(h.created_at)} · {h.actor_email}</small>
+            {h.note && <p>{h.note}</p>}
+          </article>)}
+        </div>}
+      </>}
+    </aside>
+  </div>;
+}
 
-            {erro && <p className="registration-error">{erro}</p>}
-            {aviso && <p className="pain-ok">{aviso}</p>}
+/**
+ * Lesões de um atleta, dentro da ficha dele.
+ *
+ * Em aberto aparecem em destaque, porque mudam a decisão do treino da semana.
+ * As encerradas ficam recolhidas: viram histórico, não pendência.
+ */
+function AthletePainList({ athleteName, onOpen }: { athleteName: string; onOpen: (id: string) => void }) {
+  type Relato = { id: string; body_area: string; intensity: number; status: string; created_at: number; resolution?: string; resolved_at?: number };
+  const [relatos, setRelatos] = useState<Relato[]>([]);
+  const [carregado, setCarregado] = useState(false);
 
-            <div className="pain-dash-actions">
-              <button className="gold" disabled={estado === "salvando"} onClick={() => void registrar()}>
-                {estado === "salvando" ? "Salvando…" : mudouSituacao ? `Salvar como “${situacao}”` : "Salvar registro"}
-              </button>
-              <button disabled={estado === "salvando"} onClick={() => void registrarContato()}>Marcar que falei com o atleta</button>
-            </div>
+  const carregar = () => api.get<{ reports: Relato[] }>(`/api/pain-reports?athlete=${encodeURIComponent(athleteName)}`)
+    .then(d => { setRelatos(d.reports || []); setCarregado(true); })
+    .catch(() => setCarregado(true));
+  useEffect(() => {
+    carregar();
+    const atualiza = () => carregar();
+    window.addEventListener("zonasapp:pain-refresh", atualiza);
+    return () => window.removeEventListener("zonasapp:pain-refresh", atualiza);
+  }, [athleteName]);
 
-            <details className="pain-dash-week">
-              <summary>Vincular a um ajuste na planilha</summary>
-              {semanas.length === 0
-                ? <p className="pain-sem-semana">Este aluno ainda não tem semana montada.</p>
-                : <div>
-                    <select value={semana} onChange={e => { setSemana(e.target.value); setErro(""); }}>
-                      <option value="">Escolha a semana ajustada…</option>
-                      {semanas.map(w => <option key={w.week_start} value={w.week_start}>
-                        {new Date(`${w.week_start}T12:00:00Z`).toLocaleDateString("pt-BR")} · {w.week_label} · {w.status}
-                      </option>)}
-                    </select>
-                    <button disabled={estado === "salvando"} onClick={() => void vincularSemana()}>Vincular</button>
-                  </div>}
-            </details>
-          </div>
+  if (!carregado || relatos.length === 0) return null;
 
-          {historico.length > 0 && <div className="pain-dash-history">
-            <span className="overline">HISTÓRICO DO CASO</span>
-            {historico.map(h => <article key={h.id}>
-              <b>{h.action}</b>
-              <small>{quando(h.created_at)} · {h.actor_email}</small>
-              {h.note && <p>{h.note}</p>}
-            </article>)}
-          </div>}
-        </>}
-      </div>
-    </div>
+  const abertas = relatos.filter(r => r.status !== "Resolvido");
+  const encerradas = relatos.filter(r => r.status === "Resolvido");
+  const soData = (ms?: number) => ms ? new Date(Number(ms)).toLocaleDateString("pt-BR") : "";
+
+  return <section className="athlete-pain">
+    {abertas.length > 0 && <>
+      <span className="overline">LESÃO EM ACOMPANHAMENTO</span>
+      {abertas.map(r => (
+        <button key={r.id} className={`athlete-pain-open ${r.intensity >= 7 ? "grave" : ""}`} onClick={() => onOpen(r.id)}>
+          <span className="pain-dash-mark">{r.intensity}</span>
+          <span>
+            <b>{r.body_area}</b>
+            <small>{r.status} · desde {soData(r.created_at)}</small>
+          </span>
+          <em>Registrar andamento →</em>
+        </button>
+      ))}
+    </>}
+
+    {encerradas.length > 0 && <details className="athlete-pain-past">
+      <summary>Lesões encerradas ({encerradas.length})</summary>
+      {encerradas.map(r => (
+        <button key={r.id} onClick={() => onOpen(r.id)}>
+          <b>{r.body_area}</b>
+          <small>{soData(r.created_at)} → {soData(r.resolved_at)}</small>
+          <p>{r.resolution || "Sem desfecho registrado."}</p>
+        </button>
+      ))}
+    </details>}
   </section>;
 }
 
@@ -927,16 +903,17 @@ function WorkoutAccuracy(){
   return <section className="workout-accuracy-coach"><header><div><span className="overline">CONFERÊNCIA AUTOMÁTICA</span><h2>Treino certo ou fora do planejado</h2><p>Comparação entre o treino liberado e o resultado informado pelo aluno.</p></div><b>{items.length} análise(s)</b></header>{state==="loading"?<div className="feedback-empty">Carregando análises…</div>:items.length===0?<div className="feedback-empty">As análises aparecerão quando os alunos registrarem tempo ou distância.</div>:items.slice(0,8).map(item=><article key={item.id}><div className="accuracy-athlete"><b>{item.athlete_name}</b><small>{item.workout_day} · semana de {String(item.week_start).split("-").reverse().join("/")}</small><span>{item.classification}</span></div><div className="accuracy-comparison"><span><small>PLANEJADO</small><b>{item.planned_minutes?`${item.planned_minutes} min`:"—"}{item.planned_km?` · ${item.planned_km} km`:""}</b></span><span><small>REALIZADO</small><b>{item.actual_minutes?`${item.actual_minutes} min`:"—"}{item.actual_km?` · ${item.actual_km} km`:""}</b></span></div><div className="accuracy-numbers"><strong>{item.correct_percentage}%<small>certo</small></strong><strong className="wrong">{item.wrong_percentage}%<small>fora</small></strong></div></article>)}{state==="error"&&<p className="registration-error">Não foi possível carregar as análises agora.</p>}</section>;
 }
 
-function CoachNotificationCenter({go,painReports,pendingRaces,pendingTests,pendingAccess}:{go:(section:string)=>void;painReports:any[];pendingRaces:any[];pendingTests:any[];pendingAccess:any[]}){
+function CoachNotificationCenter({go,openPain,painReports,pendingRaces,pendingTests,pendingAccess}:{go:(section:string)=>void;openPain:(c:{id:string;athleteName:string})=>void;painReports:any[];pendingRaces:any[];pendingTests:any[];pendingAccess:any[]}){
   const races=pendingRaces.filter(item=>item.status==="Aguardando análise");
   const tests=pendingTests.filter(item=>item.status!=="Aprovado");
-  const alerts=[
+  type Aviso = { id: string; tone: string; icon: string; title: string; detail: string; action: string; section: string; pain?: { id: string; athleteName: string } };
+  const alerts: Aviso[]=[
     ...pendingAccess.map(item=>({id:`access-${item.id}`,tone:"gold",icon:"＋",title:"Novo aluno aguardando liberação",detail:`${item.name} enviou o cadastro e ainda não consegue acessar os treinos.`,action:"Revisar cadastro",section:"Cadastros"})),
     ...tests.map(item=>({id:`test-${item.id}`,tone:"amber",icon:"Z",title:"Teste aguardando liberação das zonas",detail:`${item.athlete_name} espera seus ritmos individualizados.`,action:"Liberar zonas",section:"Testes e zonas"})),
-    ...painReports.map(item=>({id:`pain-${item.id}`,tone:"red",icon:"!",title:"Relato de dor precisa de atenção",detail:`${item.athlete_name} · ${item.body_area} · intensidade ${item.intensity}/10.`,action:"Abrir aluno",section:"Alunos"})),
+    ...painReports.map(item=>({id:`pain-${item.id}`,tone:"red",icon:"!",title:"Relato de dor precisa de atenção",detail:`${item.athlete_name} · ${item.body_area} · intensidade ${item.intensity}/10.`,action:"Acompanhar lesão",section:"Alunos",pain:{id:item.id,athleteName:item.athlete_name}})),
     ...races.map(item=>({id:`race-${item.id}`,tone:"blue",icon:"⚑",title:"Prova aguardando análise",detail:`${item.athlete_name} cadastrou ${item.name} (${item.distance}).`,action:"Analisar prova",section:"Provas"})),
   ];
-  return <section className="coach-notification-center" id="avisos-do-professor"><header><div><span className="overline">CENTRAL DE AVISOS</span><h2>O que precisa da sua decisão</h2><p>Cada aviso abre diretamente a tela onde você resolve a pendência.</p></div><b>{alerts.length} pendente(s)</b></header>{alerts.length?<div>{alerts.slice(0,8).map(alert=><button key={alert.id} className={alert.tone} onClick={()=>go(alert.section)}><i>{alert.icon}</i><span><strong>{alert.title}</strong><small>{alert.detail}</small></span><em>{alert.action} →</em></button>)}</div>:<aside><i>✓</i><span><b>Tudo em dia</b><small>Nenhuma decisão pendente neste momento.</small></span></aside>}</section>;
+  return <section className="coach-notification-center" id="avisos-do-professor"><header><div><span className="overline">CENTRAL DE AVISOS</span><h2>O que precisa da sua decisão</h2><p>Cada aviso abre diretamente a tela onde você resolve a pendência.</p></div><b>{alerts.length} pendente(s)</b></header>{alerts.length?<div>{alerts.slice(0,8).map(alert=><button key={alert.id} className={alert.tone} onClick={()=>alert.pain?openPain(alert.pain):go(alert.section)}><i>{alert.icon}</i><span><strong>{alert.title}</strong><small>{alert.detail}</small></span><em>{alert.action} →</em></button>)}</div>:<aside><i>✓</i><span><b>Tudo em dia</b><small>Nenhuma decisão pendente neste momento.</small></span></aside>}</section>;
 }
 
 function MobileCoachHome({go,athletes,painReports,pendingRaces,coachName}:{go:(s:string)=>void;athletes:Athlete[];painReports:any[];pendingRaces:any[];coachName:string}){
@@ -999,7 +976,7 @@ function Athletes({ filtered, allAthletes, distance, phase, plan, setDistance, s
   : <><span className={a.flag ? "flag" : "ok"}>{a.flag || "Abrir ficha"}</span><button className="athlete-archive" onClick={() => setConfirmando(a.name)}>Inativar</button></>}</span></article>)}</div></>;
 }
 
-function AthleteProfile({ athlete, close }: { athlete: Athlete; close: () => void }) {
+function AthleteProfile({ athlete, close, onOpenPain }: { athlete: Athlete; close: () => void; onOpenPain?: (id: string) => void }) {
   const [saved, setSaved] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState("");
@@ -1252,7 +1229,7 @@ function AthleteProfile({ athlete, close }: { athlete: Athlete; close: () => voi
       setAccessSaving(false);
     }
   };
-  return <div className="overlay" onMouseDown={e => e.target === e.currentTarget && close()}><aside className="drawer athlete-profile"><header><div><span className="overline">FICHA DO ALUNO</span><h2>{athlete.name}</h2><p>{profilePlanningLabel}</p></div><button onClick={close}>×</button></header><div className="profile-quick-actions"><button onClick={()=>setTab("Testes e zonas")}><i>◎</i><span><b>Testes e zonas</b><small>Revisar ritmos</small></span></button><button onClick={()=>window.dispatchEvent(new CustomEvent("zonasapp:open-calendar",{detail:athlete.name}))}><i>□</i><span><b>Montar semana</b><small>Abrir calendário</small></span></button><button onClick={()=>window.dispatchEvent(new CustomEvent("zonasapp:preview-athlete",{detail:athlete.name}))}><i>↔</i><span><b>Ver como aluno</b><small>Conferir a tela</small></span></button></div>{tab === "Cadastro" && !race && <div className="profile-alert">Cadastro incompleto: adicione a próxima prova para facilitar a periodização.</div>}{testHistory.some(test=>test.status!=="Aprovado")&&<button className="profile-zone-pending" onClick={()=>setTab("Testes e zonas")}><span><b>Zonas de treino aguardando sua liberação</b><small>Abra, confira os ritmos e aprove para usar nos treinos de {athlete.name.split(" ")[0]}.</small></span><strong>Liberar agora →</strong></button>}<div className="profile-tabs">{tabs.map(item=><button key={item} className={tab === item ? "selected" : ""} onClick={()=>setTab(item)}>{item}{item==="Testes e zonas"&&testHistory.some(test=>test.status!=="Aprovado")?<b className="tab-alert-dot">!</b>:null}</button>)}</div>
+  return <div className="overlay" onMouseDown={e => e.target === e.currentTarget && close()}><aside className="drawer athlete-profile"><header><div><span className="overline">FICHA DO ALUNO</span><h2>{athlete.name}</h2><p>{profilePlanningLabel}</p></div><button onClick={close}>×</button></header><div className="profile-quick-actions"><button onClick={()=>setTab("Testes e zonas")}><i>◎</i><span><b>Testes e zonas</b><small>Revisar ritmos</small></span></button><button onClick={()=>window.dispatchEvent(new CustomEvent("zonasapp:open-calendar",{detail:athlete.name}))}><i>□</i><span><b>Montar semana</b><small>Abrir calendário</small></span></button><button onClick={()=>window.dispatchEvent(new CustomEvent("zonasapp:preview-athlete",{detail:athlete.name}))}><i>↔</i><span><b>Ver como aluno</b><small>Conferir a tela</small></span></button></div>{onOpenPain && <AthletePainList athleteName={athlete.name} onOpen={onOpenPain} />}{tab === "Cadastro" && !race && <div className="profile-alert">Cadastro incompleto: adicione a próxima prova para facilitar a periodização.</div>}{testHistory.some(test=>test.status!=="Aprovado")&&<button className="profile-zone-pending" onClick={()=>setTab("Testes e zonas")}><span><b>Zonas de treino aguardando sua liberação</b><small>Abra, confira os ritmos e aprove para usar nos treinos de {athlete.name.split(" ")[0]}.</small></span><strong>Liberar agora →</strong></button>}<div className="profile-tabs">{tabs.map(item=><button key={item} className={tab === item ? "selected" : ""} onClick={()=>setTab(item)}>{item}{item==="Testes e zonas"&&testHistory.some(test=>test.status!=="Aprovado")?<b className="tab-alert-dot">!</b>:null}</button>)}</div>
   {tab === "Cadastro" && <>
     <section className="profile-section">
       <h3>Dados e disponibilidade</h3>

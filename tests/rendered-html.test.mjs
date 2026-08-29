@@ -1735,7 +1735,7 @@ test("gives every pain report a trackable history", async () => {
   // O vínculo com a planilha só aceita uma semana que exista para aquele atleta.
   assert.match(worker, /week_not_found_for_athlete/);
 
-  assert.match(client, /function PainCenter/);
+  assert.match(client, /function PainCaseScreen/);
   assert.match(client, /HISTÓRICO DO CASO/);
   assert.match(client, /Vincular a um ajuste na planilha/);
 });
@@ -1968,41 +1968,47 @@ test("keeps the visiting banner out of the coach grid", async () => {
 
 
 
-test("gives injuries their own working screen", async () => {
+
+
+
+test("keeps an injury attached to the athlete, not in a section of its own", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
-  // Acompanhar uma queixa é trabalho: precisa de área própria, não de um
-  // cartão espremido no painel geral.
-  assert.match(client, /"Testes e zonas", "Lesões"/);
-  assert.match(client, /\{active === "Lesões" && <PainCenter/);
-  assert.doesNotMatch(client, /"Painel" && <><PainCenter/);
-  // Lista à esquerda, caso aberto à direita.
-  assert.match(client, /className="pain-dash-list"/);
-  assert.match(client, /className="pain-dash-detail"/);
-  assert.match(client, /Selecione um caso à esquerda/);
+  // Uma queixa pertence a um atleta e só faz sentido ao lado da ficha dele.
+  assert.doesNotMatch(client, /"Testes e zonas", "Lesões"/);
+  assert.doesNotMatch(client, /active === "Lesões"/);
+  assert.match(client, /function AthletePainList/);
+  assert.match(client, /LESÃO EM ACOMPANHAMENTO/);
+  assert.match(client, /onOpenPain && <AthletePainList athleteName=\{athlete\.name\}/);
 });
 
-test("records what happened and the case status in one go", async () => {
+test("opens the injury screen straight from the notification", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // O aviso levava para a lista de alunos e obrigava a procurar o caso.
+  assert.match(client, /action:"Acompanhar lesão"/);
+  assert.match(client, /pain:\{id:item\.id,athleteName:item\.athlete_name\}/);
+  assert.match(client, /alert\.pain\?openPain\(alert\.pain\):go\(alert\.section\)/);
+  assert.match(client, /<PainCaseScreen reportId=\{painCase\.id\}/);
+});
+
+test("moves a finished injury into the athlete's history", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Encerrada deixa de ser pendência: sai do destaque e vira histórico.
+  assert.match(client, /const abertas = relatos\.filter\(r => r\.status !== "Resolvido"\)/);
+  assert.match(client, /const encerradas = relatos\.filter\(r => r\.status === "Resolvido"\)/);
+  assert.match(client, /Lesões encerradas \(\{encerradas\.length\}\)/);
+  assert.match(client, /className="athlete-pain-past"/);
+  // A ficha do aluno pede só as lesões daquele aluno.
+  assert.match(client, /\/api\/pain-reports\?athlete=\$\{encodeURIComponent\(athleteName\)\}/);
+});
+
+test("still records what happened together with the case status", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
-  // Escolher a situação e contar o que aconteceu é um gesto só.
   assert.match(worker, /if \(acao === "update"\)/);
-  assert.match(worker, /Situação: \$\{novoStatus\}/);
-  // O relato do encerramento é o desfecho; nos demais estados é a avaliação.
   assert.match(worker, /novoStatus === "Resolvido" \? "resolution = \?" : "coach_note = \?"/);
-  assert.match(worker, /invalid_status/);
   assert.match(client, /O que aconteceu\?/);
   assert.match(client, /Situação do caso/);
-  assert.match(client, /action: "update", id: aberto\.id/);
-  // Nada trava em silêncio: valida ao enviar e diz o que falta.
   assert.match(client, /Escreva o que aconteceu ou mude a situação do caso\./);
-  assert.match(client, /disabled=\{estado === "salvando"\}/);
-});
-
-test("shows how many injury cases still need an answer", async () => {
-  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
-  assert.match(client, /className="pain-dash-metrics"/);
-  assert.match(client, /sem resposta/);
-  assert.match(client, /intensidade 7\+/);
-  // As quatro situações possíveis são escolhidas direto, sem passar por menu.
-  assert.match(client, /const SITUACOES = \["Novo", "Em análise", "Verificado", "Resolvido"\]/);
+  // A ficha do aluno se atualiza quando o caso muda.
+  assert.match(client, /zonasapp:pain-refresh/);
 });

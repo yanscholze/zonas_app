@@ -11667,157 +11667,6 @@ input {
   gap: 9px;
 }
 
-/* =============================================================================
-   Painel de dores e lesões
-   =============================================================================
-
-   Lista à esquerda, caso aberto à direita: o treinador percorre vários casos
-   sem perder o lugar, e registra o que aconteceu junto com a situação.
-   ============================================================================= */
-
-.pain-dash-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 20px;
-  flex-wrap: wrap;
-  margin-bottom: 16px;
-}
-
-.pain-dash-head h2 {
-  font-size: 24px;
-  margin: 5px 0 6px;
-}
-
-.pain-dash-head p {
-  font-size: 13px;
-  color: var(--muted);
-  max-width: 60ch;
-}
-
-.pain-dash-metrics {
-  display: flex;
-  gap: 9px;
-}
-
-.pain-dash-metrics article {
-  border: 1px solid var(--line);
-  border-radius: 11px;
-  padding: 13px 18px;
-  text-align: center;
-  min-width: 92px;
-  background: var(--panel);
-}
-
-.pain-dash-metrics article.alerta { border-color: #6b5520; }
-.pain-dash-metrics article.grave { border-color: #7d3b33; }
-
-.pain-dash-metrics b {
-  display: block;
-  font-size: 26px;
-}
-
-.pain-dash-metrics article.grave b { color: #ff8b76; }
-
-.pain-dash-metrics small {
-  font-size: 10px;
-  color: var(--muted);
-}
-
-.pain-dash-body {
-  display: grid;
-  grid-template-columns: minmax(0, 320px) minmax(0, 1fr);
-  gap: 14px;
-  align-items: start;
-}
-
-/* --- Lista de casos ------------------------------------------------------- */
-
-.pain-dash-list {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 13px;
-  padding: 13px;
-  display: grid;
-  gap: 7px;
-  align-content: start;
-  max-height: 74vh;
-  overflow-y: auto;
-}
-
-.pain-dash-empty {
-  font-size: 13px;
-  color: var(--muted);
-  padding: 18px 6px;
-}
-
-.pain-dash-item {
-  display: grid;
-  grid-template-columns: 34px 1fr auto;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 11px 12px;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  background: #0f0f10;
-  color: var(--text);
-  text-align: left;
-  cursor: pointer;
-}
-
-.pain-dash-item:hover {
-  border-color: var(--line);
-}
-
-.pain-dash-item.atual {
-  border-color: var(--gold);
-  background: #1c1b17;
-}
-
-.pain-dash-mark {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  font-weight: 800;
-  font-size: 13px;
-  background: #2e291d;
-  color: var(--gold);
-}
-
-.pain-dash-item.grave .pain-dash-mark {
-  background: #3a251d;
-  color: #ff8b76;
-}
-
-.pain-dash-item b {
-  display: block;
-  font-size: 13px;
-}
-
-.pain-dash-item small {
-  display: block;
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 2px;
-}
-
-.pain-dash-item em,
-.pain-dash-facts em {
-  font-style: normal;
-  font-size: 10px;
-  padding: 4px 8px;
-  border-radius: 12px;
-  white-space: nowrap;
-}
-
-.pain-dash-item em.pending { background: #3a2f19; color: var(--gold2); }
-.pain-dash-item em.analise { background: #2b2f3a; color: #a3b4d6; }
-.pain-dash-item em.review { background: #1e3348; color: #7fb6e0; }
-.pain-dash-item em.ok { background: #183326; color: #69d397; }
-
 /* --- Caso aberto ---------------------------------------------------------- */
 
 .pain-dash-detail {
@@ -12119,4 +11968,131 @@ input {
   .pain-dash-actions button {
     width: 100%;
   }
+}
+
+/* --- Lesões dentro da ficha do aluno -------------------------------------- */
+
+.athlete-pain {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.athlete-pain > .overline {
+  color: var(--red);
+}
+
+/* Lesão em aberto muda a decisão do treino da semana: fica em destaque. */
+.athlete-pain-open {
+  display: grid;
+  grid-template-columns: 34px 1fr auto;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 13px 15px;
+  border: 1px solid #6b5520;
+  border-left: 3px solid var(--gold);
+  border-radius: 11px;
+  background: rgba(215, 170, 57, 0.07);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.athlete-pain-open.grave {
+  border-color: #7d3b33;
+  border-left-color: var(--red);
+  background: rgba(241, 107, 94, 0.07);
+}
+
+.athlete-pain-open:hover {
+  background: rgba(215, 170, 57, 0.13);
+}
+
+.athlete-pain-open b {
+  display: block;
+  font-size: 14px;
+}
+
+.athlete-pain-open small {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.athlete-pain-open em {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--gold);
+  white-space: nowrap;
+}
+
+/* Encerradas são histórico, não pendência: ficam recolhidas. */
+.athlete-pain-past > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+  list-style: none;
+  padding: 6px 0;
+}
+
+.athlete-pain-past > summary::-webkit-details-marker { display: none; }
+.athlete-pain-past > summary:before { content: "▸ "; }
+.athlete-pain-past[open] > summary:before { content: "▾ "; }
+
+.athlete-pain-past[open] {
+  display: grid;
+  gap: 7px;
+}
+
+.athlete-pain-past button {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0f0f10;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.athlete-pain-past b { font-size: 13px; }
+
+.athlete-pain-past small {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.athlete-pain-past p {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+
+/* --- Tela de acompanhamento da lesão -------------------------------------- */
+
+.pain-screen {
+  display: grid;
+  gap: 15px;
+  align-content: start;
+}
+
+.pain-screen > header p {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-top: 5px;
+}
+
+.pain-screen .pain-dash-work {
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.pain-dash-empty {
+  font-size: 13px;
+  color: var(--muted);
+  padding: 20px 0;
 }
