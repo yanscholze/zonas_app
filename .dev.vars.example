@@ -8,6 +8,11 @@
 COACH_EMAIL=
 COACH_INITIAL_PASSWORD=
 
+# Conta de manutenção (dashboard de diagnóstico), com acesso irrestrito.
+# Deixe em branco para que ela simplesmente não exista.
+DEV_LOGIN=
+DEV_INITIAL_PASSWORD=
+
 # Cifra os tokens de TODOS os provedores, não só os do Strava.
 STRAVA_CLIENT_ID=
 STRAVA_CLIENT_SECRET=

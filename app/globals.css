@@ -11047,3 +11047,325 @@ input {
   font-size: 17px;
   color: var(--gold);
 }
+
+/* =============================================================================
+   Painel de manutenção
+   =============================================================================
+
+   Deliberadamente mais denso e mais frio que o resto do produto: aqui a leitura
+   é de diagnóstico, não de treino. Mantém o dourado só como acento.
+   ============================================================================= */
+
+.dev-shell {
+  min-height: 100dvh;
+  background: #0a0a0b;
+  color: var(--text);
+  padding: 22px clamp(16px, 4vw, 40px) 60px;
+  font-size: 14px;
+}
+
+.dev-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dev-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dev-brand > span {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 30px;
+  border-radius: 6px;
+  background: #2a2a2c;
+  color: var(--gold);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.dev-brand strong {
+  display: block;
+  font-size: 15px;
+}
+
+.dev-brand small {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.dev-top-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dev-top-actions button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 9px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dev-top-actions button:hover:not(:disabled) {
+  border-color: var(--gold);
+  color: var(--gold2);
+}
+
+.dev-signout:hover {
+  border-color: var(--red) !important;
+  color: var(--red) !important;
+}
+
+.dev-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 18px 0;
+}
+
+.dev-tabs button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 7px;
+  padding: 8px 15px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.dev-tabs button.active {
+  background: #23221e;
+  border-color: #5d4d2c;
+  color: var(--gold2);
+}
+
+.dev-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 11px;
+  margin-bottom: 16px;
+}
+
+.dev-cards article {
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 16px;
+  background: #111112;
+}
+
+.dev-cards article.ok { border-left: 3px solid var(--green); }
+.dev-cards article.alerta { border-left: 3px solid var(--red); }
+
+.dev-cards small {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.dev-cards b {
+  display: block;
+  font-size: 30px;
+  margin: 7px 0 3px;
+}
+
+.dev-cards span {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.dev-panel {
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 18px;
+  background: #111112;
+  margin-bottom: 13px;
+  overflow-x: auto;
+}
+
+.dev-panel h2 {
+  font-size: 16px;
+  margin-bottom: 4px;
+}
+
+.dev-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+.dev-empty {
+  font-size: 13px;
+  color: var(--muted);
+  padding: 14px 0;
+}
+
+.dev-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  min-width: 520px;
+}
+
+.dev-table th {
+  text-align: left;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.dev-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #202021;
+  vertical-align: top;
+}
+
+.dev-table code {
+  font-size: 11.5px;
+  color: var(--gold2);
+}
+
+.dev-status {
+  display: inline-block;
+  min-width: 34px;
+  text-align: center;
+  border-radius: 5px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.dev-status.s2 { background: #183326; color: #69d397; }
+.dev-status.s4 { background: #3a2f19; color: var(--gold2); }
+.dev-status.s5 { background: #3a251d; color: #ff8b76; }
+
+.dev-role {
+  border-radius: 5px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  background: #2a2a2c;
+  color: var(--muted);
+}
+
+.dev-role.dev { background: #3a2f19; color: var(--gold2); }
+.dev-role.coach { background: #1e3348; color: #7fb6e0; }
+.dev-role.student { background: #183326; color: #69d397; }
+
+.dev-env {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.dev-env span {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px 12px;
+  font-size: 12px;
+}
+
+.dev-env .sim { color: #69d397; border-color: #2c4d3b; }
+.dev-env .nao { color: #ff8b76; border-color: #4d2f28; }
+
+.dev-providers {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 9px;
+}
+
+.dev-providers article {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 11px 13px;
+}
+
+.dev-providers article.pronto { border-color: #2c4d3b; }
+
+.dev-providers b {
+  display: block;
+  font-size: 13px;
+}
+
+.dev-providers small {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.dev-volumes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.dev-volumes span {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 11px 13px;
+  display: grid;
+  gap: 3px;
+}
+
+.dev-volumes b {
+  font-size: 19px;
+  color: var(--gold2);
+}
+
+.dev-volumes small {
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.dev-volumes .vazia b { color: var(--muted); }
+.dev-volumes .ausente { opacity: 0.5; }
+
+.dev-error {
+  border: 1px solid rgba(241, 107, 94, 0.4);
+  background: rgba(241, 107, 94, 0.1);
+  color: var(--red);
+  border-radius: 9px;
+  padding: 11px 14px;
+  margin-top: 14px;
+  font-size: 13px;
+}
+
+.dev-loading {
+  color: var(--muted);
+  padding: 30px 0;
+}
+
+.dev-footer {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+  padding-top: 10px;
+}
+
+@media (max-width: 760px) {
+  .dev-top-actions {
+    width: 100%;
+  }
+  .dev-top-actions button {
+    flex: 1;
+  }
+}

@@ -169,6 +169,30 @@ O que **não** fazer: raspagem de tela, automação do aplicativo ou uso de
 endpoints internos não documentados. Além de frágil, viola os termos de uso e
 colocaria em risco a conta do treinador.
 
+## Conta de manutenção
+
+Além do treinador e dos alunos existe um terceiro papel, `dev`, para quem mantém
+a plataforma. Ele alcança tudo o que o treinador alcança e mais um painel de
+diagnóstico em `/api/dev/overview`: erros da aplicação, contas e sessões,
+eventos de segurança, uso por rota, volume de cada tabela e o estado das
+integrações.
+
+A conta **só existe se estas duas variáveis estiverem definidas**:
+
+```dotenv
+DEV_LOGIN=
+DEV_INITIAL_PASSWORD=
+```
+
+Sem elas, o papel simplesmente não é criado — uma conta de acesso irrestrito não
+pode existir por padrão. O login não precisa ser um e-mail: é um identificador
+curto que ninguém usa para receber mensagem.
+
+O diagnóstico devolve apenas a **presença** de cada variável de ambiente, nunca
+o valor, e nunca inclui hash de senha nem token de sessão: nem quem mantém o
+sistema precisa deles para diagnosticar, e devolvê-los transformaria a rota num
+alvo. Treinador e aluno recebem `403 dev_access_required`.
+
 ## Estrutura principal
 
 - `app/`: interface e fluxos do professor e do aluno
@@ -178,6 +202,8 @@ colocaria em risco a conta do treinador.
 - `worker/`: entrada do Cloudflare Worker, com `auth.ts` (login e sessões) e
   `integrations.ts` (catálogo e normalização dos provedores)
 - `app/api-client.ts`: camada única de chamadas à API, com erros diagnosticáveis
+- `app/DevDashboard.tsx`: painel de diagnóstico da conta de manutenção
+- `db/sql.ts`: gera o SQL de criação a partir do schema Drizzle (fonte única)
 - `tests/`: testes automatizados
 
 ## Integrações

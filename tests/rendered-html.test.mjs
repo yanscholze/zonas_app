@@ -1816,3 +1816,70 @@ test("shows the student the last seven days without turning it into a wall", asy
   assert.match(client, /average_pace_seconds/);
   assert.match(client, /average_heart_rate/);
 });
+
+/* -------------------------------------------------------------------------- *
+ * Conta de manutenção e painel de diagnóstico
+ * -------------------------------------------------------------------------- */
+
+test("creates the maintenance account only from the environment", async () => {
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // Uma conta de acesso irrestrito não pode existir por padrão nem ter
+  // credencial escrita no código — vale o mesmo cuidado da conta do treinador.
+  assert.match(auth, /export async function ensureDevAccount/);
+  assert.match(auth, /if \(!devLogin \|\| !isValidDevLogin\(devLogin\)\) return "not_configured";/);
+  assert.match(auth, /if \(!devPassword \|\| devPassword\.length < MIN_PASSWORD_LENGTH\) return "not_configured";/);
+  assert.match(worker, /ensureDevAccount\(env\.DB, env\.DEV_LOGIN, env\.DEV_INITIAL_PASSWORD\)/);
+  // A senha de manutenção nunca aparece no código.
+  for (const fonte of [auth, worker]) {
+    assert.doesNotMatch(fonte, /Yan\.\d+/, "senha de manutenção não pode estar no código");
+  }
+});
+
+test("keeps the diagnostics panel out of reach for coach and student", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("dev-scope", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const prepare = (sql) => statement(() => (sql.includes("FROM athlete_access") ? { athlete_name: "Ana Souza", status: "Ativo" } : null));
+  const env = {
+    ASSETS: { fetch: async () => new Response("", { status: 404 }) },
+    DB: { prepare: withSession(prepare), async batch(i) { for (const x of i) await x.run(); return []; } },
+  };
+  const ctx = { waitUntil() {}, passThroughOnException() {} };
+  const chamar = (cookie) => worker.fetch(
+    new Request("https://zonasapp.example/api/dev/overview", { headers: { ...cookie } }), env, ctx);
+
+  const doTreinador = await chamar(coachCookie);
+  assert.equal(doTreinador.status, 403);
+  assert.equal((await doTreinador.json()).error, "dev_access_required");
+  assert.equal((await chamar(studentCookie)).status, 403);
+  assert.equal((await worker.fetch(new Request("https://zonasapp.example/api/dev/overview"), env, ctx)).status, 401);
+});
+
+test("never exposes password hashes or session tokens in the diagnostics", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const inicio = worker.indexOf("async function devOverviewApi");
+  const fim = worker.indexOf("async function racesRecordsApi", inicio);
+  const corpo = worker.slice(inicio, fim);
+  assert.ok(inicio > 0 && fim > inicio, "devOverviewApi precisa existir");
+  // Nem a conta de manutenção precisa de hash ou token para diagnosticar, e
+  // devolvê-los transformaria esta rota num alvo.
+  assert.doesNotMatch(corpo, /password_hash|password_salt|token_hash/);
+  // Do ambiente só sai a presença da variável, nunca o valor.
+  assert.match(corpo, /coachEmailConfigurado: Boolean\(env\.COACH_EMAIL\)/);
+  assert.doesNotMatch(corpo, /valor: env\.|env\.DEV_INITIAL_PASSWORD/);
+});
+
+test("gives the maintenance account both views", async () => {
+  const root = await readFile(new URL("../app/AppRoot.tsx", import.meta.url), "utf8");
+  const dash = await readFile(new URL("../app/DevDashboard.tsx", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // Abre no diagnóstico e alcança o painel do treinador pelo mesmo lugar.
+  assert.match(root, /session\.role === "dev"/);
+  assert.match(root, /modoTreinador/);
+  assert.match(worker, /function isCoachLevel/);
+  assert.match(worker, /identity\?\.role === "coach" \|\| identity\?\.role === "dev"/);
+  for (const aba of ["Resumo", "Erros", "Contas", "Segurança", "Banco"]) {
+    assert.ok(dash.includes(aba), `falta a aba ${aba}`);
+  }
+});

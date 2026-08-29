@@ -18,7 +18,16 @@ export const MIN_PASSWORD_LENGTH = 8;
 const MAX_FAILED_ATTEMPTS = 8;
 const LOCK_WINDOW_MS = 15 * 60 * 1000;
 
-export type UserRole = "coach" | "student";
+/**
+ * Papéis do sistema.
+ *
+ * `dev` é a conta de manutenção do dono da plataforma: enxerga tudo o que o
+ * treinador enxerga e mais o diagnóstico — erros, sessões, contas e estado do
+ * banco. Por ter acesso irrestrito, existe apenas se as variáveis DEV_LOGIN e
+ * DEV_INITIAL_PASSWORD estiverem definidas no ambiente, e todo acesso dela fica
+ * registrado no log de segurança.
+ */
+export type UserRole = "coach" | "student" | "dev";
 
 export type UserAccount = {
   id: string;
@@ -36,6 +45,7 @@ export type UserAccount = {
 };
 
 export type SessionIdentity =
+  | { role: "dev"; email: string; userId: string; name: string; mustChangePassword: boolean }
   | { role: "coach"; email: string; userId: string; name: string; mustChangePassword: boolean }
   | { role: "student"; email: string; userId: string; name: string; athleteName: string; mustChangePassword: boolean };
 
@@ -237,8 +247,8 @@ export async function identityFromRequest(db: AuthDatabase, request: Request): P
   await db.prepare("UPDATE user_sessions SET last_seen_at = ? WHERE token_hash = ?").bind(now, tokenHash).run();
 
   const mustChangePassword = Number(account.must_change_password) === 1;
-  if (account.role === "coach") {
-    return { role: "coach", email: account.email, userId: account.id, name: account.name, mustChangePassword };
+  if (account.role === "coach" || account.role === "dev") {
+    return { role: account.role, email: account.email, userId: account.id, name: account.name, mustChangePassword };
   }
   if (!account.athlete_name) return null;
   return {
@@ -280,6 +290,42 @@ export async function registerSuccessfulLogin(db: AuthDatabase, account: UserAcc
 
 export function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= 254;
+}
+
+/**
+ * Identificador de login aceito para a conta de manutenção. Diferente das
+ * contas de treinador e aluno, não precisa ser um e-mail — é um nome curto que
+ * o dono digita, e nunca recebe mensagem nenhuma.
+ */
+export function isValidDevLogin(login: string): boolean {
+  return /^[a-zA-Z0-9._-]{1,60}$/.test(login);
+}
+
+/**
+ * Cria ou atualiza a conta de manutenção a partir do ambiente.
+ *
+ * Sem DEV_LOGIN e DEV_INITIAL_PASSWORD nada é criado: uma conta com acesso
+ * irrestrito não pode existir por padrão, nem ter credencial escrita no código.
+ */
+export async function ensureDevAccount(
+  db: AuthDatabase,
+  devLogin: string | undefined,
+  devPassword: string | undefined,
+): Promise<"ready" | "created" | "not_configured"> {
+  if (!devLogin || !isValidDevLogin(devLogin)) return "not_configured";
+  if (!devPassword || devPassword.length < MIN_PASSWORD_LENGTH) return "not_configured";
+  const login = devLogin.trim().toLowerCase();
+  const existente = await db.prepare("SELECT id FROM user_accounts WHERE email = ? AND role = 'dev' LIMIT 1").bind(login).first();
+  if (existente) return "ready";
+  await createAccount(db, {
+    email: login,
+    name: "Desenvolvimento",
+    role: "dev",
+    password: devPassword,
+    mustChangePassword: false,
+    status: "Ativo",
+  });
+  return "created";
 }
 
 export async function createAccount(

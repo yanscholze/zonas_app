@@ -10,6 +10,7 @@ import {
   destroySessionsForUser,
   ensureAuthTables,
   ensureCoachAccount,
+  ensureDevAccount,
   expiredSessionCookie,
   generateTemporaryPassword,
   hashPassword,
@@ -42,6 +43,8 @@ interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
   COACH_EMAIL?: string;
+  DEV_LOGIN?: string;
+  DEV_INITIAL_PASSWORD?: string;
   COACH_INITIAL_PASSWORD?: string;
   STRAVA_CLIENT_ID?: string;
   STRAVA_CLIENT_SECRET?: string;
@@ -169,13 +172,29 @@ function requireCoachApiAccess(request: Request): Response | null {
   if (!identity) {
     return Response.json({ error: "authentication_required" }, { status: 401 });
   }
-  if (identity.role !== "coach") {
+  if (!isCoachLevel(identity)) {
     return Response.json({ error: "coach_access_required" }, { status: 403 });
   }
   return null;
 }
 
-type ApiIdentity = { role: "coach"; email: string } | { role: "student"; email: string; athleteName: string };
+/** Só a conta de manutenção alcança o diagnóstico. */
+function requireDevApiAccess(request: Request): Response | null {
+  const identity = resolvedIdentities.get(request) ?? null;
+  if (!identity) return Response.json({ error: "authentication_required" }, { status: 401 });
+  if (identity.role !== "dev") return Response.json({ error: "dev_access_required" }, { status: 403 });
+  return null;
+}
+
+type ApiIdentity =
+  | { role: "dev"; email: string }
+  | { role: "coach"; email: string }
+  | { role: "student"; email: string; athleteName: string };
+
+/** A conta de manutenção alcança tudo o que o treinador alcança, e mais. */
+function isCoachLevel(identity: ApiIdentity | null): boolean {
+  return identity?.role === "coach" || identity?.role === "dev";
+}
 
 
 
@@ -427,7 +446,7 @@ async function ensureAthleteAccess(env: Env) {
 async function resolveApiIdentity(request: Request, env: Env): Promise<ApiIdentity | null> {
   const session = await identityFromRequest(env.DB, request);
   if (!session) return null;
-  if (session.role === "coach") return { role: "coach", email: session.email };
+  if (session.role === "coach" || session.role === "dev") return { role: session.role, email: session.email };
   await ensureAthleteAccess(env);
   const row = await env.DB.prepare(
     "SELECT athlete_name FROM athlete_access WHERE athlete_name = ? AND status = 'Ativo' LIMIT 1",
@@ -462,6 +481,7 @@ const invalidCredentials = () => Response.json({ error: "invalid_credentials" },
 async function authLoginApi(request: Request, url: URL, env: Env): Promise<Response> {
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
   const input = await request.json() as Record<string, unknown>;
+  // A conta de manutenção entra por um identificador curto, não por e-mail.
   const email = boundedText(input.email, 254).toLowerCase();
   const password = typeof input.password === "string" ? input.password : "";
   if (!email || !password) return invalidCredentials();
@@ -1904,6 +1924,88 @@ async function integrationsCoachApi(request: Request, env: Env): Promise<Respons
   return Response.json({ disconnected: true, athleteName, provider: provider.id });
 }
 
+
+/* -------------------------------------------------------------------------- */
+/* Diagnóstico (conta de manutenção)                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Retrato do sistema para quem mantém a plataforma.
+ *
+ * Reúne em uma resposta o que estava espalhado por várias telas: contas e
+ * sessões, erros e eventos de segurança, volume de cada tabela e estado das
+ * integrações. Nunca inclui hash de senha nem token — nem a conta de
+ * manutenção precisa deles para diagnosticar, e expô-los transformaria esta
+ * rota num alvo.
+ */
+async function devOverviewApi(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
+  await ensureAuthTables(env.DB);
+  await ensureTables(env, schema.applicationErrors, schema.securityEvents, schema.requestRateLimits, schema.requestDeduplication);
+  await ensureIntegrationTables(env);
+
+  const agora = Date.now();
+  const tabelas = [
+    "athletes", "user_accounts", "user_sessions", "training_weeks", "performance_tests",
+    "workout_executions", "pain_reports", "pain_report_updates", "training_feedbacks",
+    "athlete_races", "personal_records", "student_payments", "external_activities",
+    "external_integrations", "access_requests", "data_backups", "security_events",
+    "application_errors",
+  ];
+
+  const [contas, sessoes, erros, eventos, limites, atividades] = await Promise.all([
+    env.DB.prepare(`SELECT id, email, name, role, athlete_name, status, must_change_password,
+                           failed_attempts, locked_until, last_login_at, created_at
+                      FROM user_accounts ORDER BY role, name`).all(),
+    env.DB.prepare(`SELECT user_sessions.email, user_sessions.created_at, user_sessions.last_seen_at,
+                           user_sessions.expires_at, user_accounts.role
+                      FROM user_sessions LEFT JOIN user_accounts ON user_accounts.id = user_sessions.user_id
+                     WHERE user_sessions.expires_at > ? ORDER BY user_sessions.last_seen_at DESC LIMIT 40`).bind(agora).all(),
+    env.DB.prepare("SELECT id, area, error_code, method, status_code, created_at FROM application_errors ORDER BY created_at DESC LIMIT 80").all(),
+    env.DB.prepare("SELECT id, actor_email, event_type, route, details, created_at FROM security_events ORDER BY created_at DESC LIMIT 60").all(),
+    env.DB.prepare("SELECT actor_email, route, method, request_count, window_start FROM request_rate_limits WHERE window_start > ? ORDER BY request_count DESC LIMIT 25").bind(agora - 3_600_000).all(),
+    env.DB.prepare("SELECT provider, COUNT(*) AS total, MAX(started_at) AS ultima FROM external_activities GROUP BY provider").all(),
+  ]);
+
+  // Volume de cada tabela, uma consulta por tabela porque o SQLite não expõe
+  // contagem de linhas em metadado confiável.
+  const volumes: Record<string, number> = {};
+  for (const tabela of tabelas) {
+    try {
+      const linha = await env.DB.prepare(`SELECT COUNT(*) AS total FROM ${tabela}`).first() as { total?: number } | null;
+      volumes[tabela] = Number(linha?.total ?? 0);
+    } catch {
+      volumes[tabela] = -1; // tabela ainda não criada nesta instalação
+    }
+  }
+
+  const errosRecentes = (erros.results as Array<{ created_at: number }>).filter(e => Number(e.created_at) > agora - 86_400_000);
+
+  return Response.json({
+    generatedAt: agora,
+    saude: {
+      errosUltimas24h: errosRecentes.length,
+      contasBloqueadas: (contas.results as Array<{ status?: string }>).filter(c => c.status === "Bloqueado").length,
+      sessoesAtivas: sessoes.results.length,
+      integracoesConectadas: (atividades.results as unknown[]).length,
+    },
+    ambiente: {
+      // Só a presença das variáveis, nunca o valor.
+      coachEmailConfigurado: Boolean(env.COACH_EMAIL),
+      devLoginConfigurado: Boolean(env.DEV_LOGIN),
+      chaveDeCifraConfigurada: Boolean(env.STRAVA_TOKEN_ENCRYPTION_KEY),
+      provedores: Object.values(PROVIDERS).map(p => ({ id: p.id, label: p.label, disponivel: providerIsReady(env, p), estado: providerStatusLabel(env, p) })),
+    },
+    contas: contas.results,
+    sessoes: sessoes.results,
+    erros: erros.results,
+    eventos: eventos.results,
+    limites: limites.results,
+    atividadesPorProvedor: atividades.results,
+    volumes,
+  });
+}
+
 async function racesRecordsApi(request: Request, env: Env): Promise<Response> {
   await ensureTables(env, schema.athleteRaces, schema.personalRecords);
   const url=new URL(request.url);
@@ -2001,6 +2103,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
       try {
         await ensureAuthTables(env.DB);
         const coachAccount = await ensureCoachAccount(env.DB, coachEmailOf(env), env.COACH_INITIAL_PASSWORD);
+        await ensureDevAccount(env.DB, env.DEV_LOGIN, env.DEV_INITIAL_PASSWORD);
         if (coachAccount === "not_configured") {
           return Response.json({
             error: "coach_account_not_configured",
@@ -2027,6 +2130,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
       try {
         await ensureAuthTables(env.DB);
         await ensureCoachAccount(env.DB, coachEmailOf(env), env.COACH_INITIAL_PASSWORD);
+        await ensureDevAccount(env.DB, env.DEV_LOGIN, env.DEV_INITIAL_PASSWORD);
         resolvedIdentities.set(request, await resolveApiIdentity(request, env));
       } catch { return await applicationFailure(env, request, "sessão", "database_unavailable"); }
     }
@@ -2094,6 +2198,13 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
       if (limited) return limited;
       const invalid = await validateApiEnvelope(request, url); if (invalid) return invalid;
       const duplicate = await preventDuplicateSubmission(request, url, env, actorEmail); if (duplicate) return duplicate;
+    }
+
+    if (url.pathname === "/api/dev/overview") {
+      const negado = requireDevApiAccess(request);
+      if (negado) return negado;
+      try { return await devOverviewApi(request, env); }
+      catch { return await applicationFailure(env, request, "diagnóstico", "dev_overview_unavailable"); }
     }
 
     if (url.pathname === "/api/integrations") {
