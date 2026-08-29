@@ -1736,9 +1736,10 @@ test("gives every pain report a trackable history", async () => {
   assert.match(worker, /week_not_found_for_athlete/);
 
   assert.match(client, /function PainCenter/);
-  assert.match(client, /Marcar como verificado/);
-  assert.match(client, /Vincular semana/);
-  assert.match(client, /HISTÓRICO/);
+  // Cada passo virou uma ação com o seu próprio formulário.
+  assert.match(client, /Registrar minha avaliação/);
+  assert.match(client, /Ajustei a planilha por causa disso/);
+  assert.match(client, /Histórico completo/);
 });
 
 test("keeps one single source of truth for the database schema", async () => {
@@ -1964,4 +1965,42 @@ test("keeps the visiting banner out of the coach grid", async () => {
   assert.match(css, /\.shell\.com-visita\{padding-top:var\(--faixa-visita\)\}/);
   assert.match(css, /\.shell\.com-visita \.sidebar\{top:var\(--faixa-visita\)/);
   assert.match(client, /className=\{`shell\$\{visitando \? " com-visita" : ""\}`\}/);
+});
+
+test("asks one clear question per step of a pain report", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Antes havia um campo solto — "Anotação para este passo" — servindo às
+  // quatro ações: o treinador escrevia sem saber onde aquilo ia parar.
+  assert.doesNotMatch(client, /Anotação para este passo/);
+  assert.match(client, /const formularios: Record<Passo,/);
+  for (const pergunta of ["O que ele contou\\?", "O que você concluiu\\?", "O que mudou no treino\\?", "Como terminou\\?"]) {
+    assert.match(client, new RegExp(pergunta), `falta a pergunta: ${pergunta}`);
+  }
+  // Cada campo mostra um exemplo do que se espera ali.
+  assert.match(client, /exemplo: "Ex\.: /);
+  // E o cartão diz em que ponto o caso está e qual é o passo seguinte.
+  assert.match(client, /const proximoPasso =/);
+  assert.match(client, /Comece falando com o atleta\./);
+  assert.match(client, /className="pain-steps"/);
+});
+
+test("never leaves a pain action disabled without saying why", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // O botão de resolver nascia desabilitado por depender de um campo genérico,
+  // sem nada explicando a ligação — indistinguível de um botão quebrado.
+  assert.doesNotMatch(client, /disabled=\{estado === "salvando" \|\| !texto\}/);
+  assert.match(client, /if \(forma\.obrigatorio && !texto\.trim\(\)\)/);
+  assert.match(client, /antes de continuar\./);
+  // O único bloqueio é durante o envio.
+  assert.match(client, /disabled=\{estado === "salvando"\}/);
+});
+
+test("lets the coach pick a real week instead of typing a date", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Pedir "a segunda-feira da semana" obrigava o treinador a calcular de
+  // cabeça; agora as semanas do próprio aluno são listadas.
+  assert.doesNotMatch(client, /Informe a segunda-feira da semana/);
+  assert.match(client, /\/api\/training-weeks\?athlete=\$\{encodeURIComponent\(relato\.athlete_name\)\}/);
+  assert.match(client, /Qual semana você ajustou\?/);
+  assert.match(client, /Este aluno ainda não tem semana montada\./);
 });

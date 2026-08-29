@@ -580,10 +580,12 @@ function AccountsCenter({ athletes }: { athletes: Athlete[] }) {
 /**
  * Acompanhamento das queixas de dor.
  *
- * Antes o treinador só via a contagem de relatos, sem nada a fazer com eles.
- * Aqui cada queixa tem trajetória — contato, avaliação, ajuste na planilha e
- * desfecho — e guarda o histórico, que é o que permite entender meses depois o
- * que houve com aquele atleta e por que a semana foi alterada.
+ * A primeira versão colocava um campo de texto solto e quatro botões lado a
+ * lado: o treinador escrevia sem saber para qual ação a anotação iria, e o
+ * botão de resolver nascia desabilitado sem explicar que dependia daquele
+ * campo. Aqui cada passo é uma ação com o seu próprio formulário, com a
+ * pergunta que aquele momento pede, e o cartão diz em que etapa está e qual é
+ * o passo seguinte.
  */
 function PainCenter({ athletes }: { athletes: Athlete[] }) {
   type Relato = {
@@ -593,45 +595,89 @@ function PainCenter({ athletes }: { athletes: Athlete[] }) {
     contacted_at?: number; reviewed_at?: number; resolved_at?: number;
   };
   type Movimento = { id: string; actor_email: string; action: string; note?: string; created_at: number };
+  type Passo = "contact" | "review" | "link_week" | "resolve" | "reopen";
 
   const [relatos, setRelatos] = useState<Relato[]>([]);
   const [aberto, setAberto] = useState<string>("");
   const [historico, setHistorico] = useState<Movimento[]>([]);
+  const [passo, setPasso] = useState<Passo | "">("");
   const [texto, setTexto] = useState("");
   const [semana, setSemana] = useState("");
-  const [estado, setEstado] = useState<"carregando" | "pronto" | "salvando" | "erro">("carregando");
+  const [semanas, setSemanas] = useState<Array<{ week_start: string; week_label: string; status: string }>>([]);
+  const [estado, setEstado] = useState<"carregando" | "pronto" | "salvando">("carregando");
   const [erro, setErro] = useState("");
+  const [aviso, setAviso] = useState("");
   const [filtro, setFiltro] = useState<"Abertos" | "Todos" | "Resolvidos">("Abertos");
 
   const carregar = () => api.get<{ reports: Relato[] }>("/api/pain-reports")
     .then(d => { setRelatos(d.reports || []); setEstado("pronto"); })
-    .catch(error => { setErro(describeError(error)); setEstado("erro"); });
+    .catch(error => { setErro(describeError(error)); setEstado("pronto"); });
   useEffect(() => { carregar(); }, []);
 
-  const abrir = async (id: string) => {
-    if (aberto === id) { setAberto(""); return; }
-    setAberto(id); setTexto(""); setSemana(""); setErro("");
-    try {
-      const d = await api.get<{ history: Movimento[] }>(`/api/pain-reports?id=${encodeURIComponent(id)}`);
-      setHistorico(d.history || []);
-    } catch { setHistorico([]); }
+  const abrir = async (relato: Relato) => {
+    if (aberto === relato.id) { setAberto(""); setPasso(""); return; }
+    setAberto(relato.id); setPasso(""); setTexto(""); setSemana(""); setErro(""); setAviso("");
+    const [detalhe, semanasDoAluno] = await Promise.all([
+      api.get<{ history: Movimento[] }>(`/api/pain-reports?id=${encodeURIComponent(relato.id)}`).catch(() => ({ history: [] })),
+      // As semanas reais do aluno, para o treinador escolher em vez de
+      // calcular de cabeça qual foi a segunda-feira.
+      api.get<{ weeks: Array<{ week_start: string; week_label: string; status: string }> }>(
+        `/api/training-weeks?athlete=${encodeURIComponent(relato.athlete_name)}`).catch(() => ({ weeks: [] })),
+    ]);
+    setHistorico(detalhe.history || []);
+    setSemanas(semanasDoAluno.weeks || []);
   };
 
-  const agir = async (id: string, action: string, extra: Record<string, unknown> = {}) => {
+  /** Cada passo pede uma coisa diferente; o formulário pergunta exatamente ela. */
+  const formularios: Record<Passo, { titulo: string; pergunta: string; exemplo: string; obrigatorio: boolean; botao: string }> = {
+    contact: { titulo: "Falei com o atleta", pergunta: "O que ele contou?", exemplo: "Ex.: disse que a dor aparece depois dos 20 min e melhora com gelo", obrigatorio: false, botao: "Registrar conversa" },
+    review: { titulo: "Registrar minha avaliação", pergunta: "O que você concluiu?", exemplo: "Ex.: sobrecarga de volume; sem sinal de lesão que exija parar", obrigatorio: true, botao: "Salvar avaliação" },
+    link_week: { titulo: "Ajustei a planilha por causa disso", pergunta: "O que mudou no treino?", exemplo: "Ex.: troquei o longão por rodagem leve e tirei os tiros", obrigatorio: false, botao: "Vincular à semana" },
+    resolve: { titulo: "Encerrar o caso", pergunta: "Como terminou?", exemplo: "Ex.: sem dor há dez dias; voltou ao volume normal", obrigatorio: true, botao: "Encerrar" },
+    reopen: { titulo: "Reabrir o caso", pergunta: "O que voltou a acontecer?", exemplo: "Ex.: a dor voltou no treino longo de domingo", obrigatorio: false, botao: "Reabrir" },
+  };
+
+  const executar = async (relato: Relato) => {
+    if (!passo) return;
+    const forma = formularios[passo];
+    if (forma.obrigatorio && !texto.trim()) {
+      setErro(`Escreva ${forma.pergunta.toLowerCase().replace("?", "")} antes de continuar.`);
+      return;
+    }
+    if (passo === "link_week" && !semana) {
+      setErro("Escolha a semana que você ajustou.");
+      return;
+    }
     setEstado("salvando"); setErro("");
     try {
-      await api.post("/api/pain-reports", { action, id, note: texto || undefined, ...extra });
+      await api.post("/api/pain-reports", {
+        action: passo, id: relato.id,
+        ...(texto.trim() ? { note: texto.trim() } : {}),
+        ...(passo === "link_week" ? { weekStart: semana } : {}),
+      });
       await carregar();
-      const d = await api.get<{ history: Movimento[] }>(`/api/pain-reports?id=${encodeURIComponent(id)}`);
-      setHistorico(d.history || []); setTexto(""); setSemana(""); setEstado("pronto");
-    } catch (error) { setErro(describeError(error)); setEstado("erro"); }
+      const d = await api.get<{ history: Movimento[] }>(`/api/pain-reports?id=${encodeURIComponent(relato.id)}`);
+      setHistorico(d.history || []);
+      setAviso(`${forma.titulo} · registrado`);
+      setPasso(""); setTexto(""); setSemana("");
+    } catch (error) { setErro(describeError(error)); }
+    finally { setEstado("pronto"); }
+  };
+
+  /** O que falta fazer neste caso, em uma frase. */
+  const proximoPasso = (r: Relato): { texto: string; sugerido: Passo | "" } => {
+    if (r.status === "Resolvido") return { texto: "Caso encerrado.", sugerido: "" };
+    if (!r.contacted_at) return { texto: "Comece falando com o atleta.", sugerido: "contact" };
+    if (!r.coach_note) return { texto: "Registre a sua avaliação.", sugerido: "review" };
+    if (!r.linked_week_start) return { texto: "Ajuste a planilha e vincule a semana, se for o caso.", sugerido: "link_week" };
+    return { texto: "Quando passar, encerre o caso.", sugerido: "resolve" };
   };
 
   const visiveis = relatos.filter(r =>
     filtro === "Todos" ? true : filtro === "Resolvidos" ? r.status === "Resolvido" : r.status !== "Resolvido");
   const abertos = relatos.filter(r => r.status !== "Resolvido").length;
   const quando = (ms?: number) => ms ? new Date(Number(ms)).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "";
-  const telefoneDe = (nome: string) => athletes.find(a => a.name === nome);
+  const soData = (ms?: number) => ms ? new Date(Number(ms)).toLocaleDateString("pt-BR") : "";
 
   return <section className="pain-center">
     <header>
@@ -648,14 +694,17 @@ function PainCenter({ athletes }: { athletes: Athlete[] }) {
         <button key={f} className={filtro === f ? "selected" : ""} onClick={() => setFiltro(f)}>{f}</button>)}
     </div>
 
-    {erro && <p className="registration-error">{erro}</p>}
     {estado === "carregando" ? <div className="feedback-empty">Carregando relatos…</div>
       : visiveis.length === 0 ? <div className="feedback-empty">Nenhum relato {filtro === "Resolvidos" ? "resolvido" : "em aberto"}.</div>
       : visiveis.map(r => {
-        const atleta = telefoneDe(r.athlete_name);
+        const aluno = athletes.find(a => a.name === r.athlete_name);
         const grave = r.intensity >= 7;
+        const seguinte = proximoPasso(r);
+        const estaAberto = aberto === r.id;
+        const forma = passo ? formularios[passo] : null;
+
         return <article key={r.id} className={`pain-case ${r.status === "Resolvido" ? "resolvido" : grave ? "grave" : ""}`}>
-          <button className="pain-case-head" onClick={() => abrir(r.id)}>
+          <button className="pain-case-head" onClick={() => void abrir(r)} aria-expanded={estaAberto}>
             <span className="pain-case-mark">{r.intensity}</span>
             <span>
               <b>{r.athlete_name} · {r.body_area}</b>
@@ -664,48 +713,79 @@ function PainCenter({ athletes }: { athletes: Athlete[] }) {
             <em className={r.status === "Resolvido" ? "ok" : r.status === "Verificado" ? "review" : "pending"}>{r.status}</em>
           </button>
 
-          {aberto === r.id && <div className="pain-case-body">
+          {estaAberto && <div className="pain-case-body">
             {r.note && <p className="pain-case-quote">“{r.note}”</p>}
 
-            <div className="pain-case-facts">
-              {r.coach_note && <span><small>AVALIAÇÃO</small>{r.coach_note}</span>}
-              {r.linked_week_start && <span><small>PLANILHA AJUSTADA</small>semana de {r.linked_week_start}</span>}
-              {r.resolution && <span><small>DESFECHO</small>{r.resolution}</span>}
-            </div>
+            {/* Linha do tempo do caso: o que já foi feito e o que falta. */}
+            <ol className="pain-steps">
+              {([
+                ["contact", "Conversa", r.contacted_at ? `em ${soData(r.contacted_at)}` : "ainda não"],
+                ["review", "Avaliação", r.coach_note || "ainda não"],
+                ["link_week", "Planilha", r.linked_week_start ? `semana de ${r.linked_week_start}` : "sem ajuste"],
+                ["resolve", "Desfecho", r.resolution || "em aberto"],
+              ] as const).map(([chave, rotulo, valor]) => {
+                const feito = chave === "contact" ? Boolean(r.contacted_at)
+                  : chave === "review" ? Boolean(r.coach_note)
+                  : chave === "link_week" ? Boolean(r.linked_week_start)
+                  : Boolean(r.resolution);
+                return <li key={chave} className={feito ? "feito" : ""}>
+                  <i>{feito ? "✓" : "○"}</i>
+                  <span><b>{rotulo}</b><small>{valor}</small></span>
+                </li>;
+              })}
+            </ol>
 
-            <label className="pain-case-note">
-              Anotação para este passo
-              <textarea value={texto} onChange={e => setTexto(e.target.value)} maxLength={1000}
-                placeholder="O que foi conversado, o que você observou, o que orientou" />
-            </label>
+            {r.status !== "Resolvido" && <p className="pain-next">{seguinte.texto}</p>}
+            {aviso && <p className="pain-ok">{aviso}</p>}
 
-            <div className="pain-case-actions">
-              {atleta && <a className="pain-contact" href={`https://wa.me/?text=${encodeURIComponent(`Olá ${r.athlete_name.split(" ")[0]}, vi seu relato de dor em ${r.body_area}. Como você está?`)}`} target="_blank" rel="noreferrer">Falar no WhatsApp ↗</a>}
-              <button disabled={estado === "salvando"} onClick={() => agir(r.id, "contact")}>Registrar contato</button>
-              <button disabled={estado === "salvando"} onClick={() => agir(r.id, "review")}>Marcar como verificado</button>
+            {/* Escolher a ação abre o formulário daquela ação, e só dele. */}
+            {!passo && <div className="pain-case-actions">
+              {aluno && <a className="pain-contact" href={`https://wa.me/?text=${encodeURIComponent(`Olá ${r.athlete_name.split(" ")[0]}, vi seu relato de dor em ${r.body_area}. Como você está?`)}`} target="_blank" rel="noreferrer">Abrir WhatsApp ↗</a>}
               {r.status === "Resolvido"
-                ? <button disabled={estado === "salvando"} onClick={() => agir(r.id, "reopen")}>Reabrir</button>
-                : <button className="gold" disabled={estado === "salvando" || !texto} onClick={() => agir(r.id, "resolve")}>Resolver</button>}
-            </div>
+                ? <button onClick={() => { setPasso("reopen"); setAviso(""); }}>Reabrir caso</button>
+                : (["contact", "review", "link_week", "resolve"] as const).map(p =>
+                    <button key={p} className={seguinte.sugerido === p ? "sugerido" : ""} onClick={() => { setPasso(p); setTexto(""); setErro(""); setAviso(""); }}>
+                      {formularios[p].titulo}
+                    </button>)}
+            </div>}
 
-            <div className="pain-case-link">
-              <label>Vincular ajuste na planilha
-                <input type="date" value={semana} onChange={e => setSemana(e.target.value)} />
+            {forma && <div className="pain-form">
+              <b>{forma.titulo}</b>
+              <label>
+                {forma.pergunta}{!forma.obrigatorio && <small> opcional</small>}
+                <textarea autoFocus value={texto} onChange={e => { setTexto(e.target.value); setErro(""); }} maxLength={1000} placeholder={forma.exemplo} />
               </label>
-              <button disabled={!semana || estado === "salvando"} onClick={() => agir(r.id, "link_week", { weekStart: semana })}>
-                Vincular semana
-              </button>
-              <small>Informe a segunda-feira da semana que você alterou por causa desta queixa.</small>
-            </div>
 
-            {historico.length > 0 && <div className="pain-case-history">
-              <span className="overline">HISTÓRICO</span>
+              {passo === "link_week" && <label>
+                Qual semana você ajustou?
+                {semanas.length === 0
+                  ? <small className="pain-sem-semana">Este aluno ainda não tem semana montada.</small>
+                  : <select value={semana} onChange={e => { setSemana(e.target.value); setErro(""); }}>
+                      <option value="">Escolha a semana…</option>
+                      {semanas.map(w => <option key={w.week_start} value={w.week_start}>
+                        {new Date(`${w.week_start}T12:00:00Z`).toLocaleDateString("pt-BR")} · {w.week_label} · {w.status}
+                      </option>)}
+                    </select>}
+              </label>}
+
+              {erro && <p className="registration-error">{erro}</p>}
+
+              <div className="pain-form-actions">
+                <button className="gold" disabled={estado === "salvando"} onClick={() => void executar(r)}>
+                  {estado === "salvando" ? "Salvando…" : forma.botao}
+                </button>
+                <button onClick={() => { setPasso(""); setTexto(""); setSemana(""); setErro(""); }}>Cancelar</button>
+              </div>
+            </div>}
+
+            {historico.length > 0 && <details className="pain-case-history">
+              <summary>Histórico completo ({historico.length})</summary>
               {historico.map(h => <article key={h.id}>
                 <b>{h.action}</b>
                 <small>{quando(h.created_at)} · {h.actor_email}</small>
                 {h.note && <p>{h.note}</p>}
               </article>)}
-            </div>}
+            </details>}
           </div>}
         </article>;
       })}
