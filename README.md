@@ -243,6 +243,22 @@ tempo, frequência cardíaca e ritmo médio — e já chegam ligadas à semana e
 do treino planejado. A gravação é idempotente: reenviar a mesma atividade não a
 duplica.
 
+### Dependências externas
+
+O que falta para cada integração sair do papel não é código:
+
+| Serviço | Depende de | Situação |
+| --- | --- | --- |
+| Strava | Cadastrar o aplicativo no portal do Strava e preencher `STRAVA_CLIENT_ID` e `STRAVA_CLIENT_SECRET` | Só isso |
+| Apple Saúde | Nada externo — funciona com `STRAVA_TOKEN_ENCRYPTION_KEY` definida | Pronta |
+| Garmin | **Aprovação no Garmin Connect Developer Program**, mais `GARMIN_CONSUMER_KEY`/`SECRET` e o aval das APIs Activity e Training | Fora do nosso controle |
+| Amazfit / Zepp | Confirmar no portal Zepp quais recursos a conta tem, mais `ZEPP_APP_ID`/`SECRET` | Depende do que a conta libera |
+
+Enquanto as variáveis de um provedor não existem, ele aparece como
+"Credenciais não configuradas" e a tentativa de conectar responde
+`503 provider_setup_required` dizendo quais faltam — em vez de abrir um fluxo
+que morreria no meio.
+
 ### Apple Saúde
 
 O HealthKit só existe dentro do iPhone e não tem API que um servidor possa

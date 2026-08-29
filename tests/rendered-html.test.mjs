@@ -2050,3 +2050,94 @@ test("leaves only an undo on a race that was already approved", async () => {
   assert.match(client, /review\(race,"Aguardando análise"/);
   assert.match(css, /\.race-cancel\{[^}]*color:var\(--red\)/);
 });
+
+/* -------------------------------------------------------------------------- *
+ * Integrações — normalização, erros e honestidade de estado
+ * -------------------------------------------------------------------------- */
+
+test("normalizes a real activity from each provider", async () => {
+  const { execSync } = await import("node:child_process");
+  const saida = execSync(
+    `npx tsx -e "` +
+    `import {normalizeActivity,averagePaceSeconds,weekStartOf,workoutDayOf} from './worker/integrations.ts';` +
+    `const s=normalizeActivity('strava',{id:1,start_date:'2026-08-24T07:00:00Z',distance:10000,moving_time:3000,average_heartrate:155});` +
+    `const g=normalizeActivity('garmin',{summaryId:'g1',startTimeInSeconds:1787554800,distanceInMeters:10000,durationInSeconds:3000,averageHeartRateInBeatsPerMinute:150});` +
+    `const z=normalizeActivity('zepp',{trackid:'z1',start_time:1787554800,dis:10000,run_time:3000,avg_heart_rate:145});` +
+    `const a=normalizeActivity('apple',{uuid:'a1',startDate:'2026-08-24T07:00:00Z',totalDistanceMeters:10000,durationSeconds:3000,averageHeartRate:140});` +
+    `console.log(JSON.stringify({s,g,z,a,pace:averagePaceSeconds(s),semana:weekStartOf(s.startedAt),dia:workoutDayOf(s.startedAt)}))"`,
+    { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8", timeout: 180000 },
+  );
+  const d = JSON.parse(saida.trim().split("\n").pop());
+  // Os quatro formatos, muito diferentes entre si, chegam ao mesmo resultado.
+  for (const provedor of ["s", "g", "z", "a"]) {
+    assert.equal(d[provedor].distanceMeters, 10000, `${provedor}: distância`);
+    assert.equal(d[provedor].movingSeconds, 3000, `${provedor}: duração`);
+    assert.ok(d[provedor].averageHeartRate > 0, `${provedor}: frequência cardíaca`);
+    assert.equal(d[provedor].startedAt, 1787554800000, `${provedor}: instante de início`);
+  }
+  // 10 km em 50 min são 5:00/km, e a atividade cai na semana e no dia certos.
+  assert.equal(d.pace, 300);
+  assert.equal(d.semana, "2026-08-24");
+  assert.equal(d.dia, "SEG");
+});
+
+test("refuses an activity without the data that identifies it", async () => {
+  const { execSync } = await import("node:child_process");
+  const saida = execSync(
+    `npx tsx -e "` +
+    `import {normalizeActivity,averagePaceSeconds} from './worker/integrations.ts';` +
+    `console.log(JSON.stringify({semId:normalizeActivity('strava',{start_date:'2026-08-24T07:00:00Z'}),` +
+    `semData:normalizeActivity('strava',{id:5}),dataRuim:normalizeActivity('strava',{id:5,start_date:'ontem'}),` +
+    `paceCurto:averagePaceSeconds(normalizeActivity('strava',{id:7,start_date:'2026-08-24T07:00:00Z',distance:200,moving_time:90}))}))"`,
+    { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8", timeout: 180000 },
+  );
+  const d = JSON.parse(saida.trim().split("\n").pop());
+  // Sem id ou sem instante não há como evitar duplicata nem casar com o treino.
+  assert.equal(d.semId, null);
+  assert.equal(d.semData, null);
+  assert.equal(d.dataRuim, null);
+  // Distância curta demais produziria um ritmo sem sentido.
+  assert.equal(d.paceCurto, null);
+});
+
+test("blames the right side when a stored token cannot be read", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/api-client.ts", import.meta.url), "utf8");
+  // Token que não decifra é problema desta instalação — a chave mudou —, não do
+  // Strava. Reportar "falha no Strava" mandaria quem investiga para o lado errado.
+  assert.match(worker, /if \(!accessToken\) return \{ imported: 0, error: "token_unreadable" \};/);
+  assert.match(client, /token_unreadable: "A autorização guardada não pode mais ser lida/);
+  assert.match(client, /refresh_failed: "A autorização expirou e não pôde ser renovada/);
+});
+
+test("uses PKCE only where the provider asks for it", async () => {
+  const integrations = await readFile(new URL("../worker/integrations.ts", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  assert.match(integrations, /id: "garmin"[\s\S]*?authType: "oauth2-pkce"/);
+  assert.match(integrations, /id: "zepp"[\s\S]*?authType: "oauth2"/);
+  // O desafio só é montado para quem pede PKCE, e o verifier fica no servidor.
+  assert.match(worker, /provider\.authType === "oauth2-pkce" \? createCodeVerifier\(\) : null/);
+  assert.match(worker, /if \(verifier\) \{\s*params\.set\("code_challenge"/);
+});
+
+test("keeps an Apple workout on the athlete who owns the token", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // O corpo da requisição não escolhe o atleta: quem escolhe é o token.
+  assert.match(worker, /SELECT athlete_name FROM device_ingest_tokens WHERE token_hash = \? AND revoked_at IS NULL/);
+  assert.match(worker, /storeActivity\(env, record\.athlete_name, "apple"/);
+  // Um token novo revoga o anterior, e desconectar revoga o que estiver ativo.
+  assert.match(worker, /UPDATE device_ingest_tokens SET revoked_at = \? WHERE athlete_name = \? AND provider = 'apple' AND revoked_at IS NULL/);
+  // A gravação é idempotente: reenviar o mesmo treino não duplica.
+  assert.match(worker, /INSERT OR IGNORE INTO external_activities/);
+});
+
+test("never shows a connection as live when the service lost its credentials", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Uma autorização antiga não vale nada se as credenciais saíram do ambiente:
+  // nada seria importado, e dizer "Conectado" faria o atleta acreditar que os
+  // treinos estão chegando.
+  assert.match(worker, /const conexaoUtil = conexao && !pronto/);
+  assert.match(worker, /status: "Suspensa", reason: "provider_not_configured"/);
+  assert.match(client, /CONEXÃO SUSPENSA/);
+});

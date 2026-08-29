@@ -1794,6 +1794,10 @@ async function syncStravaActivities(env: Env, athleteName: string): Promise<{ im
   if (!row?.access_token_encrypted) return { imported: 0, error: "not_connected" };
 
   let accessToken = await decryptIntegrationToken(row.access_token_encrypted, env.STRAVA_TOKEN_ENCRYPTION_KEY);
+  // Token que não decifra é problema desta instalação, não do Strava: acontece
+  // quando a chave de cifra muda. Dizer "falha no Strava" mandaria quem for
+  // investigar para o lado errado; o caminho certo é o atleta reconectar.
+  if (!accessToken) return { imported: 0, error: "token_unreadable" };
 
   // Renova no servidor quando falta menos de um minuto para expirar.
   if (Number(row.expires_at ?? 0) - Date.now() < 60_000 && row.refresh_token_encrypted) {
@@ -1899,17 +1903,27 @@ async function studentIntegrationsApi(request: Request, env: Env, athleteName: s
     ).bind(athleteName).all();
     const byLabel = new Map((connections.results as Record<string, unknown>[]).map(row => [String(row.provider), row]));
     return Response.json({
-      providers: Object.values(PROVIDERS).map(provider => ({
-        id: provider.id,
-        label: provider.label,
-        authType: provider.authType,
-        available: providerIsReady(env, provider),
-        status: providerStatusLabel(env, provider),
-        canImportActivities: provider.canImportActivities,
-        canSendWorkouts: provider.canSendWorkouts,
-        notes: provider.notes,
-        connection: byLabel.get(provider.label) ?? null,
-      })),
+      providers: Object.values(PROVIDERS).map(provider => {
+        const pronto = providerIsReady(env, provider);
+        const conexao = byLabel.get(provider.label) ?? null;
+        // Uma autorização antiga não vale nada se as credenciais do serviço
+        // saíram do ambiente: nada seria importado. Continuar exibindo
+        // "Conectado" faria o atleta acreditar que os treinos estão chegando.
+        const conexaoUtil = conexao && !pronto
+          ? { ...conexao, status: "Suspensa", reason: "provider_not_configured" }
+          : conexao;
+        return {
+          id: provider.id,
+          label: provider.label,
+          authType: provider.authType,
+          available: pronto,
+          status: providerStatusLabel(env, provider),
+          canImportActivities: provider.canImportActivities,
+          canSendWorkouts: provider.canSendWorkouts,
+          notes: provider.notes,
+          connection: conexaoUtil,
+        };
+      }),
     });
   }
 

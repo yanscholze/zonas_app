@@ -59,6 +59,11 @@ const friendlyMessages: Record<string, string> = {
   athlete_required: "Selecione o aluno.",
   invalid_email: "Confira o endereço de e-mail.",
   database_unavailable: "O banco de dados não respondeu. Tente novamente em instantes.",
+  not_connected: "Conecte o serviço antes de sincronizar.",
+  token_unreadable: "A autorização guardada não pode mais ser lida. Conecte o serviço novamente.",
+  refresh_failed: "A autorização expirou e não pôde ser renovada. Conecte o serviço novamente.",
+  strava_request_failed: "O Strava não respondeu agora. Tente de novo em instantes.",
+  provider_setup_required: "Este serviço ainda não foi liberado pelo professor.",
 };
 
 function friendlyByStatus(status: number): string {
