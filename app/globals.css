@@ -10549,258 +10549,6 @@ input {
   }
 }
 
-/* --- Acompanhamento de dores e lesões ------------------------------------- */
-
-.pain-center {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 20px;
-  margin-bottom: 16px;
-}
-
-.pain-center > header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 18px;
-  flex-wrap: wrap;
-  margin-bottom: 15px;
-}
-
-.pain-center h2 {
-  font-size: 22px;
-  margin: 5px 0 6px;
-}
-
-.pain-center > header p {
-  font-size: 13px;
-  color: var(--muted);
-  max-width: 62ch;
-}
-
-.pain-center > header b {
-  font-size: 28px;
-  color: var(--gold);
-  text-align: right;
-  display: grid;
-}
-
-.pain-center > header b small {
-  font-size: 10px;
-  color: var(--muted);
-}
-
-.pain-filters {
-  display: flex;
-  gap: 7px;
-  margin-bottom: 14px;
-}
-
-.pain-filters button {
-  border: 1px solid var(--line);
-  background: transparent;
-  color: var(--muted);
-  border-radius: 20px;
-  padding: 7px 13px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.pain-filters button.selected {
-  background: var(--gold);
-  border-color: var(--gold);
-  color: #15120c;
-  font-weight: 700;
-}
-
-.pain-case {
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  margin-bottom: 9px;
-  overflow: hidden;
-}
-
-.pain-case.grave {
-  border-color: #7d3b33;
-}
-
-.pain-case.resolvido {
-  opacity: 0.72;
-}
-
-.pain-case-head {
-  width: 100%;
-  display: grid;
-  grid-template-columns: 40px 1fr auto;
-  align-items: center;
-  gap: 12px;
-  padding: 13px 15px;
-  background: none;
-  border: none;
-  color: var(--text);
-  text-align: left;
-  cursor: pointer;
-}
-
-.pain-case-head:hover {
-  background: #1c1b19;
-}
-
-.pain-case-mark {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  display: grid;
-  place-items: center;
-  font-weight: 800;
-  background: #2e291d;
-  color: var(--gold);
-}
-
-.pain-case.grave .pain-case-mark {
-  background: #3a251d;
-  color: #ff8b76;
-}
-
-.pain-case-head b {
-  display: block;
-  font-size: 14px;
-}
-
-.pain-case-head small {
-  display: block;
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 3px;
-}
-
-.pain-case-head em {
-  font-style: normal;
-  font-size: 11px;
-  padding: 5px 9px;
-  border-radius: 14px;
-  white-space: nowrap;
-}
-
-.pain-case-head em.pending { background: #3a2f19; color: var(--gold2); }
-.pain-case-head em.review { background: #1e3348; color: #7fb6e0; }
-.pain-case-head em.ok { background: #183326; color: #69d397; }
-
-.pain-case-body {
-  border-top: 1px solid var(--line);
-  padding: 16px;
-  display: grid;
-  gap: 14px;
-}
-
-.pain-case-quote {
-  font-style: italic;
-  color: var(--text);
-  border-left: 3px solid var(--gold);
-  padding-left: 12px;
-  font-size: 14px;
-}
-
-.pain-case-facts {
-  display: grid;
-  gap: 9px;
-}
-
-.pain-case-facts span {
-  display: grid;
-  gap: 3px;
-  font-size: 13px;
-  background: #0f0f10;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  padding: 10px 12px;
-}
-
-.pain-case-facts small {
-  font-size: 9px;
-  letter-spacing: 0.1em;
-  color: var(--gold);
-}
-
-.pain-case-link {
-  display: grid;
-  gap: 8px;
-  border-top: 1px solid var(--line);
-  padding-top: 13px;
-}
-
-.pain-case-link label {
-  display: grid;
-  gap: 5px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.pain-case-link input {
-  background: #0f0f10;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  padding: 10px;
-  color: var(--text);
-  width: max-content;
-}
-
-.pain-case-link button {
-  justify-self: start;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: transparent;
-  color: var(--text);
-  padding: 9px 14px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.pain-case-link small {
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.pain-case-history {
-  border-top: 1px solid var(--line);
-  padding-top: 13px;
-  display: grid;
-  gap: 9px;
-}
-
-.pain-case-history article {
-  border-left: 2px solid var(--line);
-  padding-left: 12px;
-}
-
-.pain-case-history b {
-  font-size: 13px;
-}
-
-.pain-case-history small {
-  display: block;
-  font-size: 11px;
-  color: var(--muted);
-  margin: 2px 0 4px;
-}
-
-.pain-case-history p {
-  font-size: 13px;
-  color: var(--text);
-}
-
-@media (max-width: 760px) {
-  .pain-case-head {
-    grid-template-columns: 34px 1fr;
-  }
-  .pain-case-head em {
-    grid-column: 2;
-    justify-self: start;
-    margin-top: 6px;
-  }
-}
-
 /* --- Situação do aluno: ativo ou inativo ---------------------------------- */
 
 .athlete-situation {
@@ -11522,6 +11270,214 @@ input {
   }
 }
 
+/* --- Seleção de área de treinador (manutenção) ---------------------------- */
+
+.dev-coaches .dev-hint {
+  max-width: 74ch;
+}
+
+.dev-visiting {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  border: 1px solid #5d4d2c;
+  background: #23221e;
+  border-radius: 9px;
+  padding: 11px 14px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.dev-visiting b {
+  color: var(--gold2);
+}
+
+.dev-visiting button {
+  margin-left: auto;
+  border: 1px solid var(--gold);
+  background: var(--gold);
+  color: #15120c;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dev-coach-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
+  gap: 10px;
+}
+
+.dev-coach-grid article {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  display: grid;
+  gap: 4px;
+  align-content: start;
+}
+
+.dev-coach-grid article.atual {
+  border-color: #5d4d2c;
+  background: #1b1a17;
+}
+
+.dev-coach-grid b {
+  font-size: 14px;
+}
+
+.dev-coach-grid small {
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.dev-coach-grid span {
+  font-size: 12px;
+  color: var(--gold2);
+  margin-bottom: 6px;
+}
+
+.dev-coach-grid button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dev-coach-grid button:hover {
+  border-color: var(--gold);
+  color: var(--gold2);
+}
+
+.dev-coach-novo {
+  justify-content: center;
+  border-style: dashed !important;
+}
+
+.dev-coach-novo input {
+  background: #0f0f10;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 11px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.dev-coach-novo > div {
+  display: flex;
+  gap: 6px;
+}
+
+.dev-coach-novo > div button {
+  flex: 1;
+}
+
+.dev-senha {
+  border: 1px solid var(--gold);
+  background: rgba(215, 170, 57, 0.08);
+  border-radius: 9px;
+  padding: 11px 14px;
+  margin-top: 12px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dev-senha code {
+  background: #0f0f10;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 14px;
+  user-select: all;
+}
+
+.dev-senha button {
+  margin-left: auto;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  border-radius: 7px;
+  padding: 7px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Faixa dentro da área do treinador, para não haver dúvida de onde se está. */
+/*
+   A faixa fica FORA do fluxo do grid de propósito.
+   `.shell` é `grid-template-columns: 232px 1fr`; como filho comum, a faixa
+   ocupava a segunda célula — o lugar do conteúdo — e empurrava `.content` para
+   a linha de baixo, com a largura da barra lateral e fora da tela.
+*/
+.dev-visiting-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #23221e;
+  border-bottom: 1px solid #5d4d2c;
+  color: var(--gold2);
+  padding: 0 18px;
+  height: var(--faixa-visita);
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.dev-visiting-banner > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dev-visiting-banner b {
+  color: var(--gold2);
+}
+
+.dev-visiting-banner button {
+  margin-left: auto;
+  border: 1px solid #5d4d2c;
+  background: transparent;
+  color: var(--gold2);
+  border-radius: 7px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Abre espaço para a faixa sem que ela vire uma célula do grid. */
+.shell.com-visita {
+  padding-top: var(--faixa-visita);
+}
+
+.shell.com-visita .sidebar {
+  top: var(--faixa-visita);
+  height: calc(100vh - var(--faixa-visita));
+}
+
+@media (max-width: 760px) {
+  .dev-visiting-banner {
+    font-size: 11.5px;
+    padding: 7px 12px;
+  }
+  .shell.com-visita {
+    padding-top: var(--faixa-visita);
+  }
+}
+
 /* --- Passos de um relato de dor ------------------------------------------- */
 
 /* Linha do tempo do caso: o que já foi feito e o que ainda falta. */
@@ -11709,4 +11665,458 @@ input {
 .pain-case-history[open] {
   display: grid;
   gap: 9px;
+}
+
+/* =============================================================================
+   Painel de dores e lesões
+   =============================================================================
+
+   Lista à esquerda, caso aberto à direita: o treinador percorre vários casos
+   sem perder o lugar, e registra o que aconteceu junto com a situação.
+   ============================================================================= */
+
+.pain-dash-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.pain-dash-head h2 {
+  font-size: 24px;
+  margin: 5px 0 6px;
+}
+
+.pain-dash-head p {
+  font-size: 13px;
+  color: var(--muted);
+  max-width: 60ch;
+}
+
+.pain-dash-metrics {
+  display: flex;
+  gap: 9px;
+}
+
+.pain-dash-metrics article {
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 13px 18px;
+  text-align: center;
+  min-width: 92px;
+  background: var(--panel);
+}
+
+.pain-dash-metrics article.alerta { border-color: #6b5520; }
+.pain-dash-metrics article.grave { border-color: #7d3b33; }
+
+.pain-dash-metrics b {
+  display: block;
+  font-size: 26px;
+}
+
+.pain-dash-metrics article.grave b { color: #ff8b76; }
+
+.pain-dash-metrics small {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.pain-dash-body {
+  display: grid;
+  grid-template-columns: minmax(0, 320px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+/* --- Lista de casos ------------------------------------------------------- */
+
+.pain-dash-list {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  padding: 13px;
+  display: grid;
+  gap: 7px;
+  align-content: start;
+  max-height: 74vh;
+  overflow-y: auto;
+}
+
+.pain-dash-empty {
+  font-size: 13px;
+  color: var(--muted);
+  padding: 18px 6px;
+}
+
+.pain-dash-item {
+  display: grid;
+  grid-template-columns: 34px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: #0f0f10;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.pain-dash-item:hover {
+  border-color: var(--line);
+}
+
+.pain-dash-item.atual {
+  border-color: var(--gold);
+  background: #1c1b17;
+}
+
+.pain-dash-mark {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  font-weight: 800;
+  font-size: 13px;
+  background: #2e291d;
+  color: var(--gold);
+}
+
+.pain-dash-item.grave .pain-dash-mark {
+  background: #3a251d;
+  color: #ff8b76;
+}
+
+.pain-dash-item b {
+  display: block;
+  font-size: 13px;
+}
+
+.pain-dash-item small {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.pain-dash-item em,
+.pain-dash-facts em {
+  font-style: normal;
+  font-size: 10px;
+  padding: 4px 8px;
+  border-radius: 12px;
+  white-space: nowrap;
+}
+
+.pain-dash-item em.pending { background: #3a2f19; color: var(--gold2); }
+.pain-dash-item em.analise { background: #2b2f3a; color: #a3b4d6; }
+.pain-dash-item em.review { background: #1e3348; color: #7fb6e0; }
+.pain-dash-item em.ok { background: #183326; color: #69d397; }
+
+/* --- Caso aberto ---------------------------------------------------------- */
+
+.pain-dash-detail {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  padding: 20px;
+  display: grid;
+  gap: 15px;
+  align-content: start;
+}
+
+.pain-dash-vazio {
+  text-align: center;
+  padding: 50px 20px;
+  color: var(--muted);
+}
+
+.pain-dash-vazio b {
+  display: block;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.pain-dash-vazio p {
+  font-size: 13px;
+  max-width: 44ch;
+  margin: 0 auto;
+}
+
+.pain-dash-detail > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.pain-dash-detail h3 {
+  font-size: 19px;
+}
+
+.pain-dash-detail > header small {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.pain-dash-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+  gap: 8px;
+}
+
+.pain-dash-facts span {
+  display: grid;
+  gap: 3px;
+  font-size: 12.5px;
+  background: #0f0f10;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 10px 12px;
+  overflow-wrap: anywhere;
+}
+
+.pain-dash-facts small {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--gold);
+}
+
+/* --- Área de registro ----------------------------------------------------- */
+
+.pain-dash-work {
+  display: grid;
+  gap: 13px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.pain-dash-work > label {
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+}
+
+.pain-dash-status > div {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.pain-dash-status button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 20px;
+  padding: 8px 15px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.pain-dash-status button.selected {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.pain-dash-status button.selected.pending { background: #3a2f19; border-color: #6b5520; color: var(--gold2); }
+.pain-dash-status button.selected.analise { background: #2b2f3a; border-color: #46506b; color: #a3b4d6; }
+.pain-dash-status button.selected.review { background: #1e3348; border-color: #35577a; color: #7fb6e0; }
+.pain-dash-status button.selected.ok { background: #183326; border-color: #2c4d3b; color: #69d397; }
+
+.pain-dash-work textarea {
+  min-height: 96px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0f0f10;
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+.pain-dash-work textarea::placeholder {
+  color: #6e6b64;
+}
+
+.pain-dash-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pain-dash-actions button {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  padding: 12px 18px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pain-dash-actions button.gold {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: #15120c;
+  font-weight: 800;
+}
+
+.pain-dash-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pain-dash-week > summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--gold);
+  list-style: none;
+  padding: 4px 0;
+}
+
+.pain-dash-week > summary::-webkit-details-marker { display: none; }
+.pain-dash-week > summary:before { content: "▸ "; }
+.pain-dash-week[open] > summary:before { content: "▾ "; }
+
+.pain-dash-week > div {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 9px;
+}
+
+.pain-dash-week select {
+  flex: 1;
+  min-width: 200px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #0f0f10;
+  color: var(--text);
+  font: inherit;
+}
+
+.pain-dash-week button {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  padding: 10px 16px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.pain-sem-semana {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-top: 8px;
+}
+
+.pain-ok {
+  font-size: 13px;
+  color: #69d397;
+  background: rgba(105, 211, 151, 0.09);
+  border-radius: 8px;
+  padding: 10px 13px;
+}
+
+.pain-case-quote {
+  font-style: italic;
+  border-left: 3px solid var(--gold);
+  padding-left: 13px;
+  font-size: 14px;
+}
+
+.pain-contact {
+  border: 1px solid #278b4d;
+  background: #1f7a42;
+  color: #fff;
+  border-radius: 9px;
+  padding: 9px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+/* --- Histórico ------------------------------------------------------------ */
+
+.pain-dash-history {
+  border-top: 1px solid var(--line);
+  padding-top: 15px;
+  display: grid;
+  gap: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.pain-dash-history article {
+  border-left: 2px solid var(--line);
+  padding-left: 13px;
+}
+
+.pain-dash-history b { font-size: 13px; }
+
+.pain-dash-history small {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin: 2px 0 4px;
+}
+
+.pain-dash-history p { font-size: 13px; }
+
+.pain-filters {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.pain-filters button {
+  flex: 1;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 8px 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pain-filters button.selected {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: #15120c;
+  font-weight: 700;
+}
+
+@media (max-width: 1000px) {
+  .pain-dash-body {
+    grid-template-columns: 1fr;
+  }
+  .pain-dash-list {
+    max-height: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .pain-dash-metrics {
+    width: 100%;
+  }
+  .pain-dash-metrics article {
+    flex: 1;
+    min-width: 0;
+    padding: 11px 8px;
+  }
+  .pain-dash-actions button {
+    width: 100%;
+  }
 }

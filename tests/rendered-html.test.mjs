@@ -1736,10 +1736,8 @@ test("gives every pain report a trackable history", async () => {
   assert.match(worker, /week_not_found_for_athlete/);
 
   assert.match(client, /function PainCenter/);
-  // Cada passo virou uma ação com o seu próprio formulário.
-  assert.match(client, /Registrar minha avaliação/);
-  assert.match(client, /Ajustei a planilha por causa disso/);
-  assert.match(client, /Histórico completo/);
+  assert.match(client, /HISTÓRICO DO CASO/);
+  assert.match(client, /Vincular a um ajuste na planilha/);
 });
 
 test("keeps one single source of truth for the database schema", async () => {
@@ -1967,40 +1965,44 @@ test("keeps the visiting banner out of the coach grid", async () => {
   assert.match(client, /className=\{`shell\$\{visitando \? " com-visita" : ""\}`\}/);
 });
 
-test("asks one clear question per step of a pain report", async () => {
+
+
+
+test("gives injuries their own working screen", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
-  // Antes havia um campo solto — "Anotação para este passo" — servindo às
-  // quatro ações: o treinador escrevia sem saber onde aquilo ia parar.
-  assert.doesNotMatch(client, /Anotação para este passo/);
-  assert.match(client, /const formularios: Record<Passo,/);
-  for (const pergunta of ["O que ele contou\\?", "O que você concluiu\\?", "O que mudou no treino\\?", "Como terminou\\?"]) {
-    assert.match(client, new RegExp(pergunta), `falta a pergunta: ${pergunta}`);
-  }
-  // Cada campo mostra um exemplo do que se espera ali.
-  assert.match(client, /exemplo: "Ex\.: /);
-  // E o cartão diz em que ponto o caso está e qual é o passo seguinte.
-  assert.match(client, /const proximoPasso =/);
-  assert.match(client, /Comece falando com o atleta\./);
-  assert.match(client, /className="pain-steps"/);
+  // Acompanhar uma queixa é trabalho: precisa de área própria, não de um
+  // cartão espremido no painel geral.
+  assert.match(client, /"Testes e zonas", "Lesões"/);
+  assert.match(client, /\{active === "Lesões" && <PainCenter/);
+  assert.doesNotMatch(client, /"Painel" && <><PainCenter/);
+  // Lista à esquerda, caso aberto à direita.
+  assert.match(client, /className="pain-dash-list"/);
+  assert.match(client, /className="pain-dash-detail"/);
+  assert.match(client, /Selecione um caso à esquerda/);
 });
 
-test("never leaves a pain action disabled without saying why", async () => {
+test("records what happened and the case status in one go", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
-  // O botão de resolver nascia desabilitado por depender de um campo genérico,
-  // sem nada explicando a ligação — indistinguível de um botão quebrado.
-  assert.doesNotMatch(client, /disabled=\{estado === "salvando" \|\| !texto\}/);
-  assert.match(client, /if \(forma\.obrigatorio && !texto\.trim\(\)\)/);
-  assert.match(client, /antes de continuar\./);
-  // O único bloqueio é durante o envio.
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // Escolher a situação e contar o que aconteceu é um gesto só.
+  assert.match(worker, /if \(acao === "update"\)/);
+  assert.match(worker, /Situação: \$\{novoStatus\}/);
+  // O relato do encerramento é o desfecho; nos demais estados é a avaliação.
+  assert.match(worker, /novoStatus === "Resolvido" \? "resolution = \?" : "coach_note = \?"/);
+  assert.match(worker, /invalid_status/);
+  assert.match(client, /O que aconteceu\?/);
+  assert.match(client, /Situação do caso/);
+  assert.match(client, /action: "update", id: aberto\.id/);
+  // Nada trava em silêncio: valida ao enviar e diz o que falta.
+  assert.match(client, /Escreva o que aconteceu ou mude a situação do caso\./);
   assert.match(client, /disabled=\{estado === "salvando"\}/);
 });
 
-test("lets the coach pick a real week instead of typing a date", async () => {
+test("shows how many injury cases still need an answer", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
-  // Pedir "a segunda-feira da semana" obrigava o treinador a calcular de
-  // cabeça; agora as semanas do próprio aluno são listadas.
-  assert.doesNotMatch(client, /Informe a segunda-feira da semana/);
-  assert.match(client, /\/api\/training-weeks\?athlete=\$\{encodeURIComponent\(relato\.athlete_name\)\}/);
-  assert.match(client, /Qual semana você ajustou\?/);
-  assert.match(client, /Este aluno ainda não tem semana montada\./);
+  assert.match(client, /className="pain-dash-metrics"/);
+  assert.match(client, /sem resposta/);
+  assert.match(client, /intensidade 7\+/);
+  // As quatro situações possíveis são escolhidas direto, sem passar por menu.
+  assert.match(client, /const SITUACOES = \["Novo", "Em análise", "Verificado", "Resolvido"\]/);
 });

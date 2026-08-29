@@ -228,7 +228,7 @@ const phases = ["Todas", "Adaptação", "Base", "Desenvolvimento", "Específica"
 const planNames = ["Todas","Iniciantes","5 km Bronze","5 km Prata","5 km Ouro","5 km Elite","10 km Lion","Meia Start","Meia Finish","One Marathon","Full Marathon"];
 const defaultPlanForDistance = (distance:string) => distance === "Iniciantes" ? "Iniciantes" : distance === "5 km" ? "5 km Bronze" : distance === "10 km" ? "10 km Lion" : distance === "Meia" ? "Meia Start" : distance === "Maratona" ? "One Marathon" : "Sem base";
 const athletePlan = (athlete:Athlete) => athlete.plan || defaultPlanForDistance(athlete.distance);
-const nav = ["Painel", "Cadastros", "Alunos", "Calendário", "Planilhas", "Testes e zonas", "Provas", "Financeiro", "Integrações", "Contas", "Segurança"];
+const nav = ["Painel", "Cadastros", "Alunos", "Calendário", "Planilhas", "Testes e zonas", "Lesões", "Provas", "Financeiro", "Integrações", "Contas", "Segurança"];
 
 /** Um provedor de integração como a área do aluno o exibe. */
 type ProviderCard = {
@@ -260,7 +260,7 @@ function greeting(): string {
 
 /** No celular a barra inferior mostra apenas os quatro primeiros itens de `nav`. */
 const MOBILE_VISIBLE_NAV = 4;
-const navIcon = (item: string) => item === "Painel" ? "⌂" : item === "Alunos" ? "◉" : item === "Calendário" ? "□" : item === "Planilhas" ? "▤" : item === "Provas" ? "⚑" : item === "Financeiro" ? "$" : item === "Integrações" ? "⌚" : item === "Contas" ? "☰" : item === "Segurança" ? "◇" : "↗";
+const navIcon = (item: string) => item === "Painel" ? "⌂" : item === "Alunos" ? "◉" : item === "Calendário" ? "□" : item === "Planilhas" ? "▤" : item === "Provas" ? "⚑" : item === "Financeiro" ? "$" : item === "Lesões" ? "♡" : item === "Integrações" ? "⌚" : item === "Contas" ? "☰" : item === "Segurança" ? "◇" : "↗";
 
 function pace(seconds: number) {
   if (!Number.isFinite(seconds) || seconds <= 0) return "—";
@@ -403,13 +403,14 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
 
       <main className="content">
         <header className="top"><div><small>{brazilCalendar().label.toUpperCase()}</small><h1>{active === "Painel" ? `${greeting()}, ${session.name.split(" ")[0]}` : active}</h1></div><div className="top-actions">{active === "Alunos" && <button className="gold" onClick={() => setNewAthlete(true)}>+ Novo aluno</button>}<button className="coach-alert-button" onClick={()=>setActive("Painel")} aria-label="Abrir avisos do professor">🔔 <b>{painReports.length+pendingRaces.filter(race=>race.status==="Aguardando análise").length+pendingTests.filter(test=>test.status!=="Aprovado").length+pendingAccess.length}</b><span>avisos</span></button>{onLeaveDev&&<button className="coach-signout" onClick={onLeaveDev}>← Diagnóstico</button>}<button className="coach-signout" onClick={()=>void signOut()} title={session.email}>Sair</button></div></header>
-        {active === "Painel" && <><PainCenter athletes={athleteRecords} /><MobileCoachHome go={setActive} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} coachName={session.name}/><CoachNotificationCenter go={setActive} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests} pendingAccess={pendingAccess}/><Dashboard go={setActive} chooseDistance={(d) => { setDistanceFilter(d); setActive("Alunos"); }} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests}/><PendingTestShortcut tests={pendingTests} open={()=>setActive("Testes e zonas")}/><WorkoutAccuracy/><TrainingFeedbacks/></>}
+        {active === "Painel" && <><MobileCoachHome go={setActive} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} coachName={session.name}/><CoachNotificationCenter go={setActive} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests} pendingAccess={pendingAccess}/><Dashboard go={setActive} chooseDistance={(d) => { setDistanceFilter(d); setActive("Alunos"); }} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests}/><PendingTestShortcut tests={pendingTests} open={()=>setActive("Testes e zonas")}/><WorkoutAccuracy/><TrainingFeedbacks/></>}
         {active === "Cadastros" && <><InviteLink/><AccessRequests onApproved={()=>{setPendingAccess(current=>current.slice(1));fetch("/api/athletes").then(r=>r.ok?r.json():{athletes:[]}).then(data=>{const saved=(data.athletes||[]).map((a:any)=>({name:a.name,initials:a.initials,distance:a.distance,plan:a.saved_plan||defaultPlanForDistance(a.distance),phase:a.planning_phase||a.phase,week:a.planning_week_number?`${a.planning_week_number} de ${a.planning_total_weeks}`:a.week,next:a.next_workout,flag:a.status||undefined}));setAthleteRecords(current=>[...saved,...current.filter(a=>!saved.some((s:Athlete)=>s.name===a.name))])})}}/></>} 
         {active === "Alunos" && <Athletes filtered={filtered} allAthletes={athleteRecords} distance={distanceFilter} phase={phaseFilter} plan={planFilter} setDistance={setDistanceFilter} setPhase={setPhaseFilter} setPlan={setPlanFilter} openProfile={setSelectedAthlete} situation={situationFilter} setSituation={setSituationFilter} counts={athleteCounts} onArchiveChange={()=>refreshAthleteRecords()} />}
         {active === "Testes e zonas" && <PendingTestCenter athletes={athleteRecords} openCalendar={(name)=>{sessionStorage.setItem("zonasapp:calendar-athlete",name);setActive("Calendário")}} />}
         {active === "Testes e zonas" && <TestCalculator athletes={athleteRecords} testDistance={testDistance} setTestDistance={setTestDistance} minutes={minutes} setMinutes={setMinutes} seconds={seconds} setSeconds={setSeconds} age={age} setAge={setAge} calc={calc} />}
         {active === "Calendário" && <Calendar />}
         {active === "Planilhas" && <PlanLibrary open={setSelectedTemplate} />}
+        {active === "Lesões" && <PainCenter athletes={athleteRecords} />}
         {active === "Provas" && <Races races={pendingRaces} onChange={setPendingRaces} />}
         {active === "Financeiro" && <><FinancialQuickSetup/><FinancialCenter /></>}
         {active === "Integrações" && <CoachIntegrations />}
@@ -578,14 +579,12 @@ function AccountsCenter({ athletes }: { athletes: Athlete[] }) {
 
 
 /**
- * Acompanhamento das queixas de dor.
+ * Painel de dores e lesões.
  *
- * A primeira versão colocava um campo de texto solto e quatro botões lado a
- * lado: o treinador escrevia sem saber para qual ação a anotação iria, e o
- * botão de resolver nascia desabilitado sem explicar que dependia daquele
- * campo. Aqui cada passo é uma ação com o seu próprio formulário, com a
- * pergunta que aquele momento pede, e o cartão diz em que etapa está e qual é
- * o passo seguinte.
+ * É uma área própria, e não um cartão dentro do painel geral, porque
+ * acompanhar uma queixa é trabalho: escolher o caso, ler o que já houve,
+ * registrar o que aconteceu e mudar a situação. Lista à esquerda, caso aberto à
+ * direita — o treinador percorre vários sem perder o lugar.
  */
 function PainCenter({ athletes }: { athletes: Athlete[] }) {
   type Relato = {
@@ -595,200 +594,218 @@ function PainCenter({ athletes }: { athletes: Athlete[] }) {
     contacted_at?: number; reviewed_at?: number; resolved_at?: number;
   };
   type Movimento = { id: string; actor_email: string; action: string; note?: string; created_at: number };
-  type Passo = "contact" | "review" | "link_week" | "resolve" | "reopen";
+
+  const SITUACOES = ["Novo", "Em análise", "Verificado", "Resolvido"] as const;
 
   const [relatos, setRelatos] = useState<Relato[]>([]);
-  const [aberto, setAberto] = useState<string>("");
+  const [selecionado, setSelecionado] = useState<string>("");
   const [historico, setHistorico] = useState<Movimento[]>([]);
-  const [passo, setPasso] = useState<Passo | "">("");
-  const [texto, setTexto] = useState("");
-  const [semana, setSemana] = useState("");
   const [semanas, setSemanas] = useState<Array<{ week_start: string; week_label: string; status: string }>>([]);
+  const [relato, setRelato] = useState("");
+  const [situacao, setSituacao] = useState<string>("");
+  const [semana, setSemana] = useState("");
   const [estado, setEstado] = useState<"carregando" | "pronto" | "salvando">("carregando");
   const [erro, setErro] = useState("");
   const [aviso, setAviso] = useState("");
   const [filtro, setFiltro] = useState<"Abertos" | "Todos" | "Resolvidos">("Abertos");
 
-  const carregar = () => api.get<{ reports: Relato[] }>("/api/pain-reports")
-    .then(d => { setRelatos(d.reports || []); setEstado("pronto"); })
+  const carregar = (manter = "") => api.get<{ reports: Relato[] }>("/api/pain-reports")
+    .then(d => {
+      const lista = d.reports || [];
+      setRelatos(lista);
+      setEstado("pronto");
+      if (manter) {
+        const atual = lista.find(r => r.id === manter);
+        if (atual) setSituacao(atual.status);
+      }
+    })
     .catch(error => { setErro(describeError(error)); setEstado("pronto"); });
   useEffect(() => { carregar(); }, []);
 
-  const abrir = async (relato: Relato) => {
-    if (aberto === relato.id) { setAberto(""); setPasso(""); return; }
-    setAberto(relato.id); setPasso(""); setTexto(""); setSemana(""); setErro(""); setAviso("");
-    const [detalhe, semanasDoAluno] = await Promise.all([
-      api.get<{ history: Movimento[] }>(`/api/pain-reports?id=${encodeURIComponent(relato.id)}`).catch(() => ({ history: [] })),
-      // As semanas reais do aluno, para o treinador escolher em vez de
-      // calcular de cabeça qual foi a segunda-feira.
+  const abrirCaso = async (r: Relato) => {
+    setSelecionado(r.id); setRelato(""); setSituacao(r.status); setSemana(""); setErro(""); setAviso("");
+    const [detalhe, doAluno] = await Promise.all([
+      api.get<{ history: Movimento[] }>(`/api/pain-reports?id=${encodeURIComponent(r.id)}`).catch(() => ({ history: [] })),
       api.get<{ weeks: Array<{ week_start: string; week_label: string; status: string }> }>(
-        `/api/training-weeks?athlete=${encodeURIComponent(relato.athlete_name)}`).catch(() => ({ weeks: [] })),
+        `/api/training-weeks?athlete=${encodeURIComponent(r.athlete_name)}`).catch(() => ({ weeks: [] })),
     ]);
     setHistorico(detalhe.history || []);
-    setSemanas(semanasDoAluno.weeks || []);
+    setSemanas(doAluno.weeks || []);
   };
 
-  /** Cada passo pede uma coisa diferente; o formulário pergunta exatamente ela. */
-  const formularios: Record<Passo, { titulo: string; pergunta: string; exemplo: string; obrigatorio: boolean; botao: string }> = {
-    contact: { titulo: "Falei com o atleta", pergunta: "O que ele contou?", exemplo: "Ex.: disse que a dor aparece depois dos 20 min e melhora com gelo", obrigatorio: false, botao: "Registrar conversa" },
-    review: { titulo: "Registrar minha avaliação", pergunta: "O que você concluiu?", exemplo: "Ex.: sobrecarga de volume; sem sinal de lesão que exija parar", obrigatorio: true, botao: "Salvar avaliação" },
-    link_week: { titulo: "Ajustei a planilha por causa disso", pergunta: "O que mudou no treino?", exemplo: "Ex.: troquei o longão por rodagem leve e tirei os tiros", obrigatorio: false, botao: "Vincular à semana" },
-    resolve: { titulo: "Encerrar o caso", pergunta: "Como terminou?", exemplo: "Ex.: sem dor há dez dias; voltou ao volume normal", obrigatorio: true, botao: "Encerrar" },
-    reopen: { titulo: "Reabrir o caso", pergunta: "O que voltou a acontecer?", exemplo: "Ex.: a dor voltou no treino longo de domingo", obrigatorio: false, botao: "Reabrir" },
+  const recarregarHistorico = async (id: string) => {
+    const d = await api.get<{ history: Movimento[] }>(`/api/pain-reports?id=${encodeURIComponent(id)}`).catch(() => ({ history: [] }));
+    setHistorico(d.history || []);
   };
 
-  const executar = async (relato: Relato) => {
-    if (!passo) return;
-    const forma = formularios[passo];
-    if (forma.obrigatorio && !texto.trim()) {
-      setErro(`Escreva ${forma.pergunta.toLowerCase().replace("?", "")} antes de continuar.`);
-      return;
-    }
-    if (passo === "link_week" && !semana) {
-      setErro("Escolha a semana que você ajustou.");
+  const aberto = relatos.find(r => r.id === selecionado) ?? null;
+  const mudouSituacao = Boolean(aberto && situacao && situacao !== aberto.status);
+
+  /** Salvar o que aconteceu e, se for o caso, a nova situação — num gesto só. */
+  const registrar = async () => {
+    if (!aberto) return;
+    if (!relato.trim() && !mudouSituacao) {
+      setErro("Escreva o que aconteceu ou mude a situação do caso.");
       return;
     }
     setEstado("salvando"); setErro("");
     try {
       await api.post("/api/pain-reports", {
-        action: passo, id: relato.id,
-        ...(texto.trim() ? { note: texto.trim() } : {}),
-        ...(passo === "link_week" ? { weekStart: semana } : {}),
+        action: "update", id: aberto.id,
+        status: situacao || aberto.status,
+        ...(relato.trim() ? { note: relato.trim() } : {}),
       });
-      await carregar();
-      const d = await api.get<{ history: Movimento[] }>(`/api/pain-reports?id=${encodeURIComponent(relato.id)}`);
-      setHistorico(d.history || []);
-      setAviso(`${forma.titulo} · registrado`);
-      setPasso(""); setTexto(""); setSemana("");
+      await carregar(aberto.id);
+      await recarregarHistorico(aberto.id);
+      setRelato("");
+      setAviso("Registrado.");
     } catch (error) { setErro(describeError(error)); }
     finally { setEstado("pronto"); }
   };
 
-  /** O que falta fazer neste caso, em uma frase. */
-  const proximoPasso = (r: Relato): { texto: string; sugerido: Passo | "" } => {
-    if (r.status === "Resolvido") return { texto: "Caso encerrado.", sugerido: "" };
-    if (!r.contacted_at) return { texto: "Comece falando com o atleta.", sugerido: "contact" };
-    if (!r.coach_note) return { texto: "Registre a sua avaliação.", sugerido: "review" };
-    if (!r.linked_week_start) return { texto: "Ajuste a planilha e vincule a semana, se for o caso.", sugerido: "link_week" };
-    return { texto: "Quando passar, encerre o caso.", sugerido: "resolve" };
+  const registrarContato = async () => {
+    if (!aberto) return;
+    setEstado("salvando"); setErro("");
+    try {
+      await api.post("/api/pain-reports", { action: "contact", id: aberto.id, ...(relato.trim() ? { note: relato.trim() } : {}) });
+      await carregar(aberto.id); await recarregarHistorico(aberto.id);
+      setRelato(""); setAviso("Conversa registrada.");
+    } catch (error) { setErro(describeError(error)); }
+    finally { setEstado("pronto"); }
+  };
+
+  const vincularSemana = async () => {
+    if (!aberto || !semana) { setErro("Escolha a semana que você ajustou."); return; }
+    setEstado("salvando"); setErro("");
+    try {
+      await api.post("/api/pain-reports", { action: "link_week", id: aberto.id, weekStart: semana, ...(relato.trim() ? { note: relato.trim() } : {}) });
+      await carregar(aberto.id); await recarregarHistorico(aberto.id);
+      setRelato(""); setSemana(""); setAviso("Ajuste vinculado à semana.");
+    } catch (error) { setErro(describeError(error)); }
+    finally { setEstado("pronto"); }
   };
 
   const visiveis = relatos.filter(r =>
     filtro === "Todos" ? true : filtro === "Resolvidos" ? r.status === "Resolvido" : r.status !== "Resolvido");
-  const abertos = relatos.filter(r => r.status !== "Resolvido").length;
+  const abertosTotal = relatos.filter(r => r.status !== "Resolvido").length;
+  const gravesTotal = relatos.filter(r => r.status !== "Resolvido" && r.intensity >= 7).length;
+  const semRespostaTotal = relatos.filter(r => r.status === "Novo").length;
+
   const quando = (ms?: number) => ms ? new Date(Number(ms)).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "";
   const soData = (ms?: number) => ms ? new Date(Number(ms)).toLocaleDateString("pt-BR") : "";
+  const classeSituacao = (s: string) => s === "Resolvido" ? "ok" : s === "Verificado" ? "review" : s === "Em análise" ? "analise" : "pending";
 
-  return <section className="pain-center">
-    <header>
+  return <section className="pain-dash">
+    <header className="pain-dash-head">
       <div>
         <span className="overline">SAÚDE DOS ATLETAS</span>
         <h2>Dores e lesões</h2>
-        <p>Cada queixa guarda o que foi conversado, o que mudou na planilha e como terminou.</p>
+        <p>Registre o que aconteceu e mantenha a situação de cada caso em dia.</p>
       </div>
-      <b>{abertos}<small>em aberto</small></b>
+      <div className="pain-dash-metrics">
+        <article><b>{abertosTotal}</b><small>em aberto</small></article>
+        <article className={semRespostaTotal ? "alerta" : ""}><b>{semRespostaTotal}</b><small>sem resposta</small></article>
+        <article className={gravesTotal ? "grave" : ""}><b>{gravesTotal}</b><small>intensidade 7+</small></article>
+      </div>
     </header>
 
-    <div className="pain-filters">
-      {(["Abertos", "Todos", "Resolvidos"] as const).map(f =>
-        <button key={f} className={filtro === f ? "selected" : ""} onClick={() => setFiltro(f)}>{f}</button>)}
-    </div>
+    <div className="pain-dash-body">
+      <aside className="pain-dash-list">
+        <div className="pain-filters">
+          {(["Abertos", "Todos", "Resolvidos"] as const).map(f =>
+            <button key={f} className={filtro === f ? "selected" : ""} onClick={() => setFiltro(f)}>{f}</button>)}
+        </div>
 
-    {estado === "carregando" ? <div className="feedback-empty">Carregando relatos…</div>
-      : visiveis.length === 0 ? <div className="feedback-empty">Nenhum relato {filtro === "Resolvidos" ? "resolvido" : "em aberto"}.</div>
-      : visiveis.map(r => {
-        const aluno = athletes.find(a => a.name === r.athlete_name);
-        const grave = r.intensity >= 7;
-        const seguinte = proximoPasso(r);
-        const estaAberto = aberto === r.id;
-        const forma = passo ? formularios[passo] : null;
+        {estado === "carregando" ? <p className="pain-dash-empty">Carregando…</p>
+          : visiveis.length === 0 ? <p className="pain-dash-empty">Nenhum caso {filtro === "Resolvidos" ? "resolvido" : "em aberto"}.</p>
+          : visiveis.map(r => (
+            <button key={r.id} className={`pain-dash-item ${selecionado === r.id ? "atual" : ""} ${r.intensity >= 7 ? "grave" : ""}`} onClick={() => void abrirCaso(r)}>
+              <span className="pain-dash-mark">{r.intensity}</span>
+              <span>
+                <b>{r.athlete_name}</b>
+                <small>{r.body_area} · {soData(r.created_at)}</small>
+              </span>
+              <em className={classeSituacao(r.status)}>{r.status}</em>
+            </button>
+          ))}
+      </aside>
 
-        return <article key={r.id} className={`pain-case ${r.status === "Resolvido" ? "resolvido" : grave ? "grave" : ""}`}>
-          <button className="pain-case-head" onClick={() => void abrir(r)} aria-expanded={estaAberto}>
-            <span className="pain-case-mark">{r.intensity}</span>
-            <span>
-              <b>{r.athlete_name} · {r.body_area}</b>
-              <small>{r.training_impact} · {quando(r.created_at)}</small>
-            </span>
-            <em className={r.status === "Resolvido" ? "ok" : r.status === "Verificado" ? "review" : "pending"}>{r.status}</em>
-          </button>
+      <div className="pain-dash-detail">
+        {!aberto ? <div className="pain-dash-vazio">
+          <b>Selecione um caso à esquerda</b>
+          <p>Você verá o relato do atleta, poderá escrever o que aconteceu e mudar a situação.</p>
+        </div> : <>
+          <header>
+            <div>
+              <h3>{aberto.athlete_name} · {aberto.body_area}</h3>
+              <small>{aberto.training_impact} · intensidade {aberto.intensity}/10 · relatado em {quando(aberto.created_at)}</small>
+            </div>
+            {athletes.some(a => a.name === aberto.athlete_name) &&
+              <a className="pain-contact" href={`https://wa.me/?text=${encodeURIComponent(`Olá ${aberto.athlete_name.split(" ")[0]}, vi seu relato de dor em ${aberto.body_area}. Como você está?`)}`} target="_blank" rel="noreferrer">WhatsApp ↗</a>}
+          </header>
 
-          {estaAberto && <div className="pain-case-body">
-            {r.note && <p className="pain-case-quote">“{r.note}”</p>}
+          {aberto.note && <p className="pain-case-quote">“{aberto.note}”</p>}
 
-            {/* Linha do tempo do caso: o que já foi feito e o que falta. */}
-            <ol className="pain-steps">
-              {([
-                ["contact", "Conversa", r.contacted_at ? `em ${soData(r.contacted_at)}` : "ainda não"],
-                ["review", "Avaliação", r.coach_note || "ainda não"],
-                ["link_week", "Planilha", r.linked_week_start ? `semana de ${r.linked_week_start}` : "sem ajuste"],
-                ["resolve", "Desfecho", r.resolution || "em aberto"],
-              ] as const).map(([chave, rotulo, valor]) => {
-                const feito = chave === "contact" ? Boolean(r.contacted_at)
-                  : chave === "review" ? Boolean(r.coach_note)
-                  : chave === "link_week" ? Boolean(r.linked_week_start)
-                  : Boolean(r.resolution);
-                return <li key={chave} className={feito ? "feito" : ""}>
-                  <i>{feito ? "✓" : "○"}</i>
-                  <span><b>{rotulo}</b><small>{valor}</small></span>
-                </li>;
-              })}
-            </ol>
+          <div className="pain-dash-facts">
+            <span><small>CONVERSA</small>{aberto.contacted_at ? soData(aberto.contacted_at) : "ainda não"}</span>
+            <span><small>AVALIAÇÃO</small>{aberto.coach_note || "ainda não"}</span>
+            <span><small>PLANILHA</small>{aberto.linked_week_start ? `semana de ${aberto.linked_week_start}` : "sem ajuste"}</span>
+            <span><small>DESFECHO</small>{aberto.resolution || "em aberto"}</span>
+          </div>
 
-            {r.status !== "Resolvido" && <p className="pain-next">{seguinte.texto}</p>}
+          <div className="pain-dash-work">
+            <label className="pain-dash-status">
+              Situação do caso
+              <div>
+                {SITUACOES.map(s => (
+                  <button key={s} className={`${situacao === s ? "selected" : ""} ${classeSituacao(s)}`} onClick={() => { setSituacao(s); setAviso(""); setErro(""); }}>{s}</button>
+                ))}
+              </div>
+            </label>
+
+            <label>
+              O que aconteceu?
+              <textarea value={relato} onChange={e => { setRelato(e.target.value); setErro(""); setAviso(""); }} maxLength={1000}
+                placeholder="Ex.: conversei com ela, a dor aparece após 20 min e melhora com gelo. Reduzi o volume desta semana." />
+            </label>
+
+            {erro && <p className="registration-error">{erro}</p>}
             {aviso && <p className="pain-ok">{aviso}</p>}
 
-            {/* Escolher a ação abre o formulário daquela ação, e só dele. */}
-            {!passo && <div className="pain-case-actions">
-              {aluno && <a className="pain-contact" href={`https://wa.me/?text=${encodeURIComponent(`Olá ${r.athlete_name.split(" ")[0]}, vi seu relato de dor em ${r.body_area}. Como você está?`)}`} target="_blank" rel="noreferrer">Abrir WhatsApp ↗</a>}
-              {r.status === "Resolvido"
-                ? <button onClick={() => { setPasso("reopen"); setAviso(""); }}>Reabrir caso</button>
-                : (["contact", "review", "link_week", "resolve"] as const).map(p =>
-                    <button key={p} className={seguinte.sugerido === p ? "sugerido" : ""} onClick={() => { setPasso(p); setTexto(""); setErro(""); setAviso(""); }}>
-                      {formularios[p].titulo}
-                    </button>)}
-            </div>}
+            <div className="pain-dash-actions">
+              <button className="gold" disabled={estado === "salvando"} onClick={() => void registrar()}>
+                {estado === "salvando" ? "Salvando…" : mudouSituacao ? `Salvar como “${situacao}”` : "Salvar registro"}
+              </button>
+              <button disabled={estado === "salvando"} onClick={() => void registrarContato()}>Marcar que falei com o atleta</button>
+            </div>
 
-            {forma && <div className="pain-form">
-              <b>{forma.titulo}</b>
-              <label>
-                {forma.pergunta}{!forma.obrigatorio && <small> opcional</small>}
-                <textarea autoFocus value={texto} onChange={e => { setTexto(e.target.value); setErro(""); }} maxLength={1000} placeholder={forma.exemplo} />
-              </label>
-
-              {passo === "link_week" && <label>
-                Qual semana você ajustou?
-                {semanas.length === 0
-                  ? <small className="pain-sem-semana">Este aluno ainda não tem semana montada.</small>
-                  : <select value={semana} onChange={e => { setSemana(e.target.value); setErro(""); }}>
-                      <option value="">Escolha a semana…</option>
+            <details className="pain-dash-week">
+              <summary>Vincular a um ajuste na planilha</summary>
+              {semanas.length === 0
+                ? <p className="pain-sem-semana">Este aluno ainda não tem semana montada.</p>
+                : <div>
+                    <select value={semana} onChange={e => { setSemana(e.target.value); setErro(""); }}>
+                      <option value="">Escolha a semana ajustada…</option>
                       {semanas.map(w => <option key={w.week_start} value={w.week_start}>
                         {new Date(`${w.week_start}T12:00:00Z`).toLocaleDateString("pt-BR")} · {w.week_label} · {w.status}
                       </option>)}
-                    </select>}
-              </label>}
+                    </select>
+                    <button disabled={estado === "salvando"} onClick={() => void vincularSemana()}>Vincular</button>
+                  </div>}
+            </details>
+          </div>
 
-              {erro && <p className="registration-error">{erro}</p>}
-
-              <div className="pain-form-actions">
-                <button className="gold" disabled={estado === "salvando"} onClick={() => void executar(r)}>
-                  {estado === "salvando" ? "Salvando…" : forma.botao}
-                </button>
-                <button onClick={() => { setPasso(""); setTexto(""); setSemana(""); setErro(""); }}>Cancelar</button>
-              </div>
-            </div>}
-
-            {historico.length > 0 && <details className="pain-case-history">
-              <summary>Histórico completo ({historico.length})</summary>
-              {historico.map(h => <article key={h.id}>
-                <b>{h.action}</b>
-                <small>{quando(h.created_at)} · {h.actor_email}</small>
-                {h.note && <p>{h.note}</p>}
-              </article>)}
-            </details>}
+          {historico.length > 0 && <div className="pain-dash-history">
+            <span className="overline">HISTÓRICO DO CASO</span>
+            {historico.map(h => <article key={h.id}>
+              <b>{h.action}</b>
+              <small>{quando(h.created_at)} · {h.actor_email}</small>
+              {h.note && <p>{h.note}</p>}
+            </article>)}
           </div>}
-        </article>;
-      })}
+        </>}
+      </div>
+    </div>
   </section>;
 }
 

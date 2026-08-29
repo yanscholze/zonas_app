@@ -88,7 +88,7 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/athlete-planning": new Set(["athleteName","plan","phase","weekNumber","totalWeeks"]),
   "/api/performance-tests": new Set(["athleteName","testDate","distanceKm","minutes","seconds","age","id","action","zones","tempoRuns"]),
   "/api/training-weeks": new Set(["athleteName","weekStart","plan","phase","weekLabel","trainingDays","sessions","status","auditDifferences","expectedUpdatedAt"]),
-  "/api/pain-reports": new Set(["athleteName","bodyArea","intensity","trainingImpact","note","action","id","weekStart"]),
+  "/api/pain-reports": new Set(["athleteName","bodyArea","intensity","trainingImpact","note","action","id","weekStart","status"]),
   "/api/races-records": new Set(["kind","athleteName","name","raceDate","distance","city","goal","priority","resultTime","eventName","action","id","status"]),
   "/api/athlete-access": new Set(["athleteName","email","status"]),
   "/api/access-request": new Set(["name","phone","objective","distance","trainingDays","integration"]),
@@ -1230,10 +1230,36 @@ async function painReportsApi(request: Request, env: Env): Promise<Response> {
 
   const reportId = boundedText(input.id, 60);
   if (!reportId) return Response.json({ error: "report_required" }, { status: 400 });
-  const existente = await env.DB.prepare("SELECT id, athlete_name, status FROM pain_reports WHERE id = ? LIMIT 1").bind(reportId).first() as { id?: string; athlete_name?: string; status?: string } | null;
+  const existente = await env.DB.prepare("SELECT id, athlete_name, status, reviewed_at FROM pain_reports WHERE id = ? LIMIT 1").bind(reportId).first() as { id?: string; athlete_name?: string; status?: string; reviewed_at?: number | null } | null;
   if (!existente?.id) return Response.json({ error: "report_not_found" }, { status: 404 });
   const note = boundedText(input.note, 1000);
   const agora = Date.now();
+
+  // Mudar a situação e contar o que aconteceu é um gesto só: o treinador
+  // escolhe o estado do caso e escreve o relato daquele momento.
+  if (acao === "update") {
+    const novoStatus = boundedText(input.status, 30);
+    if (!PAIN_STATUSES.includes(novoStatus as typeof PAIN_STATUSES[number])) {
+      return Response.json({ error: "invalid_status", allowed: PAIN_STATUSES }, { status: 400 });
+    }
+    if (!note && novoStatus === existente.status) {
+      return Response.json({ error: "nothing_to_record" }, { status: 400 });
+    }
+    const campos: string[] = ["status = ?"];
+    const valores: unknown[] = [novoStatus];
+    // Cada situação carimba a sua própria data, para o histórico ficar completo.
+    if (novoStatus === "Verificado" && !existente.reviewed_at) { campos.push("reviewed_by = ?", "reviewed_at = ?"); valores.push(actor, agora); }
+    if (novoStatus === "Resolvido") { campos.push("resolved_at = ?"); valores.push(agora); }
+    if (novoStatus !== "Resolvido") { campos.push("resolved_at = NULL"); }
+    if (note) {
+      // O relato do encerramento é o desfecho; nos demais estados é a avaliação.
+      campos.push(novoStatus === "Resolvido" ? "resolution = ?" : "coach_note = ?");
+      valores.push(note);
+    }
+    await env.DB.prepare(`UPDATE pain_reports SET ${campos.join(", ")} WHERE id = ?`).bind(...valores, reportId).run();
+    await registraMovimentoDor(env, reportId, actor, `Situação: ${novoStatus}`, note || null);
+    return Response.json({ status: novoStatus, updatedAt: agora });
+  }
 
   if (acao === "review") {
     await env.DB.prepare("UPDATE pain_reports SET status = 'Verificado', reviewed_by = ?, reviewed_at = ?, coach_note = COALESCE(?, coach_note) WHERE id = ?")
