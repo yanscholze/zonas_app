@@ -1145,7 +1145,7 @@ test("implements the approved mobile coach dashboard instead of leaving it as a 
   const client = await readFile("app/ZonasAppClient.tsx", "utf8");
   const mobileCss = await readCss("app/overrides.css");
   assert.match(client, /VISÃO DO PROFESSOR/);
-  assert.match(client, /Olá, Jonas/);
+  assert.match(client, /Olá, \{coachName\.split\(" "\)\[0\]\}/);
   assert.match(client, /Treinos hoje/);
   assert.match(client, /Pendentes/);
   assert.match(client, /Concluídos/);
@@ -1621,4 +1621,21 @@ test("gives the invite buttons one shared shape", async () => {
   assert.match(css, /\.account-issued-actions\{display:flex/);
   // Um provedor indisponível não pode ter o mesmo peso visual de uma ação real.
   assert.match(css, /\.integration-center article button:disabled\{[^}]*cursor:not-allowed/);
+});
+
+test("greets the coach by the name on the account, not a name baked into the code", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const entry = await readFile(new URL("../app/StudentEntry.tsx", import.meta.url), "utf8");
+  // O sistema chamava todo treinador de "Jonas" e rotulava o registro de
+  // auditoria comparando o e-mail com esse nome, o que errava para qualquer
+  // outra instalação.
+  for (const [nome, fonte] of [["cliente", client], ["cadastro do aluno", entry]]) {
+    assert.ok(!fonte.includes("Jonas"), `${nome} não pode ter nome de pessoa fixo`);
+  }
+  assert.match(client, /const initialsOf =/);
+  assert.match(client, /function greeting\(\)/);
+  assert.match(client, /\$\{session\.name\.split\(" "\)\[0\]\}/);
+  assert.match(client, /coachInitials = initialsOf\(session\.name\)/);
+  // A auditoria mostra o e-mail real de quem agiu.
+  assert.doesNotMatch(client, /actor_email\.toLowerCase\(\)\.includes/);
 });

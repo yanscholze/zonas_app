@@ -8,6 +8,7 @@
  * Uso:
  *   node scripts/reset-coach-password.mjs "nova-senha-2026"
  *   node scripts/reset-coach-password.mjs "nova-senha-2026" --email voce@email.com
+ *   node scripts/reset-coach-password.mjs "nova-senha-2026" --name "Seu Nome"
  *
  * Sem senha, gera uma aleatória e a imprime. Com `--email`, troca também o
  * endereço de login do treinador — útil porque a conta é semeada uma única vez,
@@ -76,7 +77,17 @@ const newEmail = emailIndex >= 0 ? args[emailIndex + 1]?.trim().toLowerCase() : 
 if (emailIndex >= 0 && !newEmail) fail("Use `--email voce@email.com`.");
 if (newEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)) fail(`E-mail inválido: ${newEmail}`);
 
-const positional = args.filter((value, index) => value !== "--email" && index !== emailIndex + 1);
+const nameIndex = args.indexOf("--name");
+const newName = nameIndex >= 0 ? args[nameIndex + 1]?.trim() : undefined;
+if (nameIndex >= 0 && (!newName || newName.length < 2)) fail("Use `--name \"Seu Nome\"`.");
+
+// Só reserva os índices de uma opção que realmente foi passada: com a opção
+// ausente o índice é -1, e -1+1 apontaria para o primeiro posicional.
+const reservado = new Set([
+  ...(emailIndex >= 0 ? [emailIndex, emailIndex + 1] : []),
+  ...(nameIndex >= 0 ? [nameIndex, nameIndex + 1] : []),
+]);
+const positional = args.filter((value, index) => !reservado.has(index));
 const password = positional[0] ?? randomPassword();
 if (password.length < MIN_PASSWORD_LENGTH) {
   fail(`A senha precisa de pelo menos ${MIN_PASSWORD_LENGTH} caracteres.`);
@@ -91,7 +102,7 @@ const database = new DatabaseSync(databasePath);
 
 let coach;
 try {
-  coach = database.prepare("SELECT id, email FROM user_accounts WHERE role = 'coach' LIMIT 1").get();
+  coach = database.prepare("SELECT id, email, name FROM user_accounts WHERE role = 'coach' LIMIT 1").get();
 } catch {
   fail("A tabela `user_accounts` ainda não existe.\n  Rode `npm run dev` e abra o aplicativo uma vez antes de redefinir a senha.");
 }
@@ -106,11 +117,11 @@ if (newEmail && newEmail !== coach.email) {
 
 database.prepare(
   `UPDATE user_accounts
-      SET email = ?, password_hash = ?, password_salt = ?, password_iterations = ?,
+      SET email = ?, name = ?, password_hash = ?, password_salt = ?, password_iterations = ?,
           must_change_password = 0, failed_attempts = 0, locked_until = NULL,
           status = 'Ativo', updated_at = ?
     WHERE id = ?`,
-).run(newEmail ?? coach.email, hash, salt, iterations, Date.now(), coach.id);
+).run(newEmail ?? coach.email, newName ?? coach.name, hash, salt, iterations, Date.now(), coach.id);
 
 // Trocar a senha encerra as sessões abertas, como no fluxo do aplicativo.
 database.prepare("DELETE FROM user_sessions WHERE user_id = ?").run(coach.id);
@@ -119,6 +130,7 @@ database.close();
 console.log(`
   Senha do treinador redefinida.
 
+    nome:   ${newName ?? coach.name}
     e-mail: ${newEmail ?? coach.email}
     senha:  ${password}
 

@@ -43,3 +43,6 @@ next-env.d.ts
 
 # cloudflare local vars
 .dev.vars
+
+# cache incremental do TypeScript
+*.tsbuildinfo
