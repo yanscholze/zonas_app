@@ -2012,3 +2012,41 @@ test("still records what happened together with the case status", async () => {
   // A ficha do aluno se atualiza quando o caso muda.
   assert.match(client, /zonasapp:pain-refresh/);
 });
+
+/* -------------------------------------------------------------------------- *
+ * Avisos, cartões do painel e decisão de prova
+ * -------------------------------------------------------------------------- */
+
+test("drops resolved injuries out of the notice board", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Um caso encerrado não é pendência. Filtrar na origem impede que ele volte
+  // a aparecer em qualquer lugar que use esta lista.
+  assert.match(client, /\.filter\(\(item:any\)=>item\.status!=="Resolvido"\)/);
+  assert.match(client, /const refreshPainReports=/);
+  // E a lista se atualiza quando um caso é encerrado em outra tela.
+  assert.match(client, /addEventListener\("zonasapp:pain-refresh",atualiza\)/);
+});
+
+test("makes every number on the panel lead somewhere", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // Um número que indica pendência e não leva a lugar nenhum obriga a
+  // procurar no menu o que já estava na tela.
+  const cartoes = client.match(/<button className="stat-card"/g) ?? [];
+  assert.equal(cartoes.length, 4, "os quatro números do painel precisam ser clicáveis");
+  assert.match(client, /className="stat-card" onClick=\{\(\)=>go\("Alunos"\)\}/);
+  assert.match(client, /className="stat-card" onClick=\{\(\)=>go\("Provas"\)\}/);
+  // O de dor abre a lesão em vez de mandar para a lista de alunos.
+  assert.match(client, /openPain\(\{id:painReports\[0\]\.id,athleteName:painReports\[0\]\.athlete_name\}\)/);
+  assert.match(css, /\.stats \.stat-card\{/);
+});
+
+test("leaves only an undo on a race that was already approved", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // Aprovada, a decisão está tomada: oferecer "aprovar" e "não periodizar" de
+  // novo só confunde. Resta poder desfazer.
+  assert.match(client, /race\.status==="Aprovada"\s*\?\s*<button className="race-cancel"/);
+  assert.match(client, /review\(race,"Aguardando análise"/);
+  assert.match(css, /\.race-cancel\{[^}]*color:var\(--red\)/);
+});

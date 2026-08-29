@@ -12096,3 +12096,72 @@ input {
   color: var(--muted);
   padding: 20px 0;
 }
+
+/* --- Números do painel: cada um leva ao lugar onde se age sobre ele -------- */
+
+.stats .stat-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  padding: 18px;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.stats .stat-card:hover {
+  border-color: #7e662e;
+  background: #1f1d18;
+}
+
+.stats .stat-card small {
+  display: block;
+  font-size: 8px;
+  color: var(--muted);
+  letter-spacing: 0.12em;
+}
+
+.stats .stat-card b {
+  font-size: 29px;
+  display: block;
+  margin: 9px 0 4px;
+}
+
+.stats .stat-card b em {
+  font-size: 13px;
+  font-style: normal;
+  color: var(--muted);
+}
+
+.stats .stat-card span {
+  font-size: 10px;
+  color: var(--gold);
+}
+
+.attention-link {
+  cursor: pointer;
+}
+
+/* Prova aprovada: resta apenas desfazer, e desfazer é uma ação de risco. */
+.race-cancel {
+  border: 1px solid var(--red);
+  background: transparent;
+  color: var(--red);
+  border-radius: 9px;
+  padding: 11px 16px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.race-cancel:hover:not(:disabled) {
+  background: rgba(241, 107, 94, 0.12);
+}
+
+.race-cancel:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
