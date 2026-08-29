@@ -76,7 +76,27 @@ export const painReports = sqliteTable("pain_reports", {
   note: text("note"),
   status: text("status").notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  /* Acompanhamento da queixa, do aviso do aluno até a alta. */
+  reviewedBy: text("reviewed_by"),
+  reviewedAt: integer("reviewed_at"),
+  contactedAt: integer("contacted_at"),
+  coachNote: text("coach_note"),
+  resolution: text("resolution"),
+  resolvedAt: integer("resolved_at"),
+  linkedWeekStart: text("linked_week_start"),
 });
+
+/** Cada movimento de um relato de dor: contato, avaliação, ajuste e desfecho. */
+export const painReportUpdates = sqliteTable("pain_report_updates", {
+  id: text("id").primaryKey(),
+  reportId: text("report_id").notNull(),
+  actorEmail: text("actor_email").notNull(),
+  action: text("action").notNull(),
+  note: text("note"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => ({
+  reportIdx: index("pain_report_updates_report_idx").on(table.reportId, table.createdAt),
+}));
 
 export const trainingFeedbacks = sqliteTable("training_feedbacks", {
   id: text("id").primaryKey(),
@@ -107,6 +127,12 @@ export const workoutExecutions = sqliteTable("workout_executions", {
   classification: text("classification").notNull(),
   source: text("source").notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  /* Conclusão explícita e métricas vindas das integrações. */
+  status: text("status"),
+  note: text("note"),
+  averageHeartRate: integer("average_heart_rate"),
+  averagePaceSeconds: integer("average_pace_seconds"),
+  externalActivityId: text("external_activity_id"),
 }, (table) => ({
   athleteIdx: index("workout_executions_athlete_created_idx").on(table.athleteName, table.createdAt),
 }));

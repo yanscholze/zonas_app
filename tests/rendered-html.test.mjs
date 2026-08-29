@@ -862,7 +862,7 @@ test("compares each completed workout with the released plan and shows both perc
   assert.match(worker, /100 - Math\.abs\(actualMinutes - plannedMinutes\)/);
   assert.match(worker, /correct >= 80 \? "Dentro do planejado"/);
   assert.match(worker, /wrong: 100 - correct/);
-  assert.match(client, /Analisar meu treino/);
+  assert.match(client, /Concluí este treino/);
   assert.match(client, /treino certo/);
   assert.match(client, /fora do planejado/);
   assert.match(client, /WorkoutAccuracy/);
@@ -1638,4 +1638,103 @@ test("greets the coach by the name on the account, not a name baked into the cod
   assert.match(client, /coachInitials = initialsOf\(session\.name\)/);
   // A auditoria mostra o e-mail real de quem agiu.
   assert.doesNotMatch(client, /actor_email\.toLowerCase\(\)\.includes/);
+});
+
+/* -------------------------------------------------------------------------- *
+ * Etapa 2 — conclusão do treino e vazamento do calendário
+ * -------------------------------------------------------------------------- */
+
+test("scopes the training weeks query to the requested athlete", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("weeks-scope", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const consultas = [];
+  const prepare = (sql) => ({
+    values: [],
+    bind(...values) { this.values = values; consultas.push({ sql, values }); return this; },
+    async first() { return null; },
+    async all() { consultas.push({ sql, values: this.values }); return { results: [] }; },
+    async run() { return { success: true }; },
+  });
+  const env = {
+    ASSETS: { fetch: async () => new Response("", { status: 404 }) },
+    DB: { prepare: withSession(prepare), async batch(i) { for (const x of i) await x.run(); return []; } },
+  };
+  const r = await worker.fetch(
+    new Request("https://zonasapp.example/api/training-weeks?athlete=Ana%20Souza", { headers: { ...coachCookie } }),
+    env, { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(r.status, 200);
+  // Só o atleta, sem semana, caía num SELECT sem WHERE e devolvia as semanas de
+  // todos — quem lesse o primeiro resultado acabaria no treino de outra pessoa.
+  const leitura = consultas.find(({ sql }) => sql.includes("SELECT * FROM training_weeks") && !sql.includes("LIMIT 1"));
+  assert.ok(leitura, "deve haver uma leitura da tabela de semanas");
+  assert.match(leitura.sql, /WHERE athlete_name = \?/);
+  assert.deepEqual(leitura.values, ["Ana Souza"]);
+});
+
+test("lets the student finish a workout without typing any number", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Antes o registro exigia tempo ou distância: quem só correu não conseguia
+  // avisar o treinador de que tinha feito o treino.
+  assert.doesNotMatch(worker, /actual_result_required/);
+  assert.match(worker, /Concluído sem medição/);
+  assert.match(worker, /const temMedida =/);
+  // E quem não treinou também precisa conseguir registrar.
+  assert.match(worker, /if \(acao === "skip"\)/);
+  assert.match(worker, /'Não realizado'/);
+  assert.match(client, /registrar\("complete"\)/);
+  assert.match(client, /registrar\("skip"\)/);
+  assert.match(client, /Não consegui treinar/);
+});
+
+test("fills the completed workout with the imported activity when there is one", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // A atividade importada casa por semana e dia, e traz o que o formulário
+  // manual não captura: ritmo médio e frequência cardíaca.
+  assert.match(worker, /FROM external_activities\s+WHERE athlete_name = \? AND matched_week_start = \? AND matched_workout_day = \?/);
+  assert.match(worker, /averageHeartRate: heartRate/);
+  assert.match(worker, /averagePaceSeconds: paceSeconds/);
+  assert.match(worker, /fromIntegration: Boolean\(importada\)/);
+  assert.match(client, /RITMO MÉDIO/);
+  assert.match(client, /FC MÉDIA/);
+  assert.match(client, /Dados trazidos automaticamente de/);
+});
+
+test("adds new execution columns without rewriting existing rows", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // `CREATE TABLE IF NOT EXISTS` não altera tabela existente, então um banco em
+  // uso ficaria sem as colunas novas. O reparo só acrescenta.
+  assert.match(worker, /async function ensureColumns/);
+  assert.match(worker, /PRAGMA table_info/);
+  assert.match(worker, /ALTER TABLE \$\{table\} ADD COLUMN/);
+  assert.doesNotMatch(worker, /DROP COLUMN|DROP TABLE workout_executions/);
+  assert.match(worker, /ensureColumns\(env, "workout_executions"/);
+});
+
+test("lets the student read back their own feedback history", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // A rota só aceitava POST: o aluno escrevia e nunca mais via o que contou.
+  assert.match(worker, /FROM training_feedbacks WHERE athlete_name = \? ORDER BY created_at DESC/);
+  assert.match(worker, /if \(request\.method === "GET"\) \{\s*const result = await env\.DB\.prepare\(\s*"SELECT id, week_start, workout_day, feeling/);
+});
+
+test("gives every pain report a trackable history", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // O treinador via a contagem de relatos e não podia fazer nada com eles.
+  for (const acao of ["review", "contact", "link_week", "resolve", "reopen"]) {
+    assert.ok(worker.includes(`acao === "${acao}"`), `falta a ação ${acao}`);
+  }
+  assert.match(worker, /CREATE TABLE IF NOT EXISTS pain_report_updates/);
+  assert.match(worker, /async function registraMovimentoDor/);
+  // O vínculo com a planilha só aceita uma semana que exista para aquele atleta.
+  assert.match(worker, /week_not_found_for_athlete/);
+  assert.match(worker, /ensureColumns\(env, "pain_reports"/);
+  assert.match(client, /function PainCenter/);
+  assert.match(client, /Marcar como verificado/);
+  assert.match(client, /Vincular semana/);
+  assert.match(client, /HISTÓRICO/);
 });

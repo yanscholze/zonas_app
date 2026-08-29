@@ -10411,3 +10411,448 @@ input {
     color: var(--gold2);
   }
 }
+
+/* --- Conclusão do treino pelo aluno --------------------------------------- */
+
+.analysis-actions {
+  display: grid;
+  gap: 9px;
+  margin-top: 14px;
+}
+
+.analysis-complete {
+  padding: 15px;
+  border: none;
+  border-radius: 11px;
+  font-size: 16px;
+  font-weight: 800;
+  color: #14130f;
+  background: linear-gradient(140deg, var(--gold2), var(--gold));
+  cursor: pointer;
+}
+
+.analysis-complete:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.analysis-skip,
+.analysis-cancel {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.analysis-skip:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.analysis-optional {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 12px 14px;
+}
+
+.analysis-optional > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--gold);
+  list-style: none;
+}
+
+.analysis-optional > summary::-webkit-details-marker {
+  display: none;
+}
+
+.analysis-optional > summary:before {
+  content: "+ ";
+  font-weight: 700;
+}
+
+.analysis-optional[open] > summary:before {
+  content: "− ";
+}
+
+.analysis-note {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.analysis-note textarea {
+  min-height: 76px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0f0f10;
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+/* Métricas trazidas do relógio, que o formulário manual não captura. */
+.analysis-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  gap: 9px;
+  margin: 14px 0;
+}
+
+.analysis-metrics span {
+  display: grid;
+  gap: 4px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0f0f10;
+}
+
+.analysis-metrics small {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--gold);
+}
+
+.analysis-metrics b {
+  font-size: 17px;
+}
+
+.analysis-source {
+  font-size: 12px;
+  color: var(--gold);
+}
+
+.analysis-redo {
+  margin-top: 12px;
+  padding: 9px 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+@media (max-width: 760px) {
+  .analysis-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* --- Acompanhamento de dores e lesões ------------------------------------- */
+
+.pain-center {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+.pain-center > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-bottom: 15px;
+}
+
+.pain-center h2 {
+  font-size: 22px;
+  margin: 5px 0 6px;
+}
+
+.pain-center > header p {
+  font-size: 13px;
+  color: var(--muted);
+  max-width: 62ch;
+}
+
+.pain-center > header b {
+  font-size: 28px;
+  color: var(--gold);
+  text-align: right;
+  display: grid;
+}
+
+.pain-center > header b small {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.pain-filters {
+  display: flex;
+  gap: 7px;
+  margin-bottom: 14px;
+}
+
+.pain-filters button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 20px;
+  padding: 7px 13px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pain-filters button.selected {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: #15120c;
+  font-weight: 700;
+}
+
+.pain-case {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  margin-bottom: 9px;
+  overflow: hidden;
+}
+
+.pain-case.grave {
+  border-color: #7d3b33;
+}
+
+.pain-case.resolvido {
+  opacity: 0.72;
+}
+
+.pain-case-head {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 15px;
+  background: none;
+  border: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.pain-case-head:hover {
+  background: #1c1b19;
+}
+
+.pain-case-mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  background: #2e291d;
+  color: var(--gold);
+}
+
+.pain-case.grave .pain-case-mark {
+  background: #3a251d;
+  color: #ff8b76;
+}
+
+.pain-case-head b {
+  display: block;
+  font-size: 14px;
+}
+
+.pain-case-head small {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+
+.pain-case-head em {
+  font-style: normal;
+  font-size: 11px;
+  padding: 5px 9px;
+  border-radius: 14px;
+  white-space: nowrap;
+}
+
+.pain-case-head em.pending { background: #3a2f19; color: var(--gold2); }
+.pain-case-head em.review { background: #1e3348; color: #7fb6e0; }
+.pain-case-head em.ok { background: #183326; color: #69d397; }
+
+.pain-case-body {
+  border-top: 1px solid var(--line);
+  padding: 16px;
+  display: grid;
+  gap: 14px;
+}
+
+.pain-case-quote {
+  font-style: italic;
+  color: var(--text);
+  border-left: 3px solid var(--gold);
+  padding-left: 12px;
+  font-size: 14px;
+}
+
+.pain-case-facts {
+  display: grid;
+  gap: 9px;
+}
+
+.pain-case-facts span {
+  display: grid;
+  gap: 3px;
+  font-size: 13px;
+  background: #0f0f10;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 10px 12px;
+}
+
+.pain-case-facts small {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--gold);
+}
+
+.pain-case-note {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.pain-case-note textarea {
+  min-height: 74px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0f0f10;
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+.pain-case-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.pain-case-actions button,
+.pain-contact {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  padding: 10px 14px;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.pain-contact {
+  border-color: #278b4d;
+  background: #1f7a42;
+  color: #fff;
+  font-weight: 700;
+}
+
+.pain-case-actions button.gold {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: #15120c;
+  font-weight: 800;
+}
+
+.pain-case-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pain-case-link {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 13px;
+}
+
+.pain-case-link label {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.pain-case-link input {
+  background: #0f0f10;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 10px;
+  color: var(--text);
+  width: max-content;
+}
+
+.pain-case-link button {
+  justify-self: start;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  padding: 9px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pain-case-link small {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.pain-case-history {
+  border-top: 1px solid var(--line);
+  padding-top: 13px;
+  display: grid;
+  gap: 9px;
+}
+
+.pain-case-history article {
+  border-left: 2px solid var(--line);
+  padding-left: 12px;
+}
+
+.pain-case-history b {
+  font-size: 13px;
+}
+
+.pain-case-history small {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin: 2px 0 4px;
+}
+
+.pain-case-history p {
+  font-size: 13px;
+  color: var(--text);
+}
+
+@media (max-width: 760px) {
+  .pain-case-head {
+    grid-template-columns: 34px 1fr;
+  }
+  .pain-case-head em {
+    grid-column: 2;
+    justify-self: start;
+    margin-top: 6px;
+  }
+}

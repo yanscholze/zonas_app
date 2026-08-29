@@ -88,7 +88,7 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/athlete-planning": new Set(["athleteName","plan","phase","weekNumber","totalWeeks"]),
   "/api/performance-tests": new Set(["athleteName","testDate","distanceKm","minutes","seconds","age","id","action","zones","tempoRuns"]),
   "/api/training-weeks": new Set(["athleteName","weekStart","plan","phase","weekLabel","trainingDays","sessions","status","auditDifferences","expectedUpdatedAt"]),
-  "/api/pain-reports": new Set(["athleteName","bodyArea","intensity","trainingImpact","note"]),
+  "/api/pain-reports": new Set(["athleteName","bodyArea","intensity","trainingImpact","note","action","id","weekStart"]),
   "/api/races-records": new Set(["kind","athleteName","name","raceDate","distance","city","goal","priority","resultTime","eventName","action","id","status"]),
   "/api/athlete-access": new Set(["athleteName","email","status"]),
   "/api/access-request": new Set(["name","phone","objective","distance","trainingDays","integration"]),
@@ -96,7 +96,7 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/backups": new Set(["action","id","label"]),
   "/api/student/pain-reports": new Set(["bodyArea","intensity","trainingImpact","note"]),
   "/api/student/feedbacks": new Set(["feeling","note","weekStart","workoutDay"]),
-  "/api/student/workout-executions": new Set(["weekStart","workoutDay","actualMinutes","actualKm"]),
+  "/api/student/workout-executions": new Set(["weekStart","workoutDay","actualMinutes","actualKm","action","note"]),
   "/api/student/integration-preference": new Set(["integration"]),
   "/api/financial": new Set(["action","pixKey","pixName","defaultAmount","dueDay","athleteName","referenceMonth","amount","status","dueDate"]),
   "/api/feedbacks": new Set(["id","status"]),
@@ -1067,6 +1067,13 @@ async function trainingWeeksApi(request: Request, env: Env): Promise<Response> {
       const result = await env.DB.prepare("SELECT athlete_name, week_start, status, updated_at FROM training_weeks WHERE week_start = ? ORDER BY updated_at DESC").bind(weekStart).all();
       return Response.json({ weeks: result.results });
     }
+    // Só o atleta, sem semana: antes este caso caía no SELECT sem filtro abaixo
+    // e devolvia as semanas de todos os alunos. Quem consultasse pelo primeiro
+    // resultado acabaria lendo — ou sobrescrevendo — o treino de outra pessoa.
+    if (athlete) {
+      const result = await env.DB.prepare("SELECT * FROM training_weeks WHERE athlete_name = ? ORDER BY week_start DESC").bind(athlete).all();
+      return Response.json({ weeks: result.results });
+    }
     const result = await env.DB.prepare("SELECT * FROM training_weeks ORDER BY updated_at DESC").all();
     return Response.json({ weeks: result.results });
   }
@@ -1119,14 +1126,74 @@ async function trainingWeeksApi(request: Request, env: Env): Promise<Response> {
   return new Response("Method not allowed", { status: 405 });
 }
 
+/** Histórico de cada movimento de um relato de dor. */
+const createPainReportUpdatesSql = `CREATE TABLE IF NOT EXISTS pain_report_updates (
+  id TEXT PRIMARY KEY,
+  report_id TEXT NOT NULL,
+  actor_email TEXT NOT NULL,
+  action TEXT NOT NULL,
+  note TEXT,
+  created_at INTEGER NOT NULL
+)`;
+const createPainReportUpdatesIndexSql =
+  `CREATE INDEX IF NOT EXISTS pain_report_updates_report_idx ON pain_report_updates (report_id, created_at)`;
+
+async function ensurePainReports(env: Env) {
+  await env.DB.batch([
+    env.DB.prepare(createPainReportsSql),
+    env.DB.prepare(createPainReportUpdatesSql),
+    env.DB.prepare(createPainReportUpdatesIndexSql),
+  ]);
+  // Acompanhamento acrescentado depois: um relato de dor precisa de trajetória,
+  // não só de registro. Só adiciona colunas; os relatos existentes continuam.
+  await ensureColumns(env, "pain_reports", {
+    reviewed_by: "TEXT",
+    reviewed_at: "INTEGER",
+    contacted_at: "INTEGER",
+    coach_note: "TEXT",
+    resolution: "TEXT",
+    resolved_at: "INTEGER",
+    linked_week_start: "TEXT",
+  });
+}
+
+/** Estados pelos quais um relato caminha, do aviso do aluno até a alta. */
+const PAIN_STATUSES = ["Novo", "Em análise", "Verificado", "Resolvido"] as const;
+
+async function registraMovimentoDor(env: Env, reportId: string, actor: string, action: string, note: string | null) {
+  await env.DB.prepare(
+    "INSERT INTO pain_report_updates (id, report_id, actor_email, action, note, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+  ).bind(crypto.randomUUID(), reportId, actor, action, note, Date.now()).run();
+}
+
 async function painReportsApi(request: Request, env: Env): Promise<Response> {
-  await env.DB.prepare(createPainReportsSql).run();
+  await ensurePainReports(env);
+  const url = new URL(request.url);
+
   if (request.method === "GET") {
-    const result = await env.DB.prepare("SELECT * FROM pain_reports ORDER BY created_at DESC LIMIT 50").all();
-    return Response.json({ reports: result.results });
+    const reportId = boundedText(url.searchParams.get("id"), 60);
+    if (reportId) {
+      const [relato, historico] = await Promise.all([
+        env.DB.prepare("SELECT * FROM pain_reports WHERE id = ? LIMIT 1").bind(reportId).first(),
+        env.DB.prepare("SELECT id, actor_email, action, note, created_at FROM pain_report_updates WHERE report_id = ? ORDER BY created_at DESC").bind(reportId).all(),
+      ]);
+      if (!relato) return Response.json({ error: "report_not_found" }, { status: 404 });
+      return Response.json({ report: relato, history: historico.results });
+    }
+    const athlete = boundedText(url.searchParams.get("athlete"), 120);
+    const result = athlete
+      ? await env.DB.prepare("SELECT * FROM pain_reports WHERE athlete_name = ? ORDER BY created_at DESC LIMIT 50").bind(athlete).all()
+      : await env.DB.prepare("SELECT * FROM pain_reports ORDER BY created_at DESC LIMIT 50").all();
+    return Response.json({ reports: result.results, statuses: PAIN_STATUSES });
   }
-  if (request.method === "POST") {
-    const input = await request.json() as Record<string, unknown>;
+
+  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+  const input = await request.json() as Record<string, unknown>;
+  const acao = boundedText(input.action, 20);
+  const actor = normalizedAuthenticatedEmail(request) ?? "sistema";
+
+  // Sem ação, é o registro de um novo relato, como sempre foi.
+  if (!acao) {
     const athleteName = boundedText(input.athleteName, 120);
     const bodyArea = boundedText(input.bodyArea, 80);
     const rawIntensity = Number(input.intensity ?? 0);
@@ -1141,9 +1208,60 @@ async function painReportsApi(request: Request, env: Env): Promise<Response> {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(id, athleteName, bodyArea, intensity, trainingImpact, boundedText(input.note, 1000) || null, "Novo", createdAt)
       .run();
+    await registraMovimentoDor(env, id, actor, "Relato recebido", `${bodyArea} · intensidade ${intensity}/10 · ${trainingImpact}`);
     return Response.json({ id, createdAt, status: "Novo" }, { status: 201 });
   }
-  return new Response("Method not allowed", { status: 405 });
+
+  const reportId = boundedText(input.id, 60);
+  if (!reportId) return Response.json({ error: "report_required" }, { status: 400 });
+  const existente = await env.DB.prepare("SELECT id, athlete_name, status FROM pain_reports WHERE id = ? LIMIT 1").bind(reportId).first() as { id?: string; athlete_name?: string; status?: string } | null;
+  if (!existente?.id) return Response.json({ error: "report_not_found" }, { status: 404 });
+  const note = boundedText(input.note, 1000);
+  const agora = Date.now();
+
+  if (acao === "review") {
+    await env.DB.prepare("UPDATE pain_reports SET status = 'Verificado', reviewed_by = ?, reviewed_at = ?, coach_note = COALESCE(?, coach_note) WHERE id = ?")
+      .bind(actor, agora, note || null, reportId).run();
+    await registraMovimentoDor(env, reportId, actor, "Verificado pelo treinador", note || null);
+    return Response.json({ status: "Verificado", reviewedAt: agora });
+  }
+
+  if (acao === "contact") {
+    await env.DB.prepare("UPDATE pain_reports SET status = CASE WHEN status = 'Novo' THEN 'Em análise' ELSE status END, contacted_at = ? WHERE id = ?")
+      .bind(agora, reportId).run();
+    await registraMovimentoDor(env, reportId, actor, "Contato com o atleta", note || null);
+    const atualizado = await env.DB.prepare("SELECT status FROM pain_reports WHERE id = ? LIMIT 1").bind(reportId).first() as { status?: string } | null;
+    return Response.json({ status: atualizado?.status ?? existente.status, contactedAt: agora });
+  }
+
+  // Liga o relato à semana de treino que foi ajustada por causa dele: é o que
+  // permite, meses depois, saber o que mudou no plano e por quê.
+  if (acao === "link_week") {
+    const weekStart = boundedText(input.weekStart, 10);
+    if (!isIsoDate(weekStart)) return Response.json({ error: "invalid_week_start" }, { status: 400 });
+    const semana = await env.DB.prepare("SELECT week_start FROM training_weeks WHERE athlete_name = ? AND week_start = ? LIMIT 1")
+      .bind(existente.athlete_name, weekStart).first();
+    if (!semana) return Response.json({ error: "week_not_found_for_athlete" }, { status: 404 });
+    await env.DB.prepare("UPDATE pain_reports SET linked_week_start = ? WHERE id = ?").bind(weekStart, reportId).run();
+    await registraMovimentoDor(env, reportId, actor, "Ajuste na planilha", `Semana de ${weekStart}${note ? ` · ${note}` : ""}`);
+    return Response.json({ linkedWeekStart: weekStart });
+  }
+
+  if (acao === "resolve") {
+    if (!note) return Response.json({ error: "resolution_required" }, { status: 400 });
+    await env.DB.prepare("UPDATE pain_reports SET status = 'Resolvido', resolution = ?, resolved_at = ? WHERE id = ?")
+      .bind(note, agora, reportId).run();
+    await registraMovimentoDor(env, reportId, actor, "Resolvido", note);
+    return Response.json({ status: "Resolvido", resolvedAt: agora });
+  }
+
+  if (acao === "reopen") {
+    await env.DB.prepare("UPDATE pain_reports SET status = 'Em análise', resolved_at = NULL WHERE id = ?").bind(reportId).run();
+    await registraMovimentoDor(env, reportId, actor, "Reaberto", note || null);
+    return Response.json({ status: "Em análise" });
+  }
+
+  return Response.json({ error: "unknown_action" }, { status: 400 });
 }
 
 async function ensureTrainingFeedbacks(env: Env) {
@@ -1151,8 +1269,16 @@ async function ensureTrainingFeedbacks(env: Env) {
 }
 
 async function studentFeedbacksApi(request: Request, env: Env, athleteName: string): Promise<Response> {
-  if(request.method!=="POST")return new Response("Method not allowed",{status:405});
   await ensureTrainingFeedbacks(env);
+  // O aluno escrevia e nunca mais via: sem leitura, ele não tem como saber o
+  // que já contou ao treinador nem se aquilo foi lido.
+  if (request.method === "GET") {
+    const result = await env.DB.prepare(
+      "SELECT id, week_start, workout_day, feeling, note, status, created_at, reviewed_at FROM training_feedbacks WHERE athlete_name = ? ORDER BY created_at DESC LIMIT 30",
+    ).bind(athleteName).all();
+    return Response.json({ feedbacks: result.results });
+  }
+  if(request.method!=="POST")return new Response("Method not allowed",{status:405});
   const input=await request.json() as Record<string,unknown>;
   const feeling=boundedText(input.feeling,30);const note=boundedText(input.note,500);const weekStart=boundedText(input.weekStart,10);const workoutDay=boundedText(input.workoutDay,12);
   if(!["Muito bem","Cansado","Sentiu dor"].includes(feeling))return Response.json({error:"invalid_feeling"},{status:400});
@@ -1177,8 +1303,34 @@ async function feedbacksApi(request: Request, env: Env): Promise<Response> {
   return new Response("Method not allowed",{status:405});
 }
 
+/**
+ * Acrescenta colunas que faltam a uma tabela já existente.
+ *
+ * O esquema é garantido em runtime por `CREATE TABLE IF NOT EXISTS`, que não
+ * altera uma tabela que já existe. Sem isto, um banco em uso continuaria com o
+ * formato antigo depois de uma atualização. Só adiciona, nunca remove nem
+ * reescreve — os registros gravados permanecem intactos.
+ */
+async function ensureColumns(env: Env, table: string, columns: Record<string, string>): Promise<void> {
+  const info = await env.DB.prepare(`PRAGMA table_info(${table})`).all();
+  const existentes = new Set((info.results as Array<{ name?: string }>).map(row => String(row.name)));
+  const faltando = Object.entries(columns).filter(([nome]) => !existentes.has(nome));
+  if (!faltando.length) return;
+  await env.DB.batch(faltando.map(([nome, tipo]) =>
+    env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${nome} ${tipo}`)));
+}
+
 async function ensureWorkoutExecutions(env: Env) {
   await env.DB.batch([env.DB.prepare(createWorkoutExecutionsSql), env.DB.prepare(createWorkoutExecutionsAthleteIndexSql)]);
+  // Colunas acrescentadas quando o treino passou a ter conclusão explícita e a
+  // receber as métricas vindas das integrações.
+  await ensureColumns(env, "workout_executions", {
+    status: "TEXT",
+    note: "TEXT",
+    average_heart_rate: "INTEGER",
+    average_pace_seconds: "INTEGER",
+    external_activity_id: "TEXT",
+  });
 }
 
 function workoutAccuracy(plannedMinutes: number | null, plannedKm: number | null, actualMinutes: number | null, actualKm: number | null) {
@@ -1198,24 +1350,95 @@ async function studentWorkoutExecutionsApi(request: Request, env: Env, athleteNa
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
   const input = await request.json() as Record<string, unknown>;
   const weekStart = boundedText(input.weekStart, 10); const workoutDay = boundedText(input.workoutDay, 12);
-  const actualMinutes = Number(input.actualMinutes); const actualKm = Number(input.actualKm);
+  const acao = boundedText(input.action, 20) || "complete";
+  const note = boundedText(input.note, 400);
   if (!isIsoDate(weekStart) || !workoutDay) return Response.json({ error: "workout_reference_required" }, { status: 400 });
-  if ((!Number.isFinite(actualMinutes) || actualMinutes <= 0) && (!Number.isFinite(actualKm) || actualKm <= 0)) return Response.json({ error: "actual_result_required" }, { status: 400 });
+
   const week = await env.DB.prepare("SELECT sessions FROM training_weeks WHERE athlete_name = ? AND week_start = ? AND status = 'Liberada' LIMIT 1").bind(athleteName, weekStart).first() as {sessions?:string}|null;
   if (!week?.sessions) return Response.json({ error: "released_workout_not_found" }, { status: 404 });
   let session: Record<string, unknown> | undefined;
   try { session = (JSON.parse(week.sessions) as Record<string, Record<string, unknown>>)[workoutDay]; } catch { return Response.json({ error: "invalid_workout_plan" }, { status: 409 }); }
   if (!session || session.removed) return Response.json({ error: "planned_session_not_found" }, { status: 404 });
+
   const plannedMinutesValue = Number(session.durationMinutes); const plannedKmValue = Number(session.estimatedKm);
   const plannedMinutes = Number.isFinite(plannedMinutesValue) && plannedMinutesValue > 0 ? plannedMinutesValue : null;
   const plannedKm = Number.isFinite(plannedKmValue) && plannedKmValue > 0 ? plannedKmValue : null;
+  const now = Date.now();
+
+  // Um treino não realizado é informação tão útil quanto um concluído: o
+  // treinador precisa saber o que não aconteceu para ajustar a semana.
+  if (acao === "skip") {
+    const id = crypto.randomUUID();
+    await env.DB.prepare(`INSERT INTO workout_executions
+      (id,athlete_name,week_start,workout_day,planned_minutes,planned_km,actual_minutes,actual_km,correct_percentage,wrong_percentage,classification,source,created_at,status,note,average_heart_rate,average_pace_seconds,external_activity_id)
+      VALUES (?,?,?,?,?,?,NULL,NULL,0,100,'Não realizado','Manual',?,'Não realizado',?,NULL,NULL,NULL)`)
+      .bind(id, athleteName, weekStart, workoutDay, plannedMinutes, plannedKm === null ? null : String(plannedKm), now, note || null).run();
+    return Response.json({ id, status: "Não realizado", classification: "Não realizado", correct: 0, wrong: 100, plannedMinutes, plannedKm, note: note || null, source: "Manual", createdAt: now }, { status: 201 });
+  }
+
+  let actualMinutes = Number(input.actualMinutes);
+  let actualKm = Number(input.actualKm);
+  let heartRate: number | null = null;
+  let paceSeconds: number | null = null;
+  let externalId: string | null = null;
+  let source = "Manual";
+
+  // Quando o atleta tem integração conectada, a atividade importada daquele dia
+  // preenche o que ele não digitou — e traz ritmo e frequência cardíaca, que o
+  // formulário manual não tem como capturar.
+  await ensureIntegrationTables(env);
+  const importada = await env.DB.prepare(
+    `SELECT external_activity_id, provider, distance_meters, moving_seconds, average_heart_rate, average_pace_seconds
+       FROM external_activities
+      WHERE athlete_name = ? AND matched_week_start = ? AND matched_workout_day = ?
+      ORDER BY started_at DESC LIMIT 1`,
+  ).bind(athleteName, weekStart, workoutDay).first() as {
+    external_activity_id?: string; provider?: string; distance_meters?: number;
+    moving_seconds?: number; average_heart_rate?: number; average_pace_seconds?: number;
+  } | null;
+
+  if (importada) {
+    externalId = importada.external_activity_id ?? null;
+    heartRate = importada.average_heart_rate ?? null;
+    paceSeconds = importada.average_pace_seconds ?? null;
+    source = importada.provider ?? "Integração";
+    if (!Number.isFinite(actualMinutes) || actualMinutes <= 0) {
+      actualMinutes = Number(importada.moving_seconds ?? 0) / 60;
+    }
+    if (!Number.isFinite(actualKm) || actualKm <= 0) {
+      actualKm = Number(importada.distance_meters ?? 0) / 1000;
+    }
+  }
+
   const safeActualMinutes = Number.isFinite(actualMinutes) && actualMinutes > 0 && actualMinutes <= 1440 ? Math.round(actualMinutes) : null;
   const safeActualKm = Number.isFinite(actualKm) && actualKm > 0 && actualKm <= 500 ? Math.round(actualKm * 100) / 100 : null;
-  if ((!plannedMinutes || safeActualMinutes === null) && (!plannedKm || safeActualKm === null)) return Response.json({ error: "planned_metric_unavailable" }, { status: 409 });
-  const analysis = workoutAccuracy(plannedMinutes, plannedKm, safeActualMinutes, safeActualKm);
-  const id = crypto.randomUUID(); const now = Date.now();
-  await env.DB.prepare("INSERT INTO workout_executions (id,athlete_name,week_start,workout_day,planned_minutes,planned_km,actual_minutes,actual_km,correct_percentage,wrong_percentage,classification,source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(id,athleteName,weekStart,workoutDay,plannedMinutes,plannedKm === null ? null : String(plannedKm),safeActualMinutes,safeActualKm === null ? null : String(safeActualKm),analysis.correct,analysis.wrong,analysis.classification,"Manual",now).run();
-  return Response.json({ id, ...analysis, plannedMinutes, plannedKm, actualMinutes:safeActualMinutes, actualKm:safeActualKm, source:"Manual", createdAt:now }, { status: 201 });
+
+  // Concluir sem número continua valendo: registra a conclusão e deixa claro
+  // que não houve como medir, em vez de recusar o registro por completo.
+  const temMedida = (plannedMinutes && safeActualMinutes !== null) || (plannedKm && safeActualKm !== null);
+  const analysis = temMedida
+    ? workoutAccuracy(plannedMinutes, plannedKm, safeActualMinutes, safeActualKm)
+    : { correct: 0, wrong: 0, classification: "Concluído sem medição" };
+
+  if (safeActualMinutes !== null && safeActualKm !== null && paceSeconds === null) {
+    paceSeconds = Math.round((safeActualMinutes * 60) / safeActualKm);
+  }
+
+  const id = crypto.randomUUID();
+  await env.DB.prepare(`INSERT INTO workout_executions
+    (id,athlete_name,week_start,workout_day,planned_minutes,planned_km,actual_minutes,actual_km,correct_percentage,wrong_percentage,classification,source,created_at,status,note,average_heart_rate,average_pace_seconds,external_activity_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'Concluído',?,?,?,?)`)
+    .bind(id, athleteName, weekStart, workoutDay, plannedMinutes, plannedKm === null ? null : String(plannedKm),
+          safeActualMinutes, safeActualKm === null ? null : String(safeActualKm),
+          analysis.correct, analysis.wrong, analysis.classification, source, now,
+          note || null, heartRate, paceSeconds, externalId).run();
+
+  return Response.json({
+    id, status: "Concluído", ...analysis, measured: Boolean(temMedida),
+    plannedMinutes, plannedKm, actualMinutes: safeActualMinutes, actualKm: safeActualKm,
+    averageHeartRate: heartRate, averagePaceSeconds: paceSeconds,
+    source, fromIntegration: Boolean(importada), note: note || null, createdAt: now,
+  }, { status: 201 });
 }
 
 async function workoutExecutionsApi(request: Request, env: Env): Promise<Response> {

@@ -395,7 +395,7 @@ export default function ZonasAppClient({ session }: { session: Session }) {
 
       <main className="content">
         <header className="top"><div><small>{brazilCalendar().label.toUpperCase()}</small><h1>{active === "Painel" ? `${greeting()}, ${session.name.split(" ")[0]}` : active}</h1></div><div className="top-actions">{active === "Alunos" && <button className="gold" onClick={() => setNewAthlete(true)}>+ Novo aluno</button>}<button className="coach-alert-button" onClick={()=>setActive("Painel")} aria-label="Abrir avisos do professor">🔔 <b>{painReports.length+pendingRaces.filter(race=>race.status==="Aguardando análise").length+pendingTests.filter(test=>test.status!=="Aprovado").length+pendingAccess.length}</b><span>avisos</span></button><button className="coach-signout" onClick={()=>void signOut()} title={session.email}>Sair</button></div></header>
-        {active === "Painel" && <><MobileCoachHome go={setActive} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} coachName={session.name}/><CoachNotificationCenter go={setActive} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests} pendingAccess={pendingAccess}/><Dashboard go={setActive} chooseDistance={(d) => { setDistanceFilter(d); setActive("Alunos"); }} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests}/><PendingTestShortcut tests={pendingTests} open={()=>setActive("Testes e zonas")}/><WorkoutAccuracy/><TrainingFeedbacks/></>}
+        {active === "Painel" && <><PainCenter athletes={athleteRecords} /><MobileCoachHome go={setActive} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} coachName={session.name}/><CoachNotificationCenter go={setActive} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests} pendingAccess={pendingAccess}/><Dashboard go={setActive} chooseDistance={(d) => { setDistanceFilter(d); setActive("Alunos"); }} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests}/><PendingTestShortcut tests={pendingTests} open={()=>setActive("Testes e zonas")}/><WorkoutAccuracy/><TrainingFeedbacks/></>}
         {active === "Cadastros" && <><InviteLink/><AccessRequests onApproved={()=>{setPendingAccess(current=>current.slice(1));fetch("/api/athletes").then(r=>r.ok?r.json():{athletes:[]}).then(data=>{const saved=(data.athletes||[]).map((a:any)=>({name:a.name,initials:a.initials,distance:a.distance,plan:a.saved_plan||defaultPlanForDistance(a.distance),phase:a.planning_phase||a.phase,week:a.planning_week_number?`${a.planning_week_number} de ${a.planning_total_weeks}`:a.week,next:a.next_workout,flag:a.status||undefined}));setAthleteRecords(current=>[...saved,...current.filter(a=>!saved.some((s:Athlete)=>s.name===a.name))])})}}/></>} 
         {active === "Alunos" && <Athletes filtered={filtered} allAthletes={athleteRecords} distance={distanceFilter} phase={phaseFilter} plan={planFilter} setDistance={setDistanceFilter} setPhase={setPhaseFilter} setPlan={setPlanFilter} openProfile={setSelectedAthlete} />}
         {active === "Testes e zonas" && <PendingTestCenter athletes={athleteRecords} openCalendar={(name)=>{sessionStorage.setItem("zonasapp:calendar-athlete",name);setActive("Calendário")}} />}
@@ -566,6 +566,142 @@ function AccountsCenter({ athletes }: { athletes: Athlete[] }) {
           </article>)}
     </section>
   </>;
+}
+
+
+/**
+ * Acompanhamento das queixas de dor.
+ *
+ * Antes o treinador só via a contagem de relatos, sem nada a fazer com eles.
+ * Aqui cada queixa tem trajetória — contato, avaliação, ajuste na planilha e
+ * desfecho — e guarda o histórico, que é o que permite entender meses depois o
+ * que houve com aquele atleta e por que a semana foi alterada.
+ */
+function PainCenter({ athletes }: { athletes: Athlete[] }) {
+  type Relato = {
+    id: string; athlete_name: string; body_area: string; intensity: number;
+    training_impact: string; note?: string; status: string; created_at: number;
+    coach_note?: string; resolution?: string; linked_week_start?: string;
+    contacted_at?: number; reviewed_at?: number; resolved_at?: number;
+  };
+  type Movimento = { id: string; actor_email: string; action: string; note?: string; created_at: number };
+
+  const [relatos, setRelatos] = useState<Relato[]>([]);
+  const [aberto, setAberto] = useState<string>("");
+  const [historico, setHistorico] = useState<Movimento[]>([]);
+  const [texto, setTexto] = useState("");
+  const [semana, setSemana] = useState("");
+  const [estado, setEstado] = useState<"carregando" | "pronto" | "salvando" | "erro">("carregando");
+  const [erro, setErro] = useState("");
+  const [filtro, setFiltro] = useState<"Abertos" | "Todos" | "Resolvidos">("Abertos");
+
+  const carregar = () => api.get<{ reports: Relato[] }>("/api/pain-reports")
+    .then(d => { setRelatos(d.reports || []); setEstado("pronto"); })
+    .catch(error => { setErro(describeError(error)); setEstado("erro"); });
+  useEffect(() => { carregar(); }, []);
+
+  const abrir = async (id: string) => {
+    if (aberto === id) { setAberto(""); return; }
+    setAberto(id); setTexto(""); setSemana(""); setErro("");
+    try {
+      const d = await api.get<{ history: Movimento[] }>(`/api/pain-reports?id=${encodeURIComponent(id)}`);
+      setHistorico(d.history || []);
+    } catch { setHistorico([]); }
+  };
+
+  const agir = async (id: string, action: string, extra: Record<string, unknown> = {}) => {
+    setEstado("salvando"); setErro("");
+    try {
+      await api.post("/api/pain-reports", { action, id, note: texto || undefined, ...extra });
+      await carregar();
+      const d = await api.get<{ history: Movimento[] }>(`/api/pain-reports?id=${encodeURIComponent(id)}`);
+      setHistorico(d.history || []); setTexto(""); setSemana(""); setEstado("pronto");
+    } catch (error) { setErro(describeError(error)); setEstado("erro"); }
+  };
+
+  const visiveis = relatos.filter(r =>
+    filtro === "Todos" ? true : filtro === "Resolvidos" ? r.status === "Resolvido" : r.status !== "Resolvido");
+  const abertos = relatos.filter(r => r.status !== "Resolvido").length;
+  const quando = (ms?: number) => ms ? new Date(Number(ms)).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "";
+  const telefoneDe = (nome: string) => athletes.find(a => a.name === nome);
+
+  return <section className="pain-center">
+    <header>
+      <div>
+        <span className="overline">SAÚDE DOS ATLETAS</span>
+        <h2>Dores e lesões</h2>
+        <p>Cada queixa guarda o que foi conversado, o que mudou na planilha e como terminou.</p>
+      </div>
+      <b>{abertos}<small>em aberto</small></b>
+    </header>
+
+    <div className="pain-filters">
+      {(["Abertos", "Todos", "Resolvidos"] as const).map(f =>
+        <button key={f} className={filtro === f ? "selected" : ""} onClick={() => setFiltro(f)}>{f}</button>)}
+    </div>
+
+    {erro && <p className="registration-error">{erro}</p>}
+    {estado === "carregando" ? <div className="feedback-empty">Carregando relatos…</div>
+      : visiveis.length === 0 ? <div className="feedback-empty">Nenhum relato {filtro === "Resolvidos" ? "resolvido" : "em aberto"}.</div>
+      : visiveis.map(r => {
+        const atleta = telefoneDe(r.athlete_name);
+        const grave = r.intensity >= 7;
+        return <article key={r.id} className={`pain-case ${r.status === "Resolvido" ? "resolvido" : grave ? "grave" : ""}`}>
+          <button className="pain-case-head" onClick={() => abrir(r.id)}>
+            <span className="pain-case-mark">{r.intensity}</span>
+            <span>
+              <b>{r.athlete_name} · {r.body_area}</b>
+              <small>{r.training_impact} · {quando(r.created_at)}</small>
+            </span>
+            <em className={r.status === "Resolvido" ? "ok" : r.status === "Verificado" ? "review" : "pending"}>{r.status}</em>
+          </button>
+
+          {aberto === r.id && <div className="pain-case-body">
+            {r.note && <p className="pain-case-quote">“{r.note}”</p>}
+
+            <div className="pain-case-facts">
+              {r.coach_note && <span><small>AVALIAÇÃO</small>{r.coach_note}</span>}
+              {r.linked_week_start && <span><small>PLANILHA AJUSTADA</small>semana de {r.linked_week_start}</span>}
+              {r.resolution && <span><small>DESFECHO</small>{r.resolution}</span>}
+            </div>
+
+            <label className="pain-case-note">
+              Anotação para este passo
+              <textarea value={texto} onChange={e => setTexto(e.target.value)} maxLength={1000}
+                placeholder="O que foi conversado, o que você observou, o que orientou" />
+            </label>
+
+            <div className="pain-case-actions">
+              {atleta && <a className="pain-contact" href={`https://wa.me/?text=${encodeURIComponent(`Olá ${r.athlete_name.split(" ")[0]}, vi seu relato de dor em ${r.body_area}. Como você está?`)}`} target="_blank" rel="noreferrer">Falar no WhatsApp ↗</a>}
+              <button disabled={estado === "salvando"} onClick={() => agir(r.id, "contact")}>Registrar contato</button>
+              <button disabled={estado === "salvando"} onClick={() => agir(r.id, "review")}>Marcar como verificado</button>
+              {r.status === "Resolvido"
+                ? <button disabled={estado === "salvando"} onClick={() => agir(r.id, "reopen")}>Reabrir</button>
+                : <button className="gold" disabled={estado === "salvando" || !texto} onClick={() => agir(r.id, "resolve")}>Resolver</button>}
+            </div>
+
+            <div className="pain-case-link">
+              <label>Vincular ajuste na planilha
+                <input type="date" value={semana} onChange={e => setSemana(e.target.value)} />
+              </label>
+              <button disabled={!semana || estado === "salvando"} onClick={() => agir(r.id, "link_week", { weekStart: semana })}>
+                Vincular semana
+              </button>
+              <small>Informe a segunda-feira da semana que você alterou por causa desta queixa.</small>
+            </div>
+
+            {historico.length > 0 && <div className="pain-case-history">
+              <span className="overline">HISTÓRICO</span>
+              {historico.map(h => <article key={h.id}>
+                <b>{h.action}</b>
+                <small>{quando(h.created_at)} · {h.actor_email}</small>
+                {h.note && <p>{h.note}</p>}
+              </article>)}
+            </div>}
+          </div>}
+        </article>;
+      })}
+  </section>;
 }
 
 function CoachIntegrations(){
@@ -1349,12 +1485,127 @@ function StructuredWorkoutCard({session}:{session:StructuredSession}){
   </article>
 }
 
+/**
+ * Conclusão do treino pelo aluno.
+ *
+ * Antes esta tela só oferecia "analisar", e a análise exigia digitar tempo ou
+ * distância: quem apenas correu não tinha como avisar o treinador de que fez o
+ * treino. Agora a conclusão é o ato principal, os números são opcionais, e
+ * quem não treinou também consegue registrar isso — informação igualmente útil
+ * para o treinador reorganizar a semana.
+ *
+ * Quando há integração conectada, o servidor completa tempo, distância, ritmo
+ * médio e frequência cardíaca com a atividade importada daquele dia.
+ */
 function WorkoutAnalysis({secureStudentMode,weekStart,workoutDay,session}:{secureStudentMode:boolean;weekStart?:string;workoutDay:string;session?:StructuredSession}){
-  const [actualMinutes,setActualMinutes]=useState("");const [actualKm,setActualKm]=useState("");const [result,setResult]=useState<any>(null);const [state,setState]=useState("");
-  const analyze=async()=>{setState("saving");try{if(!secureStudentMode){const plannedMinutes=Number(session?.durationMinutes)||0;const plannedKm=Number(session?.estimatedKm)||0;const scores=[plannedMinutes&&actualMinutes?Math.max(0,100-Math.abs(Number(actualMinutes)-plannedMinutes)/plannedMinutes*100):null,plannedKm&&actualKm?Math.max(0,100-Math.abs(Number(actualKm)-plannedKm)/plannedKm*100):null].filter(v=>v!==null) as number[];if(!scores.length)throw new Error();const correct=Math.round(scores.reduce((a,b)=>a+b,0)/scores.length);setResult({correct,wrong:100-correct,classification:correct>=80?"Dentro do planejado":correct>=60?"Parcialmente correto":"Fora do planejado"});setState("done");return}const execution=await api.post<{correct:number;wrong:number;classification:string}>("/api/student/workout-executions",{weekStart,workoutDay,actualMinutes:Number(actualMinutes)||null,actualKm:Number(actualKm)||null});setResult(execution);setState("done")}catch{setState("error")}};
+  const [actualMinutes,setActualMinutes]=useState("");
+  const [actualKm,setActualKm]=useState("");
+  const [note,setNote]=useState("");
+  const [result,setResult]=useState<any>(null);
+  const [state,setState]=useState<""|"saving"|"error">("");
+  const [erro,setErro]=useState("");
+  const [motivoAberto,setMotivoAberto]=useState(false);
+
+  const registrar=async(action:"complete"|"skip")=>{
+    setState("saving");setErro("");
+    try{
+      if(!secureStudentMode){
+        // Prévia do treinador: calcula localmente, sem gravar nada.
+        const plannedMinutes=Number(session?.durationMinutes)||0;
+        const plannedKm=Number(session?.estimatedKm)||0;
+        if(action==="skip"){setResult({status:"Não realizado",classification:"Não realizado",correct:0,wrong:100});setState("");return}
+        const scores=[
+          plannedMinutes&&actualMinutes?Math.max(0,100-Math.abs(Number(actualMinutes)-plannedMinutes)/plannedMinutes*100):null,
+          plannedKm&&actualKm?Math.max(0,100-Math.abs(Number(actualKm)-plannedKm)/plannedKm*100):null,
+        ].filter(v=>v!==null) as number[];
+        const correct=scores.length?Math.round(scores.reduce((a,b)=>a+b,0)/scores.length):0;
+        setResult(scores.length
+          ?{status:"Concluído",measured:true,correct,wrong:100-correct,classification:correct>=80?"Dentro do planejado":correct>=60?"Parcialmente correto":"Fora do planejado"}
+          :{status:"Concluído",measured:false,correct:0,wrong:0,classification:"Concluído sem medição"});
+        setState("");return;
+      }
+      const execucao=await api.post<any>("/api/student/workout-executions",{
+        weekStart,workoutDay,action,
+        actualMinutes:Number(actualMinutes)||null,
+        actualKm:Number(actualKm)||null,
+        note:note||undefined,
+      });
+      setResult(execucao);setMotivoAberto(false);setState("");
+    }catch(error){setErro(describeError(error,"Não foi possível registrar. Tente novamente."));setState("error")}
+  };
+
   if(!session||session.removed)return null;
-  return <section className="student-workout-analysis"><span className="overline">CONFERIR TREINO REALIZADO</span><h2>Fiz o treino certo?</h2><p>Informe o resultado do relógio. O ZonasApp compara com o treino liberado pelo professor.</p><div className="analysis-plan"><span><small>PLANEJADO</small><b>{session.durationMinutes||"—"} min</b></span><span><small>DISTÂNCIA ESTIMADA</small><b>{session.estimatedKm||"—"} km</b></span></div><div className="analysis-inputs"><label>Tempo realizado (min)<input type="number" min="1" value={actualMinutes} onChange={e=>setActualMinutes(e.target.value)} placeholder="Ex.: 42"/></label><label>Distância realizada (km)<input type="number" min="0.1" step="0.01" value={actualKm} onChange={e=>setActualKm(e.target.value)} placeholder="Ex.: 8,20"/></label></div><button disabled={(!actualMinutes&&!actualKm)||state==="saving"} onClick={analyze}>{state==="saving"?"Analisando…":"Analisar meu treino"}</button>{result&&<article className={`analysis-result ${result.correct>=80?"correct":result.correct>=60?"partial":"outside"}`}><h3>{result.classification}</h3><div><strong>{result.correct}%<small>treino certo</small></strong><strong>{result.wrong}%<small>fora do planejado</small></strong></div><p>{result.correct>=80?"Muito bom: tempo e distância ficaram próximos do planejado.":result.correct>=60?"Parte do objetivo foi cumprida. O professor poderá ajustar o próximo treino.":"O resultado ficou distante da meta. Isso não é punição: serve para o professor entender e ajustar."}</p></article>}{state==="error"&&<p className="pain-error">Não foi possível analisar. Confira os dados e tente novamente.</p>}</section>;
+
+  const ritmo=(segundos?:number|null)=>segundos?`${Math.floor(segundos/60)}:${String(segundos%60).padStart(2,"0")} /km`:null;
+  const concluido=result?.status==="Concluído";
+  const naoRealizado=result?.status==="Não realizado";
+
+  return <section className="student-workout-analysis">
+    <span className="overline">DEPOIS DO TREINO</span>
+    <h2>{result?"Registro enviado ao treinador":"Você fez este treino?"}</h2>
+    {!result&&<p>Marque como concluído assim que terminar. Informar tempo e distância é opcional — se o seu relógio estiver conectado, a Zonas-App busca sozinha.</p>}
+
+    <div className="analysis-plan">
+      <span><small>PLANEJADO</small><b>{session.durationMinutes||"—"} min</b></span>
+      <span><small>DISTÂNCIA ESTIMADA</small><b>{session.estimatedKm||"—"} km</b></span>
+    </div>
+
+    {!result&&<>
+      <details className="analysis-optional" open={Boolean(actualMinutes||actualKm)}>
+        <summary>Quero informar tempo e distância</summary>
+        <div className="analysis-inputs">
+          <label>Tempo realizado (min)<input type="number" min="1" value={actualMinutes} onChange={e=>setActualMinutes(e.target.value)} placeholder="Ex.: 42"/></label>
+          <label>Distância realizada (km)<input type="number" min="0.1" step="0.01" value={actualKm} onChange={e=>setActualKm(e.target.value)} placeholder="Ex.: 8,20"/></label>
+        </div>
+      </details>
+
+      {motivoAberto&&<label className="analysis-note">Por que não treinou? <small>opcional</small>
+        <textarea value={note} onChange={e=>setNote(e.target.value)} maxLength={400} placeholder="Ex.: acordei indisposta, viagem, chuva forte"/>
+      </label>}
+
+      {erro&&<p className="pain-error">{erro}</p>}
+
+      <div className="analysis-actions">
+        <button className="analysis-complete" disabled={state==="saving"} onClick={()=>registrar("complete")}>
+          {state==="saving"?"Registrando…":"✓ Concluí este treino"}
+        </button>
+        <button className="analysis-skip" disabled={state==="saving"} onClick={()=>motivoAberto?registrar("skip"):setMotivoAberto(true)}>
+          {motivoAberto?"Confirmar que não treinei":"Não consegui treinar"}
+        </button>
+        {motivoAberto&&<button className="analysis-cancel" onClick={()=>{setMotivoAberto(false);setNote("")}}>Cancelar</button>}
+      </div>
+    </>}
+
+    {result&&<article className={`analysis-result ${naoRealizado?"outside":!result.measured?"partial":result.correct>=80?"correct":result.correct>=60?"partial":"outside"}`}>
+      <h3>{result.classification}</h3>
+      {result.measured&&<div>
+        <strong>{result.correct}%<small>treino certo</small></strong>
+        <strong>{result.wrong}%<small>fora do planejado</small></strong>
+      </div>}
+
+      {concluido&&(result.actualMinutes||result.actualKm||result.averagePaceSeconds||result.averageHeartRate)&&
+        <div className="analysis-metrics">
+          {result.actualMinutes&&<span><small>TEMPO</small><b>{result.actualMinutes} min</b></span>}
+          {result.actualKm&&<span><small>DISTÂNCIA</small><b>{result.actualKm} km</b></span>}
+          {ritmo(result.averagePaceSeconds)&&<span><small>RITMO MÉDIO</small><b>{ritmo(result.averagePaceSeconds)}</b></span>}
+          {result.averageHeartRate&&<span><small>FC MÉDIA</small><b>{result.averageHeartRate} bpm</b></span>}
+        </div>}
+
+      {result.fromIntegration&&<p className="analysis-source">Dados trazidos automaticamente de {result.source}.</p>}
+
+      <p>{naoRealizado
+        ?"O treinador foi avisado e poderá reorganizar a sua semana."
+        :!result.measured
+          ?"Conclusão registrada. Conecte o seu relógio em Mais → Integrações para que tempo, ritmo e frequência cardíaca venham sozinhos."
+          :result.correct>=80?"Muito bom: tempo e distância ficaram próximos do planejado."
+          :result.correct>=60?"Parte do objetivo foi cumprida. O treinador poderá ajustar o próximo treino."
+          :"O resultado ficou distante do planejado. O treinador vai revisar com você."}</p>
+
+      <button className="analysis-redo" onClick={()=>{setResult(null);setActualMinutes("");setActualKm("");setNote("")}}>Registrar novamente</button>
+    </article>}
+  </section>;
 }
+
 
 function parsedList(value:unknown){try{const result=JSON.parse(String(value||"[]"));return Array.isArray(result)?result:[]}catch{return[]}}
 function StudentTestsView({data,back}:{data:any;back:()=>void}){
