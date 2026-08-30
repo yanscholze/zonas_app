@@ -191,39 +191,23 @@
     font: italic 13px Georgia;
     text-align: center;
   }
-  .sidebar {
-    position: fixed;
-    z-index: 50;
-    left: 10px;
-    right: 10px;
-    bottom: 10px;
-    width: auto;
-    height: 67px;
-    padding: 8px 10px;
-    border: 1px solid #3d3930;
-    border-radius: 18px;
-    background: #171718eb;
-    box-shadow: 0 14px 40px #000;
-  }
+  /*
+     A forma da barra (fixed, cantos, fundo, sombra) e o `padding-bottom` que o
+     `.content` reserva para ela vivem no bloco @media(max-width:760px) de
+     globals.css. Declarar aqui não adiantava: globals.css importa este arquivo
+     na primeira linha, então em empate de especificidade ele vence. O que
+     sobrou nesta seção são as regras que globals.css não contradiz.
+  */
   .sidebar>.brand,
   .sidebar>.coach,
   .sidebar>.student-switch {
     display: none;
-  }
-  .sidebar nav {
-    width: 100%;
-    justify-content: space-around;
-    margin: 0;
-    overflow: hidden;
   }
   .sidebar nav button {
     min-width: 43px;
   }
   .sidebar nav button:nth-child(n+5) {
     display: none;
-  }
-  .content {
-    padding-bottom: 92px;
   }
 }
 
