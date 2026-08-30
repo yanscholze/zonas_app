@@ -169,6 +169,44 @@ O que **não** fazer: raspagem de tela, automação do aplicativo ou uso de
 endpoints internos não documentados. Além de frágil, viola os termos de uso e
 colocaria em risco a conta do treinador.
 
+## Conta de manutenção
+
+Além do treinador e dos alunos existe um terceiro papel, `dev`, para quem mantém
+a plataforma. Ele alcança tudo o que o treinador alcança e mais um painel de
+diagnóstico em `/api/dev/overview`: erros da aplicação, contas e sessões,
+eventos de segurança, uso por rota, volume de cada tabela e o estado das
+integrações.
+
+A conta **só existe se estas duas variáveis estiverem definidas**:
+
+```dotenv
+DEV_LOGIN=
+DEV_INITIAL_PASSWORD=
+```
+
+Sem elas, o papel simplesmente não é criado — uma conta de acesso irrestrito não
+pode existir por padrão. O login não precisa ser um e-mail: é um identificador
+curto que ninguém usa para receber mensagem.
+
+O diagnóstico devolve apenas a **presença** de cada variável de ambiente, nunca
+o valor, e nunca inclui hash de senha nem token de sessão: nem quem mantém o
+sistema precisa deles para diagnosticar, e devolvê-los transformaria a rota num
+alvo. Treinador e aluno recebem `403 dev_access_required`.
+
+### Áreas de treinador
+
+A partir do painel de manutenção é possível criar treinadores e **entrar na área
+de qualquer um deles**, vendo-a exatamente como aquela pessoa vê. A visita fica
+registrada na sessão — não no navegador — para que o recorte dos dados seja
+decidido pelo servidor, e cada entrada gera um evento de segurança. Enquanto a
+visita durar, uma faixa no topo diz de quem é a área aberta.
+
+Cada treinador enxerga apenas os próprios alunos: `athletes.coach_email` guarda
+esse vínculo, e as demais tabelas se ligam ao aluno por `athlete_name`. Alunos
+cadastrados antes desta separação são atribuídos uma única vez ao treinador de
+`COACH_EMAIL`. A conta de manutenção, sem visitar ninguém, continua vendo todos
+— é o modo de diagnóstico.
+
 ## Estrutura principal
 
 - `app/`: interface e fluxos do professor e do aluno
@@ -178,6 +216,8 @@ colocaria em risco a conta do treinador.
 - `worker/`: entrada do Cloudflare Worker, com `auth.ts` (login e sessões) e
   `integrations.ts` (catálogo e normalização dos provedores)
 - `app/api-client.ts`: camada única de chamadas à API, com erros diagnosticáveis
+- `app/DevDashboard.tsx`: painel de diagnóstico da conta de manutenção
+- `db/sql.ts`: gera o SQL de criação a partir do schema Drizzle (fonte única)
 - `tests/`: testes automatizados
 
 ## Integrações
@@ -203,7 +243,53 @@ tempo, frequência cardíaca e ritmo médio — e já chegam ligadas à semana e
 do treino planejado. A gravação é idempotente: reenviar a mesma atividade não a
 duplica.
 
-### Apple Saúde
+### O que falta em cada integração
+
+O código das quatro está pronto. O que resta são cadastros e uma aprovação —
+mais o passo que só o atleta pode dar: autorizar o acesso à conta dele.
+
+| Serviço | Falta para funcionar | De quem depende |
+| --- | --- | --- |
+| **Strava** | Cadastrar o aplicativo no portal e preencher `STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET` e `STRAVA_WEBHOOK_VERIFY_TOKEN` | Do treinador, em minutos |
+| **Apple Saúde** | Nada. Basta `STRAVA_TOKEN_ENCRYPTION_KEY` definida | Pronta |
+| **Garmin** | Aprovação no Garmin Connect Developer Program; depois `GARMIN_CONSUMER_KEY`/`SECRET`, e para enviar treinos também `GARMIN_TRAINING_API_URL` e `GARMIN_TRAINING_API_ENABLED=true` | Do Garmin |
+| **Amazfit / Zepp** | Não há caminho direto — ver abaixo | — |
+
+Em todos os casos, o último passo é do atleta: entrar em *Mais → Integrações* e
+autorizar. Sem essa autorização não existe token, e sem token não há importação.
+
+#### Strava
+
+Fluxo completo: OAuth2, renovação de token no servidor, importação por período e
+**webhook**. Com o webhook inscrito, a atividade entra sozinha assim que o
+atleta termina o treino — sem ninguém apertar "sincronizar". A inscrição é feita
+uma vez por `POST /api/integrations/strava/subscription`, e o Strava precisa
+alcançar o endereço público da aplicação para validá-la: em desenvolvimento
+local ela falha, e isso é esperado.
+
+#### Garmin
+
+Autorização com PKCE, renovação de token, importação pela Activity API e
+tradução do treino da Zonas-App para o formato de treino estruturado da Garmin
+— tudo implementado e testado. O envio fica bloqueado até existir
+`GARMIN_TRAINING_API_URL`, porque **o endereço da Training API não é público**:
+vem no material que o Garmin entrega ao aprovar a conta. Preferimos deixar isso
+explícito a inventar uma URL e dar a impressão de que a integração está pronta.
+
+#### Amazfit / Zepp
+
+Não existe API pública de leitura de atividades. O que o Zepp publica é o SDK
+para aplicativos que rodam no relógio; a API que o aplicativo usa é interna e só
+seria alcançável por engenharia reversa, o que quebraria os termos de uso e
+poria em risco a conta do atleta.
+
+O caminho oficial é indireto e já funciona: **o Zepp exporta para o Strava**, e
+a Zonas-App importa do Strava. O atleta liga Zepp → Strava uma vez no aplicativo
+do relógio, e as corridas passam a chegar. Por isso o Zepp aparece na interface
+sem importação própria, com essa explicação, em vez de um botão que não levaria
+a lugar nenhum.
+
+### Apple Saúde### Apple Saúde
 
 O HealthKit só existe dentro do iPhone e não tem API que um servidor possa
 chamar. Por isso a Apple não usa OAuth aqui: o atleta gera um token de ingestão

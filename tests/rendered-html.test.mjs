@@ -98,6 +98,28 @@ test("makes ZonasApp installable on phones and computers", async () => {
   assert.match(serviceWorker, /zonasapp-shell-v2/);
 });
 
+test("lets the floating install invite be dismissed for the session", async () => {
+  const installer = await readFile(new URL("../app/InstallApp.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // O convite flutuante só sumia quando o aplicativo era mesmo instalado, então
+  // quem usa o ZonasApp pelo navegador ficava com o canto inferior direito
+  // coberto para sempre — a conferência automática no painel do treinador e o
+  // cabeçalho da Central de avisos no celular.
+  assert.match(installer, /"zonasapp:install-dismissed"/);
+  assert.match(installer, /className="install-app-dismiss"/);
+  assert.match(installer, /aria-label="Dispensar o convite para instalar"/);
+  assert.match(installer, /sessionStorage\.getItem\(DISMISSED_KEY\)/);
+  assert.match(installer, /sessionStorage\.setItem\(DISMISSED_KEY/);
+  // A dispensa vale pelo tempo da sessão do navegador: guardar em localStorage
+  // faria o convite nunca mais voltar.
+  assert.doesNotMatch(installer, /localStorage/);
+  // O convite dentro da página não cobre nada, então nem ganha o × nem some
+  // junto com o cartão flutuante.
+  assert.match(installer, /dismissed && !inline/);
+  assert.match(installer, /!inline && <button className="install-app-dismiss"/);
+  assert.match(css, /\.install-app-card>\.install-app-dismiss\{[^}]*border-radius:999px/);
+});
+
 const developmentPreviewMeta =
   /<meta(?=[^>]*\bname=["']codex-preview["'])(?=[^>]*\bcontent=["']development["'])[^>]*>/i;
 
@@ -862,7 +884,7 @@ test("compares each completed workout with the released plan and shows both perc
   assert.match(worker, /100 - Math\.abs\(actualMinutes - plannedMinutes\)/);
   assert.match(worker, /correct >= 80 \? "Dentro do planejado"/);
   assert.match(worker, /wrong: 100 - correct/);
-  assert.match(client, /Analisar meu treino/);
+  assert.match(client, /Concluí este treino/);
   assert.match(client, /treino certo/);
   assert.match(client, /fora do planejado/);
   assert.match(client, /WorkoutAccuracy/);
@@ -1145,7 +1167,7 @@ test("implements the approved mobile coach dashboard instead of leaving it as a 
   const client = await readFile("app/ZonasAppClient.tsx", "utf8");
   const mobileCss = await readCss("app/overrides.css");
   assert.match(client, /VISÃO DO PROFESSOR/);
-  assert.match(client, /Olá, Jonas/);
+  assert.match(client, /Olá, \{coachName\.split\(" "\)\[0\]\}/);
   assert.match(client, /Treinos hoje/);
   assert.match(client, /Pendentes/);
   assert.match(client, /Concluídos/);
@@ -1621,4 +1643,604 @@ test("gives the invite buttons one shared shape", async () => {
   assert.match(css, /\.account-issued-actions\{display:flex/);
   // Um provedor indisponível não pode ter o mesmo peso visual de uma ação real.
   assert.match(css, /\.integration-center article button:disabled\{[^}]*cursor:not-allowed/);
+});
+
+test("greets the coach by the name on the account, not a name baked into the code", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const entry = await readFile(new URL("../app/StudentEntry.tsx", import.meta.url), "utf8");
+  // O sistema chamava todo treinador de "Jonas" e rotulava o registro de
+  // auditoria comparando o e-mail com esse nome, o que errava para qualquer
+  // outra instalação.
+  for (const [nome, fonte] of [["cliente", client], ["cadastro do aluno", entry]]) {
+    assert.ok(!fonte.includes("Jonas"), `${nome} não pode ter nome de pessoa fixo`);
+  }
+  assert.match(client, /const initialsOf =/);
+  assert.match(client, /function greeting\(\)/);
+  assert.match(client, /\$\{session\.name\.split\(" "\)\[0\]\}/);
+  assert.match(client, /coachInitials = initialsOf\(session\.name\)/);
+  // A auditoria mostra o e-mail real de quem agiu.
+  assert.doesNotMatch(client, /actor_email\.toLowerCase\(\)\.includes/);
+});
+
+/* -------------------------------------------------------------------------- *
+ * Etapa 2 — conclusão do treino e vazamento do calendário
+ * -------------------------------------------------------------------------- */
+
+test("scopes the training weeks query to the requested athlete", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("weeks-scope", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const consultas = [];
+  const prepare = (sql) => ({
+    values: [],
+    bind(...values) { this.values = values; consultas.push({ sql, values }); return this; },
+    async first() { return null; },
+    async all() { consultas.push({ sql, values: this.values }); return { results: [] }; },
+    async run() { return { success: true }; },
+  });
+  const env = {
+    ASSETS: { fetch: async () => new Response("", { status: 404 }) },
+    DB: { prepare: withSession(prepare), async batch(i) { for (const x of i) await x.run(); return []; } },
+  };
+  const r = await worker.fetch(
+    new Request("https://zonasapp.example/api/training-weeks?athlete=Ana%20Souza", { headers: { ...coachCookie } }),
+    env, { waitUntil() {}, passThroughOnException() {} },
+  );
+  assert.equal(r.status, 200);
+  // Só o atleta, sem semana, caía num SELECT sem WHERE e devolvia as semanas de
+  // todos — quem lesse o primeiro resultado acabaria no treino de outra pessoa.
+  const leitura = consultas.find(({ sql }) => sql.includes("SELECT * FROM training_weeks") && !sql.includes("LIMIT 1"));
+  assert.ok(leitura, "deve haver uma leitura da tabela de semanas");
+  assert.match(leitura.sql, /WHERE athlete_name = \?/);
+  assert.deepEqual(leitura.values, ["Ana Souza"]);
+});
+
+test("lets the student finish a workout without typing any number", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Antes o registro exigia tempo ou distância: quem só correu não conseguia
+  // avisar o treinador de que tinha feito o treino.
+  assert.doesNotMatch(worker, /actual_result_required/);
+  assert.match(worker, /Concluído sem medição/);
+  assert.match(worker, /const temMedida =/);
+  // E quem não treinou também precisa conseguir registrar.
+  assert.match(worker, /if \(acao === "skip"\)/);
+  assert.match(worker, /'Não realizado'/);
+  assert.match(client, /registrar\("complete"\)/);
+  assert.match(client, /registrar\("skip"\)/);
+  assert.match(client, /Não consegui treinar/);
+});
+
+test("fills the completed workout with the imported activity when there is one", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // A atividade importada casa por semana e dia, e traz o que o formulário
+  // manual não captura: ritmo médio e frequência cardíaca.
+  assert.match(worker, /FROM external_activities\s+WHERE athlete_name = \? AND matched_week_start = \? AND matched_workout_day = \?/);
+  assert.match(worker, /averageHeartRate: heartRate/);
+  assert.match(worker, /averagePaceSeconds: paceSeconds/);
+  assert.match(worker, /fromIntegration: Boolean\(importada\)/);
+  assert.match(client, /RITMO MÉDIO/);
+  assert.match(client, /FC MÉDIA/);
+  assert.match(client, /Dados trazidos automaticamente de/);
+});
+
+test("adds new execution columns without rewriting existing rows", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // `CREATE TABLE IF NOT EXISTS` não altera tabela existente, então um banco em
+  // uso ficaria sem as colunas novas. O reparo só acrescenta.
+  assert.match(worker, /async function ensureColumns/);
+  assert.match(worker, /PRAGMA table_info/);
+  assert.match(worker, /ALTER TABLE \$\{table\} ADD COLUMN/);
+  assert.doesNotMatch(worker, /DROP COLUMN|DROP TABLE workout_executions/);
+  // O reparo de colunas agora é derivado do schema, para toda tabela garantida.
+  assert.match(worker, /await ensureColumns\(env, nomeDaTabela\(tabela\), tableColumns\(tabela\)\)/);
+  assert.match(worker, /ensureTables\(env, schema\.workoutExecutions\)/);
+});
+
+test("lets the student read back their own feedback history", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // A rota só aceitava POST: o aluno escrevia e nunca mais via o que contou.
+  assert.match(worker, /FROM training_feedbacks WHERE athlete_name = \? ORDER BY created_at DESC/);
+  assert.match(worker, /if \(request\.method === "GET"\) \{\s*const result = await env\.DB\.prepare\(\s*"SELECT id, week_start, workout_day, feeling/);
+});
+
+test("gives every pain report a trackable history", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // O treinador via a contagem de relatos e não podia fazer nada com eles.
+  for (const acao of ["review", "contact", "link_week", "resolve", "reopen"]) {
+    assert.ok(worker.includes(`acao === "${acao}"`), `falta a ação ${acao}`);
+  }
+  assert.match(worker, /ensureTables\(env, schema\.painReports, schema\.painReportUpdates\)/);
+  assert.match(worker, /async function registraMovimentoDor/);
+  // O vínculo com a planilha só aceita uma semana que exista para aquele atleta.
+  assert.match(worker, /week_not_found_for_athlete/);
+
+  assert.match(client, /function PainCaseScreen/);
+  assert.match(client, /HISTÓRICO DO CASO/);
+  assert.match(client, /Vincular a um ajuste na planilha/);
+});
+
+test("keeps one single source of truth for the database schema", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const integrations = await readFile(new URL("../worker/integrations.ts", import.meta.url), "utf8");
+  // O esquema vinha declarado duas vezes: tabelas Drizzle em db/schema.ts e
+  // constantes CREATE TABLE escritas à mão aqui. As duas divergiram de fato —
+  // pain_reports e workout_executions ganharam colunas só de um lado.
+  // Ignora as menções em comentários; o que não pode existir é SQL literal.
+  const semComentarios = (fonte) => fonte.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  assert.doesNotMatch(semComentarios(worker), /CREATE TABLE IF NOT EXISTS/);
+  assert.doesNotMatch(semComentarios(integrations), /CREATE TABLE IF NOT EXISTS/);
+  assert.doesNotMatch(worker, /const create[A-Z]\w*Sql/);
+  assert.match(worker, /import \* as schema from "\.\.\/db\/schema"/);
+  assert.match(worker, /import \{ tableColumns, tableSql \} from "\.\.\/db\/sql"/);
+  // Conferir o esquema é trabalho de uma vez por instância, não de toda chamada.
+  assert.match(worker, /const tabelasConferidas = new Set<string>\(\)/);
+  assert.match(worker, /if \(!pendentes\.length\) return;/);
+});
+
+test("generates the same columns the schema declares", async () => {
+  // Garante que o SQL gerado cobre cada coluna declarada, sem sobra nem falta.
+  const { execSync } = await import("node:child_process");
+  const saida = execSync(
+    `npx tsx -e "import * as s from './db/schema.ts';import {createTableSql,tableColumns} from './db/sql.ts';` +
+    `let n=0;for(const t of Object.values(s)){try{const sql=createTableSql(t);const cols=Object.keys(tableColumns(t));` +
+    `for(const c of cols){if(!sql.includes(c+' '))throw new Error('coluna ausente: '+c)}n++}catch(e){if(String(e).includes('coluna ausente'))throw e}}` +
+    `console.log(n)"`,
+    { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8", timeout: 120000 },
+  );
+  const tabelas = Number(saida.trim().split("\n").pop());
+  assert.ok(tabelas >= 25, `esperava ao menos 25 tabelas geradas, veio ${tabelas}`);
+});
+
+/* -------------------------------------------------------------------------- *
+ * Inativação de aluno, histórico recente e integridade do nome
+ * -------------------------------------------------------------------------- */
+
+test("inactivates an athlete instead of deleting, keeping the history", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Não existe exclusão de aluno: apagar destruiria treinos, testes e queixas.
+  assert.doesNotMatch(worker, /DELETE FROM athletes/);
+  assert.match(schema, /archivedAt: integer\("archived_at"\)/);
+  assert.match(worker, /acao === "archive" \|\| acao === "restore"/);
+  // Inativar tira o acesso na hora; reativar não devolve sozinho.
+  assert.match(worker, /UPDATE user_accounts SET status = 'Bloqueado'/);
+  assert.match(worker, /DELETE FROM user_sessions WHERE user_id = \?/);
+  // A lista traz só ativos por padrão, com filtro para ver os inativos.
+  // A condição virou composta ao ganhar o recorte por treinador.
+  assert.match(worker, /athletes\.archived_at IS NULL/);
+  assert.match(worker, /condicoes\.length \? `WHERE \$\{condicoes\.join\(" AND "\)\}` : ""/);
+  assert.match(worker, /incluir === "archived"/);
+  assert.match(client, /className=\{situation===item\?"selected":""\}/);
+  assert.match(client, /Alunos inativos mantêm todo o histórico/);
+});
+
+test("refuses a second athlete with the same name", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  // `athlete_name` liga ficha, treinos, testes, provas e cobranças: dois
+  // homônimos compartilhariam em silêncio todo o histórico um do outro.
+  assert.match(worker, /athlete_name_taken/);
+  assert.match(worker, /SELECT name FROM athletes WHERE name = \? LIMIT 1/);
+  assert.match(schema, /uniqueIndex\("athletes_name_idx"\)\.on\(table\.name\)/);
+});
+
+test("shows the student the last seven days without turning it into a wall", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  assert.match(worker, /Number\(url\.searchParams\.get\("days"\)\) \|\| 7/);
+  assert.match(worker, /created_at >= \?/);
+  assert.match(client, /function RecentWorkouts/);
+  assert.match(client, /ÚLTIMOS 7 DIAS/);
+  // O registro mostra o que veio do relógio, não só a porcentagem.
+  assert.match(client, /average_pace_seconds/);
+  assert.match(client, /average_heart_rate/);
+});
+
+/* -------------------------------------------------------------------------- *
+ * Conta de manutenção e painel de diagnóstico
+ * -------------------------------------------------------------------------- */
+
+test("creates the maintenance account only from the environment", async () => {
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // Uma conta de acesso irrestrito não pode existir por padrão nem ter
+  // credencial escrita no código — vale o mesmo cuidado da conta do treinador.
+  assert.match(auth, /export async function ensureDevAccount/);
+  assert.match(auth, /if \(!devLogin \|\| !isValidDevLogin\(devLogin\)\) return "not_configured";/);
+  assert.match(auth, /if \(!devPassword \|\| devPassword\.length < MIN_PASSWORD_LENGTH\) return "not_configured";/);
+  assert.match(worker, /ensureDevAccount\(env\.DB, env\.DEV_LOGIN, env\.DEV_INITIAL_PASSWORD\)/);
+  // A senha de manutenção nunca aparece no código.
+  for (const fonte of [auth, worker]) {
+    assert.doesNotMatch(fonte, /Yan\.\d+/, "senha de manutenção não pode estar no código");
+  }
+});
+
+test("keeps the diagnostics panel out of reach for coach and student", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("dev-scope", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const prepare = (sql) => statement(() => (sql.includes("FROM athlete_access") ? { athlete_name: "Ana Souza", status: "Ativo" } : null));
+  const env = {
+    ASSETS: { fetch: async () => new Response("", { status: 404 }) },
+    DB: { prepare: withSession(prepare), async batch(i) { for (const x of i) await x.run(); return []; } },
+  };
+  const ctx = { waitUntil() {}, passThroughOnException() {} };
+  const chamar = (cookie) => worker.fetch(
+    new Request("https://zonasapp.example/api/dev/overview", { headers: { ...cookie } }), env, ctx);
+
+  const doTreinador = await chamar(coachCookie);
+  assert.equal(doTreinador.status, 403);
+  assert.equal((await doTreinador.json()).error, "dev_access_required");
+  assert.equal((await chamar(studentCookie)).status, 403);
+  assert.equal((await worker.fetch(new Request("https://zonasapp.example/api/dev/overview"), env, ctx)).status, 401);
+});
+
+test("never exposes password hashes or session tokens in the diagnostics", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const inicio = worker.indexOf("async function devOverviewApi");
+  const fim = worker.indexOf("async function racesRecordsApi", inicio);
+  const corpo = worker.slice(inicio, fim);
+  assert.ok(inicio > 0 && fim > inicio, "devOverviewApi precisa existir");
+  // Nem a conta de manutenção precisa de hash ou token para diagnosticar, e
+  // devolvê-los transformaria esta rota num alvo.
+  assert.doesNotMatch(corpo, /password_hash|password_salt|token_hash/);
+  // Do ambiente só sai a presença da variável, nunca o valor.
+  assert.match(corpo, /coachEmailConfigurado: Boolean\(env\.COACH_EMAIL\)/);
+  assert.doesNotMatch(corpo, /valor: env\.|env\.DEV_INITIAL_PASSWORD/);
+});
+
+test("gives the maintenance account both views", async () => {
+  const root = await readFile(new URL("../app/AppRoot.tsx", import.meta.url), "utf8");
+  const dash = await readFile(new URL("../app/DevDashboard.tsx", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // Abre no diagnóstico e alcança o painel do treinador pelo mesmo lugar.
+  assert.match(root, /session\.role === "dev"/);
+  assert.match(root, /modoTreinador/);
+  assert.match(worker, /function isCoachLevel/);
+  assert.match(worker, /identity\?\.role === "coach" \|\| identity\?\.role === "dev"/);
+  for (const aba of ["Resumo", "Erros", "Contas", "Segurança", "Banco"]) {
+    assert.ok(dash.includes(aba), `falta a aba ${aba}`);
+  }
+});
+
+/* -------------------------------------------------------------------------- *
+ * Carteiras por treinador e visita da conta de manutenção
+ * -------------------------------------------------------------------------- */
+
+test("separates each coach's athletes into their own book", async () => {
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // Nenhuma tabela guardava o vínculo com o treinador: o sistema nasceu para
+  // um só. Como todas se ligam ao aluno por athlete_name, marcar o dono em
+  // `athletes` basta para separar o que cada treinador enxerga.
+  assert.match(schema, /coachEmail: text\("coach_email"\)/);
+  assert.match(worker, /function carteiraDe\(request: Request\)/);
+  // O recorte é estrito: incluir os alunos sem dono faria os mesmos aparecerem
+  // em todas as carteiras.
+  assert.match(worker, /clausula: `\$\{coluna\} = \?`/);
+  assert.doesNotMatch(worker, /OR \$\{coluna\} IS NULL/);
+  // Os alunos anteriores à separação ganham o treinador principal, uma vez só.
+  assert.match(worker, /UPDATE athletes SET coach_email = \? WHERE coach_email IS NULL/);
+  assert.match(worker, /if \(alunosAtribuidos\) return;/);
+  // Aluno novo nasce na carteira de quem o cadastrou.
+  assert.match(worker, /createdAt, carteiraDe\(request\)\)/);
+});
+
+test("keeps the visit on the session, not in the browser", async () => {
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // Quem decide o recorte é o servidor; a interface não escolhe o que vê.
+  assert.match(schema, /impersonatingUserId: text\("impersonating_user_id"\)/);
+  assert.match(auth, /export async function setImpersonation/);
+  assert.match(auth, /AND role = 'coach' LIMIT 1/);
+  // Visitar a área de outra pessoa deixa rastro.
+  assert.match(worker, /Manutenção visitou um treinador/);
+  // Só a manutenção alcança a rota.
+  assert.match(worker, /url\.pathname === "\/api\/dev\/coaches"[\s\S]{0,120}requireDevApiAccess/);
+});
+
+test("says out loud whose area is open", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const dash = await readFile(new URL("../app/DevDashboard.tsx", import.meta.url), "utf8");
+  // Operar na área de outra pessoa sem aviso é como se perde a noção de onde
+  // se está — e de quem vai receber a alteração.
+  assert.match(client, /dev-visiting-banner/);
+  assert.match(client, /Você está na área de/);
+  assert.match(dash, /Entrar nesta área/);
+  assert.match(dash, /\+ Novo treinador/);
+});
+
+test("only the maintenance account can list or visit coaches", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("dev-coaches", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const prepare = (sql) => statement(() => (sql.includes("FROM athlete_access") ? { athlete_name: "Ana Souza", status: "Ativo" } : null));
+  const env = {
+    ASSETS: { fetch: async () => new Response("", { status: 404 }) },
+    DB: { prepare: withSession(prepare), async batch(i) { for (const x of i) await x.run(); return []; } },
+  };
+  const ctx = { waitUntil() {}, passThroughOnException() {} };
+  const chamar = (cookie) => worker.fetch(
+    new Request("https://zonasapp.example/api/dev/coaches", { headers: { ...cookie } }), env, ctx);
+  assert.equal((await chamar(coachCookie)).status, 403);
+  assert.equal((await chamar(studentCookie)).status, 403);
+  assert.equal((await worker.fetch(new Request("https://zonasapp.example/api/dev/coaches"), env, ctx)).status, 401);
+});
+
+test("keeps the visiting banner out of the coach grid", async () => {
+  const css = await readCss("../app/globals.css");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // `.shell` é um grid de duas colunas. Como filho comum, a faixa ocupava a
+  // segunda célula — o lugar do conteúdo — e empurrava `.content` para a linha
+  // de baixo, com a largura da barra lateral e fora da tela: só a faixa
+  // aparecia.
+  assert.match(css, /\.dev-visiting-banner\{position:fixed/);
+  assert.match(css, /--faixa-visita:\d+px/);
+  // O espaço é reservado por padding, não por uma célula do grid.
+  assert.match(css, /\.shell\.com-visita\{padding-top:var\(--faixa-visita\)\}/);
+  assert.match(css, /\.shell\.com-visita \.sidebar\{top:var\(--faixa-visita\)/);
+  assert.match(client, /className=\{`shell\$\{visitando \? " com-visita" : ""\}`\}/);
+});
+
+
+
+
+
+
+
+test("keeps an injury attached to the athlete, not in a section of its own", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Uma queixa pertence a um atleta e só faz sentido ao lado da ficha dele.
+  assert.doesNotMatch(client, /"Testes e zonas", "Lesões"/);
+  assert.doesNotMatch(client, /active === "Lesões"/);
+  assert.match(client, /function AthletePainList/);
+  assert.match(client, /LESÃO EM ACOMPANHAMENTO/);
+  assert.match(client, /onOpenPain && <AthletePainList athleteName=\{athlete\.name\}/);
+});
+
+test("opens the injury screen straight from the notification", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // O aviso levava para a lista de alunos e obrigava a procurar o caso.
+  assert.match(client, /action:"Acompanhar lesão"/);
+  assert.match(client, /pain:\{id:item\.id,athleteName:item\.athlete_name\}/);
+  assert.match(client, /alert\.pain\?openPain\(alert\.pain\):go\(alert\.section\)/);
+  assert.match(client, /<PainCaseScreen reportId=\{painCase\.id\}/);
+});
+
+test("moves a finished injury into the athlete's history", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Encerrada deixa de ser pendência: sai do destaque e vira histórico.
+  assert.match(client, /const abertas = relatos\.filter\(r => r\.status !== "Resolvido"\)/);
+  assert.match(client, /const encerradas = relatos\.filter\(r => r\.status === "Resolvido"\)/);
+  assert.match(client, /Lesões encerradas \(\{encerradas\.length\}\)/);
+  assert.match(client, /className="athlete-pain-past"/);
+  // A ficha do aluno pede só as lesões daquele aluno.
+  assert.match(client, /\/api\/pain-reports\?athlete=\$\{encodeURIComponent\(athleteName\)\}/);
+});
+
+test("still records what happened together with the case status", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  assert.match(worker, /if \(acao === "update"\)/);
+  assert.match(worker, /novoStatus === "Resolvido" \? "resolution = \?" : "coach_note = \?"/);
+  assert.match(client, /O que aconteceu\?/);
+  assert.match(client, /Situação do caso/);
+  assert.match(client, /Escreva o que aconteceu ou mude a situação do caso\./);
+  // A ficha do aluno se atualiza quando o caso muda.
+  assert.match(client, /zonasapp:pain-refresh/);
+});
+
+/* -------------------------------------------------------------------------- *
+ * Avisos, cartões do painel e decisão de prova
+ * -------------------------------------------------------------------------- */
+
+test("drops resolved injuries out of the notice board", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Um caso encerrado não é pendência. Filtrar na origem impede que ele volte
+  // a aparecer em qualquer lugar que use esta lista.
+  assert.match(client, /\.filter\(\(item:any\)=>item\.status!=="Resolvido"\)/);
+  assert.match(client, /const refreshPainReports=/);
+  // E a lista se atualiza quando um caso é encerrado em outra tela.
+  assert.match(client, /addEventListener\("zonasapp:pain-refresh",atualiza\)/);
+});
+
+test("makes every number on the panel lead somewhere", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // Um número que indica pendência e não leva a lugar nenhum obriga a
+  // procurar no menu o que já estava na tela.
+  const cartoes = client.match(/<button className="stat-card"/g) ?? [];
+  assert.equal(cartoes.length, 4, "os quatro números do painel precisam ser clicáveis");
+  assert.match(client, /className="stat-card" onClick=\{\(\)=>go\("Alunos"\)\}/);
+  assert.match(client, /className="stat-card" onClick=\{\(\)=>go\("Provas"\)\}/);
+  // O de dor abre a lesão em vez de mandar para a lista de alunos.
+  assert.match(client, /openPain\(\{id:painReports\[0\]\.id,athleteName:painReports\[0\]\.athlete_name\}\)/);
+  assert.match(css, /\.stats \.stat-card\{/);
+});
+
+test("leaves only an undo on a race that was already approved", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // Aprovada, a decisão está tomada: oferecer "aprovar" e "não periodizar" de
+  // novo só confunde. Resta poder desfazer.
+  assert.match(client, /race\.status==="Aprovada"\s*\?\s*<button className="race-cancel"/);
+  assert.match(client, /review\(race,"Aguardando análise"/);
+  assert.match(css, /\.race-cancel\{[^}]*color:var\(--red\)/);
+});
+
+/* -------------------------------------------------------------------------- *
+ * Integrações — normalização, erros e honestidade de estado
+ * -------------------------------------------------------------------------- */
+
+test("normalizes a real activity from each provider", async () => {
+  const { execSync } = await import("node:child_process");
+  const saida = execSync(
+    `npx tsx -e "` +
+    `import {normalizeActivity,averagePaceSeconds,weekStartOf,workoutDayOf} from './worker/integrations.ts';` +
+    `const s=normalizeActivity('strava',{id:1,start_date:'2026-08-24T07:00:00Z',distance:10000,moving_time:3000,average_heartrate:155});` +
+    `const g=normalizeActivity('garmin',{summaryId:'g1',startTimeInSeconds:1787554800,distanceInMeters:10000,durationInSeconds:3000,averageHeartRateInBeatsPerMinute:150});` +
+    `const z=normalizeActivity('zepp',{trackid:'z1',start_time:1787554800,dis:10000,run_time:3000,avg_heart_rate:145});` +
+    `const a=normalizeActivity('apple',{uuid:'a1',startDate:'2026-08-24T07:00:00Z',totalDistanceMeters:10000,durationSeconds:3000,averageHeartRate:140});` +
+    `console.log(JSON.stringify({s,g,z,a,pace:averagePaceSeconds(s),semana:weekStartOf(s.startedAt),dia:workoutDayOf(s.startedAt)}))"`,
+    { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8", timeout: 180000 },
+  );
+  const d = JSON.parse(saida.trim().split("\n").pop());
+  // Os quatro formatos, muito diferentes entre si, chegam ao mesmo resultado.
+  for (const provedor of ["s", "g", "z", "a"]) {
+    assert.equal(d[provedor].distanceMeters, 10000, `${provedor}: distância`);
+    assert.equal(d[provedor].movingSeconds, 3000, `${provedor}: duração`);
+    assert.ok(d[provedor].averageHeartRate > 0, `${provedor}: frequência cardíaca`);
+    assert.equal(d[provedor].startedAt, 1787554800000, `${provedor}: instante de início`);
+  }
+  // 10 km em 50 min são 5:00/km, e a atividade cai na semana e no dia certos.
+  assert.equal(d.pace, 300);
+  assert.equal(d.semana, "2026-08-24");
+  assert.equal(d.dia, "SEG");
+});
+
+test("refuses an activity without the data that identifies it", async () => {
+  const { execSync } = await import("node:child_process");
+  const saida = execSync(
+    `npx tsx -e "` +
+    `import {normalizeActivity,averagePaceSeconds} from './worker/integrations.ts';` +
+    `console.log(JSON.stringify({semId:normalizeActivity('strava',{start_date:'2026-08-24T07:00:00Z'}),` +
+    `semData:normalizeActivity('strava',{id:5}),dataRuim:normalizeActivity('strava',{id:5,start_date:'ontem'}),` +
+    `paceCurto:averagePaceSeconds(normalizeActivity('strava',{id:7,start_date:'2026-08-24T07:00:00Z',distance:200,moving_time:90}))}))"`,
+    { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8", timeout: 180000 },
+  );
+  const d = JSON.parse(saida.trim().split("\n").pop());
+  // Sem id ou sem instante não há como evitar duplicata nem casar com o treino.
+  assert.equal(d.semId, null);
+  assert.equal(d.semData, null);
+  assert.equal(d.dataRuim, null);
+  // Distância curta demais produziria um ritmo sem sentido.
+  assert.equal(d.paceCurto, null);
+});
+
+test("blames the right side when a stored token cannot be read", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/api-client.ts", import.meta.url), "utf8");
+  // Token que não decifra é problema desta instalação — a chave mudou —, não do
+  // Strava. Reportar "falha no Strava" mandaria quem investiga para o lado errado.
+  assert.match(worker, /if \(!acesso\) return \{ erro: "token_unreadable" \};/);
+  assert.match(client, /token_unreadable: "A autorização guardada não pode mais ser lida/);
+  assert.match(client, /refresh_failed: "A autorização expirou e não pôde ser renovada/);
+});
+
+test("uses PKCE only where the provider asks for it", async () => {
+  const integrations = await readFile(new URL("../worker/integrations.ts", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  assert.match(integrations, /id: "garmin"[\s\S]*?authType: "oauth2-pkce"/);
+  assert.match(integrations, /id: "zepp"[\s\S]*?authType: "oauth2"/);
+  // O desafio só é montado para quem pede PKCE, e o verifier fica no servidor.
+  assert.match(worker, /provider\.authType === "oauth2-pkce" \? createCodeVerifier\(\) : null/);
+  assert.match(worker, /if \(verifier\) \{\s*params\.set\("code_challenge"/);
+});
+
+test("keeps an Apple workout on the athlete who owns the token", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // O corpo da requisição não escolhe o atleta: quem escolhe é o token.
+  assert.match(worker, /SELECT athlete_name FROM device_ingest_tokens WHERE token_hash = \? AND revoked_at IS NULL/);
+  assert.match(worker, /storeActivity\(env, record\.athlete_name, "apple"/);
+  // Um token novo revoga o anterior, e desconectar revoga o que estiver ativo.
+  assert.match(worker, /UPDATE device_ingest_tokens SET revoked_at = \? WHERE athlete_name = \? AND provider = 'apple' AND revoked_at IS NULL/);
+  // A gravação é idempotente: reenviar o mesmo treino não duplica.
+  assert.match(worker, /INSERT OR IGNORE INTO external_activities/);
+});
+
+test("never shows a connection as live when the service lost its credentials", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Uma autorização antiga não vale nada se as credenciais saíram do ambiente:
+  // nada seria importado, e dizer "Conectado" faria o atleta acreditar que os
+  // treinos estão chegando.
+  assert.match(worker, /const conexaoUtil = conexao && !pronto/);
+  assert.match(worker, /status: "Suspensa", reason: "provider_not_configured"/);
+  assert.match(client, /CONEXÃO SUSPENSA/);
+});
+
+/* -------------------------------------------------------------------------- *
+ * Integrações completas — webhook, importação genérica e envio de treino
+ * -------------------------------------------------------------------------- */
+
+test("answers the Strava subscription handshake and refuses a wrong token", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // O Strava valida a inscrição devolvendo `hub.challenge`; sem conferir o
+  // token combinado, qualquer um poderia inscrever um endpoint nosso.
+  assert.match(worker, /async function stravaWebhookApi/);
+  assert.match(worker, /"hub\.challenge": desafio/);
+  assert.match(worker, /token !== env\.STRAVA_WEBHOOK_VERIFY_TOKEN/);
+  // O evento diz de quem é a atividade pelo id do atleta no Strava.
+  assert.match(worker, /external_athlete_id = \? AND status = 'Conectado'/);
+  // Exclusão no Strava tira a atividade daqui também.
+  assert.match(worker, /evento\.aspect_type === "delete"/);
+  // A resposta sai antes do trabalho: o Strava reenvia se demorar.
+  assert.match(worker, /ctx\.waitUntil/);
+});
+
+test("shares one import path between the providers that have a list endpoint", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const integrations = await readFile(new URL("../worker/integrations.ts", import.meta.url), "utf8");
+  // A renovação de token vale para qualquer OAuth2, não só para o Strava.
+  assert.match(worker, /async function tokenValidoDe/);
+  assert.match(worker, /grant_type: "refresh_token"/);
+  assert.doesNotMatch(worker, /async function syncStravaActivities/);
+  assert.match(worker, /async function importarAtividades/);
+  // Cada provedor declara o próprio endpoint; quem não tem, não finge ter.
+  assert.match(integrations, /activitiesUrl: "https:\/\/www\.strava\.com\/api\/v3\/athlete\/activities"/);
+  assert.match(integrations, /activitiesUrl: "https:\/\/apis\.garmin\.com\/wellness-api\/rest\/activities"/);
+  assert.match(worker, /if \(!provider\.activitiesUrl\)/);
+});
+
+test("does not invent an API where the provider has none", async () => {
+  const integrations = await readFile(new URL("../worker/integrations.ts", import.meta.url), "utf8");
+  // O Zepp só expõe publicamente o SDK do relógio e uma API interna do
+  // aplicativo. Usar a segunda quebraria os termos e poria a conta do atleta
+  // em risco, então a importação passa pelo Strava.
+  assert.match(integrations, /id: "zepp"[\s\S]*?activitiesUrl: null/);
+  assert.match(integrations, /id: "zepp"[\s\S]*?canImportActivities: false/);
+  assert.match(integrations, /O caminho oficial é o Zepp enviar ao Strava/);
+  assert.doesNotMatch(integrations, /huami\.com\/v1\/sport/);
+  // A Apple também não tem endpoint de servidor: entra pelo Atalho do iOS.
+  assert.match(integrations, /id: "apple"[\s\S]*?activitiesUrl: null/);
+});
+
+test("translates a session into a Garmin workout", async () => {
+  const { execSync } = await import("node:child_process");
+  const saida = execSync(
+    `npx tsx -e "import {toGarminWorkout} from './worker/integrations.ts';` +
+    `console.log(JSON.stringify(toGarminWorkout('Intervalado','Limiar',[` +
+    `{kind:'simple',label:'Aquecimento',minutes:10,zone:'Z1'},` +
+    `{kind:'repeat',label:'Série',repetitions:3,effortMinutes:3,effortZone:'Z4',recoveryMinutes:2,recoveryZone:'Z1'},` +
+    `{kind:'simple',label:'Desaquecimento',minutes:8,zone:'Z1'}])))"`,
+    { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8", timeout: 180000 },
+  );
+  const w = JSON.parse(saida.trim().split("\n").pop());
+  // A repetição é expandida em passos, para o treino ficar legível no relógio.
+  assert.equal(w.steps.length, 8);
+  assert.equal(w.sport, "RUNNING");
+  assert.equal(w.steps[0].intensity, "WARMUP");
+  // "desaquecimento" contém "aquec": sem cuidado, o treino terminava marcado
+  // como aquecimento.
+  assert.equal(w.steps[w.steps.length - 1].intensity, "COOLDOWN");
+  assert.equal(w.steps[0].durationValue, 600);
+  assert.equal(w.steps[0].durationValueType, "SECOND");
+  assert.ok(w.steps.some((p) => p.intensity === "RECOVERY"));
+});
+
+test("refuses to send a Garmin workout until the program is approved", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // O endereço da Training API só vem no material que o Garmin entrega ao
+  // aprovar a conta. Inventar uma URL faria a integração parecer pronta.
+  assert.match(worker, /if \(env\.GARMIN_TRAINING_API_ENABLED !== "true"\) return \{ enviado: false, erro: "training_api_not_enabled" \};/);
+  assert.match(worker, /if \(!env\.GARMIN_TRAINING_API_URL\) return \{ enviado: false, erro: "training_api_url_missing" \};/);
+  assert.doesNotMatch(worker, /https:\/\/apis\.garmin\.com\/training-api/);
+  // O resto do caminho está pronto e passa a valer no dia da aprovação.
+  assert.match(worker, /const treino = toGarminWorkout\(/);
+  assert.match(worker, /action === "send_workout"/);
 });

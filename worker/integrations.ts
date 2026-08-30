@@ -34,6 +34,16 @@ export type ProviderDefinition = {
   canImportActivities: boolean;
   canSendWorkouts: boolean;
   notes: string;
+  /**
+   * Endpoint de listagem de atividades, quando o provedor tem um documentado.
+   * `null` significa que a importação não parte daqui — ou porque o provedor
+   * empurra os dados por webhook, ou porque não há API pública para isso.
+   */
+  activitiesUrl: string | null;
+  /** Como o período é passado na consulta de atividades. */
+  activitiesRange: "epoch-seconds" | "iso" | null;
+  /** Onde a lista de atividades aparece na resposta; vazio = a própria raiz. */
+  activitiesPath: string;
 };
 
 export const PROVIDERS: Record<ProviderId, ProviderDefinition> = {
@@ -48,6 +58,9 @@ export const PROVIDERS: Record<ProviderId, ProviderDefinition> = {
     canImportActivities: true,
     canSendWorkouts: false,
     notes: "Importa atividades concluídas. O Strava não recebe treinos planejados.",
+    activitiesUrl: "https://www.strava.com/api/v3/athlete/activities",
+    activitiesRange: "epoch-seconds",
+    activitiesPath: "",
   },
   garmin: {
     id: "garmin",
@@ -60,6 +73,11 @@ export const PROVIDERS: Record<ProviderId, ProviderDefinition> = {
     canImportActivities: true,
     canSendWorkouts: true,
     notes: "Exige aprovação no Garmin Connect Developer Program antes de responder.",
+    // Endpoint público da Health/Activity API. A janela é obrigatória e o
+    // próprio Garmin limita o intervalo por chamada.
+    activitiesUrl: "https://apis.garmin.com/wellness-api/rest/activities",
+    activitiesRange: "epoch-seconds",
+    activitiesPath: "",
   },
   zepp: {
     id: "zepp",
@@ -69,9 +87,16 @@ export const PROVIDERS: Record<ProviderId, ProviderDefinition> = {
     tokenUrl: "https://api-user.huami.com/oauth2/access_token",
     scope: "user_activity",
     requiredEnv: ["ZEPP_APP_ID", "ZEPP_APP_SECRET", "STRAVA_TOKEN_ENCRYPTION_KEY"],
-    canImportActivities: true,
+    canImportActivities: false,
     canSendWorkouts: false,
-    notes: "Os recursos liberados variam por conta; confirme no portal Zepp.",
+    notes: "Sem API pública de leitura de atividades. O caminho oficial é o Zepp enviar ao Strava, que a Zonas-App já importa.",
+    // O que existe publicamente do Zepp é o SDK para apps no relógio e uma API
+    // interna do aplicativo, alcançável só por engenharia reversa. Usar essa
+    // segunda via quebraria os termos e poria em risco a conta do atleta, então
+    // aqui não há endpoint: a importação passa pelo Strava.
+    activitiesUrl: null,
+    activitiesRange: null,
+    activitiesPath: "",
   },
   apple: {
     id: "apple",
@@ -84,6 +109,9 @@ export const PROVIDERS: Record<ProviderId, ProviderDefinition> = {
     canImportActivities: true,
     canSendWorkouts: false,
     notes: "Sem API de servidor. O envio parte do iPhone por um Atalho do iOS.",
+    activitiesUrl: null,
+    activitiesRange: null,
+    activitiesPath: "",
   },
 };
 
@@ -99,45 +127,15 @@ export function providerById(id: string): ProviderDefinition | null {
 
 /* -------------------------------------------------------------------------- */
 /* Tabelas                                                                     */
+/*                                                                             */
+/* As tabelas destas integrações são declaradas em `db/schema.ts`, junto com o  */
+/* resto do esquema, e criadas a partir de lá — não há SQL duplicado aqui.      */
 /* -------------------------------------------------------------------------- */
 
-/** Atividades já normalizadas, para não repetir o parsing de cada provedor. */
-export const createExternalActivitiesSql = `CREATE TABLE IF NOT EXISTS external_activities (
-  id TEXT PRIMARY KEY,
-  athlete_name TEXT NOT NULL,
-  provider TEXT NOT NULL,
-  external_activity_id TEXT NOT NULL,
-  started_at INTEGER NOT NULL,
-  sport TEXT NOT NULL,
-  distance_meters INTEGER,
-  moving_seconds INTEGER,
-  elapsed_seconds INTEGER,
-  average_heart_rate INTEGER,
-  average_pace_seconds INTEGER,
-  raw_payload TEXT,
-  matched_week_start TEXT,
-  matched_workout_day TEXT,
-  created_at INTEGER NOT NULL
-)`;
 
-export const createExternalActivitiesIndexSql =
-  `CREATE UNIQUE INDEX IF NOT EXISTS external_activities_provider_activity_idx ON external_activities (provider, external_activity_id)`;
 
-export const createExternalActivitiesAthleteIndexSql =
-  `CREATE INDEX IF NOT EXISTS external_activities_athlete_started_idx ON external_activities (athlete_name, started_at)`;
 
-/** Token que o Atalho do iOS usa para enviar treinos do Apple Saúde. */
-export const createDeviceIngestTokensSql = `CREATE TABLE IF NOT EXISTS device_ingest_tokens (
-  token_hash TEXT PRIMARY KEY,
-  athlete_name TEXT NOT NULL,
-  provider TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  last_used_at INTEGER,
-  revoked_at INTEGER
-)`;
 
-export const createDeviceIngestTokensAthleteIndexSql =
-  `CREATE INDEX IF NOT EXISTS device_ingest_tokens_athlete_idx ON device_ingest_tokens (athlete_name, provider)`;
 
 /* -------------------------------------------------------------------------- */
 /* Normalização                                                                */
@@ -237,4 +235,101 @@ const WEEKDAY_KEYS = ["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SÁB"];
 
 export function workoutDayOf(timestamp: number): string {
   return WEEKDAY_KEYS[new Date(timestamp).getUTCDay()];
+}
+
+/* -------------------------------------------------------------------------- */
+/* Treino estruturado para a Garmin                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Converte a sessão montada na Zonas-App para o formato de treino da Garmin.
+ *
+ * O treino da Zonas-App é uma lista de etapas com duração e zona; a Garmin
+ * espera passos com `stepOrder`, tipo de duração e alvo. A tradução vive aqui,
+ * separada do transporte, porque é a parte que continua valendo mesmo que o
+ * endpoint mude quando a conta for aprovada.
+ */
+export type GarminWorkoutStep = {
+  stepOrder: number;
+  stepName: string;
+  durationType: "TIME" | "DISTANCE" | "OPEN";
+  durationValue?: number;
+  durationValueType?: "SECOND" | "METER";
+  intensity: "WARMUP" | "INTERVAL" | "RECOVERY" | "COOLDOWN" | "REST";
+  description?: string;
+};
+
+export type GarminWorkout = {
+  workoutName: string;
+  description?: string;
+  sport: "RUNNING";
+  steps: GarminWorkoutStep[];
+};
+
+/** Zonas mais leves abrem e fecham o treino; as demais são esforço. */
+function intensidadeDaEtapa(rotulo: string, zona: string, posicao: number, total: number): GarminWorkoutStep["intensity"] {
+  const nome = rotulo.toLowerCase();
+  // "desaquecimento" contém "aquec": o encerramento precisa ser testado antes,
+  // senão o treino termina com um passo marcado como aquecimento.
+  if (nome.includes("desaquec") || nome.includes("volta à calma") || nome.includes("volta a calma")) return "COOLDOWN";
+  if (nome.includes("aquec")) return "WARMUP";
+  if (nome.includes("recuper") || nome.includes("trote") || zona === "Z1") return "RECOVERY";
+  if (posicao === 0) return "WARMUP";
+  if (posicao === total - 1) return "COOLDOWN";
+  return "INTERVAL";
+}
+
+/**
+ * Traduz uma sessão para o formato da Garmin.
+ *
+ * Etapas repetidas viram passos sequenciais em vez de um bloco de repetição:
+ * a Garmin aceita repetição aninhada, mas expandir mantém o treino legível no
+ * relógio e evita depender de uma estrutura que muda entre versões da API.
+ */
+export function toGarminWorkout(
+  nome: string,
+  descricao: string,
+  etapas: Array<Record<string, unknown>>,
+): GarminWorkout {
+  const steps: GarminWorkoutStep[] = [];
+  const expandidas: Array<{ rotulo: string; zona: string; minutos?: number; metros?: number }> = [];
+
+  for (const etapa of etapas) {
+    const kind = String(etapa.kind ?? "simple");
+    if (kind === "repeat") {
+      const vezes = Math.max(1, Math.min(30, Number(etapa.repetitions) || 1));
+      for (let volta = 1; volta <= vezes; volta += 1) {
+        expandidas.push({
+          rotulo: `${String(etapa.label ?? "Série")} ${volta}/${vezes}`,
+          zona: String(etapa.effortZone ?? "Z3"),
+          minutos: Number(etapa.effortMinutes) || undefined,
+        });
+        if (Number(etapa.recoveryMinutes)) {
+          expandidas.push({ rotulo: "Recuperação", zona: String(etapa.recoveryZone ?? "Z1"), minutos: Number(etapa.recoveryMinutes) });
+        }
+      }
+      continue;
+    }
+    expandidas.push({
+      rotulo: String(etapa.label ?? "Etapa"),
+      zona: String(etapa.zone ?? "Z2"),
+      minutos: Number(etapa.minutes) || undefined,
+      metros: Number(etapa.distanceMeters) || undefined,
+    });
+  }
+
+  expandidas.forEach((etapa, indice) => {
+    const passo: GarminWorkoutStep = {
+      stepOrder: indice + 1,
+      stepName: etapa.rotulo.slice(0, 40),
+      durationType: etapa.minutos ? "TIME" : etapa.metros ? "DISTANCE" : "OPEN",
+      intensity: intensidadeDaEtapa(etapa.rotulo, etapa.zona, indice, expandidas.length),
+      description: `Zona ${etapa.zona}`,
+    };
+    if (etapa.minutos) { passo.durationValue = Math.round(etapa.minutos * 60); passo.durationValueType = "SECOND"; }
+    else if (etapa.metros) { passo.durationValue = Math.round(etapa.metros); passo.durationValueType = "METER"; }
+    steps.push(passo);
+  });
+
+  return { workoutName: nome.slice(0, 60), description: descricao.slice(0, 200), sport: "RUNNING", steps };
 }

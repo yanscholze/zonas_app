@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { signOut, type Session } from "./AuthGate";
 import { api, copyText, describeError } from "./api-client";
 
-type Athlete = { name: string; initials: string; distance: string; plan?: string; phase: string; week: string; next: string; flag?: string };
+type Athlete = { name: string; initials: string; distance: string; plan?: string; phase: string; week: string; next: string; flag?: string; archivedAt?: number | null; archivedReason?: string | null };
 type TrainingPlan = { name:string; distance:string; weeks:number; frequency:string; level:string; goal:string; phases:string[]; pending?:boolean; complete?:boolean };
 type StructuredSession = { type:string; description:string; title?:string; tempoRun?:string; durationMinutes?:number; estimatedKm?:number; steps?:Array<any>; removed?:boolean };
 type ParsedWorkoutBlock = { kind:"simple"; amount:number; unit:"s"|"min"|"m"; zone:string; label:string } | { kind:"repeat"; repetitions:number; effort:number; effortUnit:"s"|"min"|"m"; effortZone:string; recovery:number; recoveryUnit:"s"|"min"; recoveryZone:string };
@@ -249,6 +249,15 @@ const PROVIDER_PREVIEW = [
   {id:"apple",label:"Apple Saúde / Apple Watch",available:false,notes:"Envio pelo iPhone, por um Atalho do iOS."},
 ];
 
+/** Iniciais para o avatar do treinador, a partir do nome da conta. */
+const initialsOf = (name: string) => name.trim().split(/\s+/).slice(0, 2).map(p => p[0] ?? "").join("").toUpperCase() || "ZA";
+
+/** Saudação conforme a hora em Brasília, onde o treinador usa o sistema. */
+function greeting(): string {
+  const hora = Number(new Intl.DateTimeFormat("pt-BR", { hour: "numeric", hour12: false, timeZone: "America/Sao_Paulo" }).format(new Date()));
+  return hora < 12 ? "Bom dia" : hora < 18 ? "Boa tarde" : "Boa noite";
+}
+
 /** No celular a barra inferior mostra apenas os quatro primeiros itens de `nav`. */
 const MOBILE_VISIBLE_NAV = 4;
 const navIcon = (item: string) => item === "Painel" ? "⌂" : item === "Alunos" ? "◉" : item === "Calendário" ? "□" : item === "Planilhas" ? "▤" : item === "Provas" ? "⚑" : item === "Financeiro" ? "$" : item === "Integrações" ? "⌚" : item === "Contas" ? "☰" : item === "Segurança" ? "◇" : "↗";
@@ -275,9 +284,10 @@ function shiftIsoDate(value:string,days:number){const date=new Date(`${value}T12
 function weekDateLabel(start:string){const end=shiftIsoDate(start,6);const format=(value:string,withYear=false)=>new Intl.DateTimeFormat("pt-BR",{day:"2-digit",month:"short",...(withYear?{year:"numeric"}:{}) ,timeZone:"UTC"}).format(new Date(`${value}T12:00:00Z`)).replace(" de "," ");return `${format(start)} – ${format(end,true)}`}
 function brazilCalendar(){const now=new Date(Date.now()-3*60*60*1000);const day=now.getUTCDay();const keys=["DOM","SEG","TER","QUA","QUI","SEX","SÁB"];return{key:keys[day],label:new Intl.DateTimeFormat("pt-BR",{weekday:"long",day:"2-digit",month:"long",timeZone:"America/Sao_Paulo"}).format(new Date())}}
 
-export default function ZonasAppClient({ session }: { session: Session }) {
+export default function ZonasAppClient({ session, onLeaveDev, visitando }: { session: Session; onLeaveDev?: () => void; visitando?: { name: string; email: string } | null }) {
   const [active, setActive] = useState("Painel");
   const [mobileMenu, setMobileMenu] = useState(false);
+  const coachInitials = initialsOf(session.name);
   const [distanceFilter, setDistanceFilter] = useState("Todos");
   const [phaseFilter, setPhaseFilter] = useState("Todas");
   const [planFilter, setPlanFilter] = useState("Todas");
@@ -288,9 +298,13 @@ export default function ZonasAppClient({ session }: { session: Session }) {
   const [seconds, setSeconds] = useState(0);
   const [age, setAge] = useState(30);
   const [selectedAthlete, setSelectedAthlete] = useState<Athlete | null>(null);
+  /** Lesão aberta para acompanhamento, venha do aviso ou da ficha do aluno. */
+  const [painCase, setPainCase] = useState<{ id: string; athleteName: string } | null>(null);
   const [newAthlete, setNewAthlete] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState<TrainingPlan | null>(null);
   const [athleteRecords, setAthleteRecords] = useState(athletes);
+  const [situationFilter, setSituationFilter] = useState<"Ativos" | "Inativos" | "Todos">("Ativos");
+  const [athleteCounts, setAthleteCounts] = useState({ active: 0, archived: 0 });
   const [painReports,setPainReports]=useState<any[]>([]);
   const [pendingRaces,setPendingRaces]=useState<any[]>([]);
   const [pendingTests,setPendingTests]=useState<any[]>([]);
@@ -317,14 +331,19 @@ export default function ZonasAppClient({ session }: { session: Session }) {
     finally{setUnlocking(false)}
   };
 
-  const refreshAthleteRecords=()=>{
-    fetch("/api/athletes").then(r => r.ok ? r.json() : { athletes: [] }).then(data => {
-      const saved = (data.athletes || []).map((a: any) => ({ name: a.name, initials: a.initials, distance: a.distance, plan:a.saved_plan || defaultPlanForDistance(a.distance), phase: a.planning_phase || a.phase, week:a.planning_week_number?`${a.planning_week_number} de ${a.planning_total_weeks}`:a.week, next: a.next_workout, flag: a.status || undefined }));
+  const refreshAthleteRecords=(situacao=situationFilter)=>{
+    const parametro=situacao==="Inativos"?"?include=archived":situacao==="Todos"?"?include=all":"";
+    fetch(`/api/athletes${parametro}`).then(r => r.ok ? r.json() : { athletes: [] }).then(data => {
+      const saved = (data.athletes || []).map((a: any) => ({ name: a.name, initials: a.initials, distance: a.distance, plan:a.saved_plan || defaultPlanForDistance(a.distance), phase: a.planning_phase || a.phase, week:a.planning_week_number?`${a.planning_week_number} de ${a.planning_total_weeks}`:a.week, next: a.next_workout, flag: a.status || undefined, archivedAt: a.archived_at || null, archivedReason: a.archived_reason || null }));
       setAthleteRecords(saved);
+      if(data.counts)setAthleteCounts(data.counts);
     }).catch(() => undefined);
   };
-  useEffect(() => {refreshAthleteRecords();const refresh=()=>refreshAthleteRecords();window.addEventListener("zonasapp:athletes-refresh",refresh);return()=>window.removeEventListener("zonasapp:athletes-refresh",refresh)}, []);
-  useEffect(()=>{fetch("/api/pain-reports").then(r=>r.ok?r.json():{reports:[]}).then(data=>setPainReports(data.reports||[])).catch(()=>undefined)},[student]);
+  useEffect(() => {refreshAthleteRecords();const refresh=()=>refreshAthleteRecords();window.addEventListener("zonasapp:athletes-refresh",refresh);return()=>window.removeEventListener("zonasapp:athletes-refresh",refresh)}, [situationFilter]);
+  const refreshPainReports=()=>fetch("/api/pain-reports").then(r=>r.ok?r.json():{reports:[]})
+    .then(data=>setPainReports((data.reports||[]).filter((item:any)=>item.status!=="Resolvido")))
+    .catch(()=>undefined);
+  useEffect(()=>{refreshPainReports();const atualiza=()=>refreshPainReports();window.addEventListener("zonasapp:pain-refresh",atualiza);return()=>window.removeEventListener("zonasapp:pain-refresh",atualiza)},[student]);
   useEffect(()=>{fetch("/api/races-records").then(r=>r.ok?r.json():{races:[]}).then(data=>setPendingRaces(data.races||[])).catch(()=>undefined)},[student]);
   useEffect(()=>{const refresh=()=>fetch("/api/performance-tests").then(r=>r.ok?r.json():{tests:[]}).then(data=>setPendingTests(data.tests||[])).catch(()=>undefined);refresh();window.addEventListener("zonasapp:test-saved",refresh);return()=>window.removeEventListener("zonasapp:test-saved",refresh)},[student]);
   useEffect(()=>{fetch("/api/access-requests").then(r=>r.ok?r.json():{requests:[]}).then(data=>setPendingAccess((data.requests||[]).filter((item:any)=>item.status==="Pendente"))).catch(()=>undefined)},[student]);
@@ -359,7 +378,7 @@ export default function ZonasAppClient({ session }: { session: Session }) {
   if (student) return <><aside className="coach-student-preview"><div><small>PRÉVIA DO PROFESSOR</small><b>Visualizando como aluno</b></div><label>Aluno<select value={previewAthleteName} onChange={event=>setPreviewAthleteName(event.target.value)}>{athleteRecords.map(athlete=><option key={athlete.name}>{athlete.name}</option>)}</select></label><button onClick={()=>setStudent(false)}>Voltar ao professor</button></aside><StudentView onBack={() => setStudent(false)} athleteName={previewAthleteName||athleteRecords[0]?.name||"Aluno"} /></>;
 
   return (
-    <div className="shell">
+    <div className={`shell${visitando ? " com-visita" : ""}`}>
       <aside className="sidebar">
         <div className="brand"><span>Z</span><div><strong>ZONASAPP</strong><small>PLATAFORMA DE TREINO</small></div></div>
         <nav>{nav.map(item => <button key={item} className={active === item ? "active" : ""} onClick={() => setActive(item)}><i>{navIcon(item)}</i>{item}</button>)}
@@ -368,9 +387,13 @@ export default function ZonasAppClient({ session }: { session: Session }) {
           <button className="coach-nav-more" aria-expanded={mobileMenu} onClick={() => setMobileMenu(value => !value)}><i>⋯</i>Mais</button>
         </nav>
         <button className="student-switch" onClick={() => setStudent(true)}>↔ Ver como aluno</button>
-        <div className="coach"><b>JS</b><span><strong>Jonas</strong><small>Treinador</small></span></div>
+        <div className="coach"><b>{coachInitials}</b><span><strong>{session.name}</strong><small>Treinador</small></span></div>
       </aside>
 
+      {visitando && <div className="dev-visiting-banner">
+        <span>Você está na área de <b>{visitando.name}</b> · {visitando.email}</span>
+        {onLeaveDev && <button onClick={onLeaveDev}>Voltar ao diagnóstico</button>}
+      </div>}
       {mobileMenu && <div className="coach-more-sheet" onClick={() => setMobileMenu(false)}>
         <section onClick={event => event.stopPropagation()}>
           <header><b>Outras seções</b><button aria-label="Fechar" onClick={() => setMobileMenu(false)}>×</button></header>
@@ -384,10 +407,10 @@ export default function ZonasAppClient({ session }: { session: Session }) {
       </div>}
 
       <main className="content">
-        <header className="top"><div><small>{brazilCalendar().label.toUpperCase()}</small><h1>{active === "Painel" ? "Boa tarde, Jonas" : active}</h1></div><div className="top-actions">{active === "Alunos" && <button className="gold" onClick={() => setNewAthlete(true)}>+ Novo aluno</button>}<button className="coach-alert-button" onClick={()=>setActive("Painel")} aria-label="Abrir avisos do professor">🔔 <b>{painReports.length+pendingRaces.filter(race=>race.status==="Aguardando análise").length+pendingTests.filter(test=>test.status!=="Aprovado").length+pendingAccess.length}</b><span>avisos</span></button><button className="coach-signout" onClick={()=>void signOut()} title={session.email}>Sair</button></div></header>
-        {active === "Painel" && <><MobileCoachHome go={setActive} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces}/><CoachNotificationCenter go={setActive} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests} pendingAccess={pendingAccess}/><Dashboard go={setActive} chooseDistance={(d) => { setDistanceFilter(d); setActive("Alunos"); }} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests}/><PendingTestShortcut tests={pendingTests} open={()=>setActive("Testes e zonas")}/><WorkoutAccuracy/><TrainingFeedbacks/></>}
+        <header className="top"><div><small>{brazilCalendar().label.toUpperCase()}</small><h1>{active === "Painel" ? `${greeting()}, ${session.name.split(" ")[0]}` : active}</h1></div><div className="top-actions">{active === "Alunos" && <button className="gold" onClick={() => setNewAthlete(true)}>+ Novo aluno</button>}<button className="coach-alert-button" onClick={()=>setActive("Painel")} aria-label="Abrir avisos do professor">🔔 <b>{painReports.length+pendingRaces.filter(race=>race.status==="Aguardando análise").length+pendingTests.filter(test=>test.status!=="Aprovado").length+pendingAccess.length}</b><span>avisos</span></button>{onLeaveDev&&<button className="coach-signout" onClick={onLeaveDev}>← Diagnóstico</button>}<button className="coach-signout" onClick={()=>void signOut()} title={session.email}>Sair</button></div></header>
+        {active === "Painel" && <><MobileCoachHome go={setActive} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} coachName={session.name}/><CoachNotificationCenter go={setActive} openPain={setPainCase} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests} pendingAccess={pendingAccess}/><Dashboard go={setActive} openPain={setPainCase} chooseDistance={(d) => { setDistanceFilter(d); setActive("Alunos"); }} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests}/><PendingTestShortcut tests={pendingTests} open={()=>setActive("Testes e zonas")}/><WorkoutAccuracy/><TrainingFeedbacks/></>}
         {active === "Cadastros" && <><InviteLink/><AccessRequests onApproved={()=>{setPendingAccess(current=>current.slice(1));fetch("/api/athletes").then(r=>r.ok?r.json():{athletes:[]}).then(data=>{const saved=(data.athletes||[]).map((a:any)=>({name:a.name,initials:a.initials,distance:a.distance,plan:a.saved_plan||defaultPlanForDistance(a.distance),phase:a.planning_phase||a.phase,week:a.planning_week_number?`${a.planning_week_number} de ${a.planning_total_weeks}`:a.week,next:a.next_workout,flag:a.status||undefined}));setAthleteRecords(current=>[...saved,...current.filter(a=>!saved.some((s:Athlete)=>s.name===a.name))])})}}/></>} 
-        {active === "Alunos" && <Athletes filtered={filtered} allAthletes={athleteRecords} distance={distanceFilter} phase={phaseFilter} plan={planFilter} setDistance={setDistanceFilter} setPhase={setPhaseFilter} setPlan={setPlanFilter} openProfile={setSelectedAthlete} />}
+        {active === "Alunos" && <Athletes filtered={filtered} allAthletes={athleteRecords} distance={distanceFilter} phase={phaseFilter} plan={planFilter} setDistance={setDistanceFilter} setPhase={setPhaseFilter} setPlan={setPlanFilter} openProfile={setSelectedAthlete} situation={situationFilter} setSituation={setSituationFilter} counts={athleteCounts} onArchiveChange={()=>refreshAthleteRecords()} />}
         {active === "Testes e zonas" && <PendingTestCenter athletes={athleteRecords} openCalendar={(name)=>{sessionStorage.setItem("zonasapp:calendar-athlete",name);setActive("Calendário")}} />}
         {active === "Testes e zonas" && <TestCalculator athletes={athleteRecords} testDistance={testDistance} setTestDistance={setTestDistance} minutes={minutes} setMinutes={setMinutes} seconds={seconds} setSeconds={setSeconds} age={age} setAge={setAge} calc={calc} />}
         {active === "Calendário" && <Calendar />}
@@ -398,7 +421,8 @@ export default function ZonasAppClient({ session }: { session: Session }) {
         {active === "Contas" && <AccountsCenter athletes={athleteRecords} />}
         {active === "Segurança" && <><SecurityCenter /><ErrorMonitor /></>}
       </main>
-      {selectedAthlete && <AthleteProfile athlete={selectedAthlete} close={() => setSelectedAthlete(null)} />}
+      {selectedAthlete && <AthleteProfile athlete={selectedAthlete} close={() => setSelectedAthlete(null)} onOpenPain={id => setPainCase({ id, athleteName: selectedAthlete.name })} />}
+      {painCase && <PainCaseScreen reportId={painCase.id} athleteName={painCase.athleteName} close={() => { setPainCase(null); window.dispatchEvent(new Event("zonasapp:athletes-refresh")); }} />}
       {newAthlete && <NewAthlete close={() => setNewAthlete(false)} save={async (athlete, details) => { const response = await fetch("/api/athletes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...athlete, nextWorkout: athlete.next, status: athlete.flag, ...details }) }); if (!response.ok) throw new Error("save_failed");const totalWeeks=Number(athlete.week.match(/de (\d+)/)?.[1]||12);const planning=await fetch("/api/athlete-planning",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({athleteName:athlete.name,plan:athletePlan(athlete),phase:athlete.phase,weekNumber:1,totalWeeks})});if(!planning.ok)throw new Error("planning_failed"); setAthleteRecords(current => [athlete, ...current]); setNewAthlete(false); }} />}
       {selectedTemplate && <PlanDetails plan={selectedTemplate} close={()=>setSelectedTemplate(null)} />}
     </div>
@@ -558,6 +582,212 @@ function AccountsCenter({ athletes }: { athletes: Athlete[] }) {
   </>;
 }
 
+
+/**
+ * Acompanhamento de uma lesão.
+ *
+ * Uma queixa não é um assunto solto: ela pertence a um atleta e só faz sentido
+ * ao lado da ficha dele. Por isso não há seção própria — a tela abre a partir
+ * do aviso no painel ou de dentro do aluno, e some quando o caso é encerrado,
+ * ficando no histórico dele.
+ */
+function PainCaseScreen({ reportId, athleteName, close }: { reportId: string; athleteName: string; close: () => void }) {
+  type Relato = {
+    id: string; athlete_name: string; body_area: string; intensity: number;
+    training_impact: string; note?: string; status: string; created_at: number;
+    coach_note?: string; resolution?: string; linked_week_start?: string;
+    contacted_at?: number; reviewed_at?: number; resolved_at?: number;
+  };
+  type Movimento = { id: string; actor_email: string; action: string; note?: string; created_at: number };
+
+  const SITUACOES = ["Novo", "Em análise", "Verificado", "Resolvido"] as const;
+
+  const [caso, setCaso] = useState<Relato | null>(null);
+  const [historico, setHistorico] = useState<Movimento[]>([]);
+  const [semanas, setSemanas] = useState<Array<{ week_start: string; week_label: string; status: string }>>([]);
+  const [relato, setRelato] = useState("");
+  const [situacao, setSituacao] = useState("");
+  const [semana, setSemana] = useState("");
+  const [estado, setEstado] = useState<"carregando" | "pronto" | "salvando">("carregando");
+  const [erro, setErro] = useState("");
+  const [aviso, setAviso] = useState("");
+
+  const carregar = async () => {
+    try {
+      const [detalhe, doAluno] = await Promise.all([
+        api.get<{ report: Relato; history: Movimento[] }>(`/api/pain-reports?id=${encodeURIComponent(reportId)}`),
+        api.get<{ weeks: Array<{ week_start: string; week_label: string; status: string }> }>(
+          `/api/training-weeks?athlete=${encodeURIComponent(athleteName)}`).catch(() => ({ weeks: [] })),
+      ]);
+      setCaso(detalhe.report);
+      setSituacao(detalhe.report.status);
+      setHistorico(detalhe.history || []);
+      setSemanas(doAluno.weeks || []);
+      setEstado("pronto");
+    } catch (error) { setErro(describeError(error)); setEstado("pronto"); }
+  };
+  useEffect(() => { void carregar(); }, [reportId]);
+
+  const mudouSituacao = Boolean(caso && situacao && situacao !== caso.status);
+
+  const enviar = async (extra: Record<string, unknown>, mensagem: string) => {
+    setEstado("salvando"); setErro("");
+    try {
+      await api.post("/api/pain-reports", { id: reportId, ...(relato.trim() ? { note: relato.trim() } : {}), ...extra });
+      await carregar();
+      setRelato(""); setAviso(mensagem);
+      window.dispatchEvent(new Event("zonasapp:pain-refresh"));
+    } catch (error) { setErro(describeError(error)); }
+    finally { setEstado("pronto"); }
+  };
+
+  const registrar = () => {
+    if (!relato.trim() && !mudouSituacao) { setErro("Escreva o que aconteceu ou mude a situação do caso."); return; }
+    void enviar({ action: "update", status: situacao || caso?.status }, "Registrado.");
+  };
+
+  const quando = (ms?: number) => ms ? new Date(Number(ms)).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "";
+  const soData = (ms?: number) => ms ? new Date(Number(ms)).toLocaleDateString("pt-BR") : "";
+  const classeSituacao = (s: string) => s === "Resolvido" ? "ok" : s === "Verificado" ? "review" : s === "Em análise" ? "analise" : "pending";
+
+  return <div className="overlay" onMouseDown={e => e.target === e.currentTarget && close()}>
+    <aside className="drawer pain-screen">
+      <header>
+        <div>
+          <span className="overline">ACOMPANHAMENTO DE LESÃO</span>
+          <h2>{caso ? `${caso.athlete_name} · ${caso.body_area}` : "Carregando…"}</h2>
+          {caso && <p>{caso.training_impact} · intensidade {caso.intensity}/10 · relatado em {quando(caso.created_at)}</p>}
+        </div>
+        <button onClick={close}>×</button>
+      </header>
+
+      {estado === "carregando" ? <p className="pain-dash-empty">Carregando o caso…</p> : !caso ? <p className="registration-error">{erro || "Caso não encontrado."}</p> : <>
+        {caso.note && <p className="pain-case-quote">“{caso.note}”</p>}
+
+        <div className="pain-dash-facts">
+          <span><small>CONVERSA</small>{caso.contacted_at ? soData(caso.contacted_at) : "ainda não"}</span>
+          <span><small>AVALIAÇÃO</small>{caso.coach_note || "ainda não"}</span>
+          <span><small>PLANILHA</small>{caso.linked_week_start ? `semana de ${caso.linked_week_start}` : "sem ajuste"}</span>
+          <span><small>DESFECHO</small>{caso.resolution || "em aberto"}</span>
+        </div>
+
+        <div className="pain-dash-work">
+          <label className="pain-dash-status">
+            Situação do caso
+            <div>
+              {SITUACOES.map(s => (
+                <button key={s} className={`${situacao === s ? "selected" : ""} ${classeSituacao(s)}`}
+                  onClick={() => { setSituacao(s); setAviso(""); setErro(""); }}>{s}</button>
+              ))}
+            </div>
+          </label>
+
+          <label>
+            O que aconteceu?
+            <textarea value={relato} onChange={e => { setRelato(e.target.value); setErro(""); setAviso(""); }} maxLength={1000}
+              placeholder="Ex.: conversei com ela, a dor aparece após 20 min e melhora com gelo. Reduzi o volume desta semana." />
+          </label>
+
+          {erro && <p className="registration-error">{erro}</p>}
+          {aviso && <p className="pain-ok">{aviso}</p>}
+
+          <div className="pain-dash-actions">
+            <button className="gold" disabled={estado === "salvando"} onClick={registrar}>
+              {estado === "salvando" ? "Salvando…" : mudouSituacao ? `Salvar como “${situacao}”` : "Salvar registro"}
+            </button>
+            <button disabled={estado === "salvando"} onClick={() => void enviar({ action: "contact" }, "Conversa registrada.")}>
+              Marcar que falei com o atleta
+            </button>
+            <a className="pain-contact" href={`https://wa.me/?text=${encodeURIComponent(`Olá ${caso.athlete_name.split(" ")[0]}, vi seu relato de dor em ${caso.body_area}. Como você está?`)}`} target="_blank" rel="noreferrer">WhatsApp ↗</a>
+          </div>
+
+          <details className="pain-dash-week">
+            <summary>Vincular a um ajuste na planilha</summary>
+            {semanas.length === 0
+              ? <p className="pain-sem-semana">Este aluno ainda não tem semana montada.</p>
+              : <div>
+                  <select value={semana} onChange={e => { setSemana(e.target.value); setErro(""); }}>
+                    <option value="">Escolha a semana ajustada…</option>
+                    {semanas.map(w => <option key={w.week_start} value={w.week_start}>
+                      {new Date(`${w.week_start}T12:00:00Z`).toLocaleDateString("pt-BR")} · {w.week_label} · {w.status}
+                    </option>)}
+                  </select>
+                  <button disabled={estado === "salvando" || !semana}
+                    onClick={() => semana ? void enviar({ action: "link_week", weekStart: semana }, "Ajuste vinculado.") : setErro("Escolha a semana que você ajustou.")}>
+                    Vincular
+                  </button>
+                </div>}
+          </details>
+        </div>
+
+        {historico.length > 0 && <div className="pain-dash-history">
+          <span className="overline">HISTÓRICO DO CASO</span>
+          {historico.map(h => <article key={h.id}>
+            <b>{h.action}</b>
+            <small>{quando(h.created_at)} · {h.actor_email}</small>
+            {h.note && <p>{h.note}</p>}
+          </article>)}
+        </div>}
+      </>}
+    </aside>
+  </div>;
+}
+
+/**
+ * Lesões de um atleta, dentro da ficha dele.
+ *
+ * Em aberto aparecem em destaque, porque mudam a decisão do treino da semana.
+ * As encerradas ficam recolhidas: viram histórico, não pendência.
+ */
+function AthletePainList({ athleteName, onOpen }: { athleteName: string; onOpen: (id: string) => void }) {
+  type Relato = { id: string; body_area: string; intensity: number; status: string; created_at: number; resolution?: string; resolved_at?: number };
+  const [relatos, setRelatos] = useState<Relato[]>([]);
+  const [carregado, setCarregado] = useState(false);
+
+  const carregar = () => api.get<{ reports: Relato[] }>(`/api/pain-reports?athlete=${encodeURIComponent(athleteName)}`)
+    .then(d => { setRelatos(d.reports || []); setCarregado(true); })
+    .catch(() => setCarregado(true));
+  useEffect(() => {
+    carregar();
+    const atualiza = () => carregar();
+    window.addEventListener("zonasapp:pain-refresh", atualiza);
+    return () => window.removeEventListener("zonasapp:pain-refresh", atualiza);
+  }, [athleteName]);
+
+  if (!carregado || relatos.length === 0) return null;
+
+  const abertas = relatos.filter(r => r.status !== "Resolvido");
+  const encerradas = relatos.filter(r => r.status === "Resolvido");
+  const soData = (ms?: number) => ms ? new Date(Number(ms)).toLocaleDateString("pt-BR") : "";
+
+  return <section className="athlete-pain">
+    {abertas.length > 0 && <>
+      <span className="overline">LESÃO EM ACOMPANHAMENTO</span>
+      {abertas.map(r => (
+        <button key={r.id} className={`athlete-pain-open ${r.intensity >= 7 ? "grave" : ""}`} onClick={() => onOpen(r.id)}>
+          <span className="pain-dash-mark">{r.intensity}</span>
+          <span>
+            <b>{r.body_area}</b>
+            <small>{r.status} · desde {soData(r.created_at)}</small>
+          </span>
+          <em>Registrar andamento →</em>
+        </button>
+      ))}
+    </>}
+
+    {encerradas.length > 0 && <details className="athlete-pain-past">
+      <summary>Lesões encerradas ({encerradas.length})</summary>
+      {encerradas.map(r => (
+        <button key={r.id} onClick={() => onOpen(r.id)}>
+          <b>{r.body_area}</b>
+          <small>{soData(r.created_at)} → {soData(r.resolved_at)}</small>
+          <p>{r.resolution || "Sem desfecho registrado."}</p>
+        </button>
+      ))}
+    </details>}
+  </section>;
+}
+
 function CoachIntegrations(){
   type Row={athlete_name:string;integration:string;access_status:string;connection_status:string;last_source?:string;last_import_at?:number};
   const [rows,setRows]=useState<Row[]>([]);const [filter,setFilter]=useState("Todos");const [state,setState]=useState("loading");const [readiness,setReadiness]=useState<any[]>([]);
@@ -590,7 +820,7 @@ function SecurityCenter() {
     </div>
     {state==="done"&&<p className="backup-status success">Operação concluída com segurança ✓</p>}{state==="error"&&<p className="backup-status error">Não foi possível concluir agora. Nenhum dado foi alterado.</p>}
     <div className="backup-list"><header><div><span className="overline">CÓPIAS DISPONÍVEIS</span><h3>Histórico de backups</h3></div><span>{backups.length} cópias</span></header>{backups.length===0?<div className="backup-empty">Ainda não há cópias. Crie o primeiro backup antes de começar a usar dados reais.</div>:backups.map(backup=><article key={backup.id}><div><b>{backup.label}</b><small>{new Date(Number(backup.created_at)).toLocaleString("pt-BR")} · {backup.record_count} registros</small>{backup.restored_at?<em>Restaurado em {new Date(Number(backup.restored_at)).toLocaleString("pt-BR")}</em>:null}</div><aside className="backup-actions"><button onClick={()=>downloadBackup(backup.id)}>Baixar cópia</button><button className={confirmRestore===backup.id?"confirm-restore":""} disabled={state==="restoring"} onClick={()=>restore(backup.id)}>{state==="restoring"&&confirmRestore===backup.id?"Restaurando...":confirmRestore===backup.id?"Confirmar restauração":"Restaurar esta cópia"}</button></aside></article>)}</div>
-    <div className="security-events"><header><div><span className="overline">ATIVIDADE DE SEGURANÇA</span><h3>Bloqueios recentes</h3></div><span>{events.length} registros</span></header>{events.length===0?<div className="backup-empty">Nenhum bloqueio por excesso foi registrado.</div>:events.map(event=><article key={event.id}><b>Proteção ativada</b><span>{new Date(Number(event.created_at)).toLocaleString("pt-BR")} · {event.actor_email.toLowerCase().includes("jonas")?"Jonas":"Usuário autenticado"}</span><small>{event.route} · ação temporariamente bloqueada</small></article>)}</div>
+    <div className="security-events"><header><div><span className="overline">ATIVIDADE DE SEGURANÇA</span><h3>Bloqueios recentes</h3></div><span>{events.length} registros</span></header>{events.length===0?<div className="backup-empty">Nenhum bloqueio por excesso foi registrado.</div>:events.map(event=><article key={event.id}><b>Proteção ativada</b><span>{new Date(Number(event.created_at)).toLocaleString("pt-BR")} · {event.actor_email}</span><small>{event.route} · ação temporariamente bloqueada</small></article>)}</div>
     <div className="recovery-note"><b>Importante</b><span>A restauração exige dois cliques e não exclui a cópia escolhida. O ZonasApp também cria uma cópia automática do estado atual antes de voltar no tempo.</span></div>
   </section>;
 }
@@ -676,30 +906,31 @@ function WorkoutAccuracy(){
   return <section className="workout-accuracy-coach"><header><div><span className="overline">CONFERÊNCIA AUTOMÁTICA</span><h2>Treino certo ou fora do planejado</h2><p>Comparação entre o treino liberado e o resultado informado pelo aluno.</p></div><b>{items.length} análise(s)</b></header>{state==="loading"?<div className="feedback-empty">Carregando análises…</div>:items.length===0?<div className="feedback-empty">As análises aparecerão quando os alunos registrarem tempo ou distância.</div>:items.slice(0,8).map(item=><article key={item.id}><div className="accuracy-athlete"><b>{item.athlete_name}</b><small>{item.workout_day} · semana de {String(item.week_start).split("-").reverse().join("/")}</small><span>{item.classification}</span></div><div className="accuracy-comparison"><span><small>PLANEJADO</small><b>{item.planned_minutes?`${item.planned_minutes} min`:"—"}{item.planned_km?` · ${item.planned_km} km`:""}</b></span><span><small>REALIZADO</small><b>{item.actual_minutes?`${item.actual_minutes} min`:"—"}{item.actual_km?` · ${item.actual_km} km`:""}</b></span></div><div className="accuracy-numbers"><strong>{item.correct_percentage}%<small>certo</small></strong><strong className="wrong">{item.wrong_percentage}%<small>fora</small></strong></div></article>)}{state==="error"&&<p className="registration-error">Não foi possível carregar as análises agora.</p>}</section>;
 }
 
-function CoachNotificationCenter({go,painReports,pendingRaces,pendingTests,pendingAccess}:{go:(section:string)=>void;painReports:any[];pendingRaces:any[];pendingTests:any[];pendingAccess:any[]}){
+function CoachNotificationCenter({go,openPain,painReports,pendingRaces,pendingTests,pendingAccess}:{go:(section:string)=>void;openPain:(c:{id:string;athleteName:string})=>void;painReports:any[];pendingRaces:any[];pendingTests:any[];pendingAccess:any[]}){
   const races=pendingRaces.filter(item=>item.status==="Aguardando análise");
   const tests=pendingTests.filter(item=>item.status!=="Aprovado");
-  const alerts=[
+  type Aviso = { id: string; tone: string; icon: string; title: string; detail: string; action: string; section: string; pain?: { id: string; athleteName: string } };
+  const alerts: Aviso[]=[
     ...pendingAccess.map(item=>({id:`access-${item.id}`,tone:"gold",icon:"＋",title:"Novo aluno aguardando liberação",detail:`${item.name} enviou o cadastro e ainda não consegue acessar os treinos.`,action:"Revisar cadastro",section:"Cadastros"})),
     ...tests.map(item=>({id:`test-${item.id}`,tone:"amber",icon:"Z",title:"Teste aguardando liberação das zonas",detail:`${item.athlete_name} espera seus ritmos individualizados.`,action:"Liberar zonas",section:"Testes e zonas"})),
-    ...painReports.map(item=>({id:`pain-${item.id}`,tone:"red",icon:"!",title:"Relato de dor precisa de atenção",detail:`${item.athlete_name} · ${item.body_area} · intensidade ${item.intensity}/10.`,action:"Abrir aluno",section:"Alunos"})),
+    ...painReports.map(item=>({id:`pain-${item.id}`,tone:"red",icon:"!",title:"Relato de dor precisa de atenção",detail:`${item.athlete_name} · ${item.body_area} · intensidade ${item.intensity}/10.`,action:"Acompanhar lesão",section:"Alunos",pain:{id:item.id,athleteName:item.athlete_name}})),
     ...races.map(item=>({id:`race-${item.id}`,tone:"blue",icon:"⚑",title:"Prova aguardando análise",detail:`${item.athlete_name} cadastrou ${item.name} (${item.distance}).`,action:"Analisar prova",section:"Provas"})),
   ];
-  return <section className="coach-notification-center" id="avisos-do-professor"><header><div><span className="overline">CENTRAL DE AVISOS</span><h2>O que precisa da sua decisão</h2><p>Cada aviso abre diretamente a tela onde você resolve a pendência.</p></div><b>{alerts.length} pendente(s)</b></header>{alerts.length?<div>{alerts.slice(0,8).map(alert=><button key={alert.id} className={alert.tone} onClick={()=>go(alert.section)}><i>{alert.icon}</i><span><strong>{alert.title}</strong><small>{alert.detail}</small></span><em>{alert.action} →</em></button>)}</div>:<aside><i>✓</i><span><b>Tudo em dia</b><small>Nenhuma decisão pendente neste momento.</small></span></aside>}</section>;
+  return <section className="coach-notification-center" id="avisos-do-professor"><header><div><span className="overline">CENTRAL DE AVISOS</span><h2>O que precisa da sua decisão</h2><p>Cada aviso abre diretamente a tela onde você resolve a pendência.</p></div><b>{alerts.length} pendente(s)</b></header>{alerts.length?<div>{alerts.slice(0,8).map(alert=><button key={alert.id} className={alert.tone} onClick={()=>alert.pain?openPain(alert.pain):go(alert.section)}><i>{alert.icon}</i><span><strong>{alert.title}</strong><small>{alert.detail}</small></span><em>{alert.action} →</em></button>)}</div>:<aside><i>✓</i><span><b>Tudo em dia</b><small>Nenhuma decisão pendente neste momento.</small></span></aside>}</section>;
 }
 
-function MobileCoachHome({go,athletes,painReports,pendingRaces}:{go:(s:string)=>void;athletes:Athlete[];painReports:any[];pendingRaces:any[]}){
+function MobileCoachHome({go,athletes,painReports,pendingRaces,coachName}:{go:(s:string)=>void;athletes:Athlete[];painReports:any[];pendingRaces:any[];coachName:string}){
   const racesWaiting=pendingRaces.filter(race=>race.status==="Aguardando análise");const attentionTotal=painReports.length+racesWaiting.length;
-  return <section className="mobile-coach-home"><header><div><small>VISÃO DO PROFESSOR</small><h2>Olá, Jonas</h2><p>{athletes.length} aluno(s) ativo(s)</p></div><button aria-label="Abrir perfil do professor">JS</button></header><div className="mobile-coach-stats"><article><i>◷</i><b>{athletes.filter(athlete=>!String(athlete.next).includes("Aguardando")).length}</b><span>Treinos hoje</span></article><article><i>!</i><b>{attentionTotal}</b><span>Pendentes</span></article><article><i>✓</i><b>0</b><span>Concluídos</span></article></div><button className="mobile-new-workout" onClick={()=>go("Calendário")}>＋ Novo treino</button><section className="mobile-recent"><header><h3>Atividade recente</h3><button onClick={()=>go("Alunos")}>Ver alunos</button></header>{painReports.length?<article onClick={()=>go("Alunos")}><i>!</i><span><b>{painReports[0].athlete_name} relatou dor</b><small>{painReports[0].body_area} · intensidade {painReports[0].intensity}/10</small></span><strong>›</strong></article>:racesWaiting.length?<article onClick={()=>go("Provas")}><i>!</i><span><b>{racesWaiting[0].name} aguarda análise</b><small>{racesWaiting[0].athlete_name} · {racesWaiting[0].distance}</small></span><strong>›</strong></article>:<div><i>✓</i><b>Nenhuma atividade recente</b><span>Novos avisos dos alunos aparecerão aqui.</span></div>}</section><footer>Transforme cada treino em evolução.</footer></section>
+  return <section className="mobile-coach-home"><header><div><small>VISÃO DO PROFESSOR</small><h2>Olá, {coachName.split(" ")[0]}</h2><p>{athletes.length} aluno(s) ativo(s)</p></div><button aria-label="Abrir perfil do professor">JS</button></header><div className="mobile-coach-stats"><article><i>◷</i><b>{athletes.filter(athlete=>!String(athlete.next).includes("Aguardando")).length}</b><span>Treinos hoje</span></article><article><i>!</i><b>{attentionTotal}</b><span>Pendentes</span></article><article><i>✓</i><b>0</b><span>Concluídos</span></article></div><button className="mobile-new-workout" onClick={()=>go("Calendário")}>＋ Novo treino</button><section className="mobile-recent"><header><h3>Atividade recente</h3><button onClick={()=>go("Alunos")}>Ver alunos</button></header>{painReports.length?<article onClick={()=>go("Alunos")}><i>!</i><span><b>{painReports[0].athlete_name} relatou dor</b><small>{painReports[0].body_area} · intensidade {painReports[0].intensity}/10</small></span><strong>›</strong></article>:racesWaiting.length?<article onClick={()=>go("Provas")}><i>!</i><span><b>{racesWaiting[0].name} aguarda análise</b><small>{racesWaiting[0].athlete_name} · {racesWaiting[0].distance}</small></span><strong>›</strong></article>:<div><i>✓</i><b>Nenhuma atividade recente</b><span>Novos avisos dos alunos aparecerão aqui.</span></div>}</section><footer>Transforme cada treino em evolução.</footer></section>
 }
 
-function Dashboard({ go, chooseDistance, athletes, painReports, pendingRaces, pendingTests }: { go: (s: string) => void; chooseDistance: (s: string) => void; athletes:Athlete[]; painReports:any[]; pendingRaces:any[]; pendingTests:any[] }) {
+function Dashboard({ go, openPain, chooseDistance, athletes, painReports, pendingRaces, pendingTests }: { go: (s: string) => void; openPain: (c:{id:string;athleteName:string})=>void; chooseDistance: (s: string) => void; athletes:Athlete[]; painReports:any[]; pendingRaces:any[]; pendingTests:any[] }) {
   const groupNames:[[string,string],...Array<[string,string]>]=[["Iniciantes","01"],["5 km","05"],["10 km","10"],["Meia","21"],["Maratona","42"]];
   const groups=groupNames.map(([name,number])=>({name,number,count:athletes.filter(athlete=>athlete.distance===name).length}));
   const racesWaiting=pendingRaces.filter(race=>race.status==="Aguardando análise");const nextRace=pendingRaces.find(race=>race.race_date>=new Date().toISOString().slice(0,10));
   const daysToRace=nextRace?Math.max(0,Math.ceil((new Date(`${nextRace.race_date}T12:00:00`).getTime()-Date.now())/86400000)):null;
   const attentionTotal=painReports.length+racesWaiting.length+pendingTests.length;
-  return <><section className="hero"><div><span className="pill">VISÃO DA SEMANA</span><h2>Treinos claros.<br/><em>Atletas em movimento.</em></h2><p>{attentionTotal?`${attentionTotal} situação(ões) precisam da sua atenção.`:"Nenhuma pendência urgente registrada."}</p><button className="gold" onClick={()=>go("Calendário")}>Montar treinos da semana →</button></div><div className="attention"><header>ATENÇÃO <b>{attentionTotal}</b></header>{painReports.length?<article className="attention-link" onClick={()=>go("Alunos")}><i className="red"/><span><strong>{painReports.length} relato(s) de dor</strong><small>{painReports[0].athlete_name} · {painReports[0].body_area} · intensidade {painReports[0].intensity}/10</small></span>›</article>:<article><i/><span><strong>Sem relatos de dor pendentes</strong><small>Nenhum aviso registrado pelos alunos.</small></span></article>}{racesWaiting.length?<article onClick={()=>go("Provas")}><i className="amber"/><span><strong>{racesWaiting.length} prova(s) aguardando análise</strong><small>{racesWaiting[0].name} · {racesWaiting[0].athlete_name} · {racesWaiting[0].distance}</small></span>›</article>:<article><i/><span><strong>Provas revisadas</strong><small>Nenhuma prova aguardando sua decisão.</small></span></article>}</div></section><section className="stats"><article><small>ALUNOS CADASTRADOS</small><b>{athletes.length}</b><span>Cadastros disponíveis</span></article><article><small>RELATOS DE DOR</small><b>{painReports.length}</b><span>{painReports.length?"Precisam de revisão":"Sem pendências"}</span></article><article><small>PROVAS PARA ANALISAR</small><b>{racesWaiting.length}</b><span>{racesWaiting.length?"Defina prioridade e fase":"Tudo revisado"}</span></article><article><small>PRÓXIMA PROVA</small><b>{daysToRace??"—"}{daysToRace!==null&&<em> dias</em>}</b><span>{nextRace?.name||"Nenhuma cadastrada"}</span></article></section><div className="section-title"><div><small>ORGANIZAÇÃO DOS ALUNOS</small><h2>Grupos de treinamento</h2></div><button onClick={()=>go("Alunos")}>Ver todos →</button></div><section className="groups">{groups.map(group=><button key={group.name} onClick={()=>chooseDistance(group.name)}><i>{group.number}</i><h3>{group.name==="Meia"?"Meia maratona":group.name}</h3><b>{group.count} aluno(s)</b><span>Ver bases, fases e semanas →</span></button>)}</section>{painReports.length>0&&<><div className="section-title feedback-title"><div><small>SAÚDE DOS ALUNOS</small><h2>Relatos que precisam de atenção</h2></div><button onClick={()=>go("Alunos")}>Abrir alunos →</button></div><section className="coach-feedbacks">{painReports.slice(0,4).map(report=><article className="pain" key={report.id}><div><b>{String(report.athlete_name).split(/\s+/).slice(0,2).map((part:string)=>part[0]).join("")}</b><span><strong>{report.athlete_name}</strong><small>{new Date(Number(report.created_at)).toLocaleString("pt-BR")}</small></span></div><em>⚠ {report.body_area} · {report.intensity}/10</em><p>{report.note||report.training_impact}</p><button onClick={()=>go("Alunos")}>Revisar aluno</button></article>)}</section></>}</>;
+  return <><section className="hero"><div><span className="pill">VISÃO DA SEMANA</span><h2>Treinos claros.<br/><em>Atletas em movimento.</em></h2><p>{attentionTotal?`${attentionTotal} situação(ões) precisam da sua atenção.`:"Nenhuma pendência urgente registrada."}</p><button className="gold" onClick={()=>go("Calendário")}>Montar treinos da semana →</button></div><div className="attention"><header>ATENÇÃO <b>{attentionTotal}</b></header>{painReports.length?<article className="attention-link" onClick={()=>openPain({id:painReports[0].id,athleteName:painReports[0].athlete_name})}><i className="red"/><span><strong>{painReports.length} relato(s) de dor</strong><small>{painReports[0].athlete_name} · {painReports[0].body_area} · intensidade {painReports[0].intensity}/10</small></span>›</article>:<article><i/><span><strong>Sem relatos de dor pendentes</strong><small>Nenhum aviso registrado pelos alunos.</small></span></article>}{racesWaiting.length?<article onClick={()=>go("Provas")}><i className="amber"/><span><strong>{racesWaiting.length} prova(s) aguardando análise</strong><small>{racesWaiting[0].name} · {racesWaiting[0].athlete_name} · {racesWaiting[0].distance}</small></span>›</article>:<article><i/><span><strong>Provas revisadas</strong><small>Nenhuma prova aguardando sua decisão.</small></span></article>}</div></section><section className="stats"><button className="stat-card" onClick={()=>go("Alunos")}><small>ALUNOS CADASTRADOS</small><b>{athletes.length}</b><span>Ver todos os alunos →</span></button><button className="stat-card" onClick={()=>painReports[0]?openPain({id:painReports[0].id,athleteName:painReports[0].athlete_name}):go("Alunos")}><small>RELATOS DE DOR</small><b>{painReports.length}</b><span>{painReports.length?"Acompanhar lesão →":"Sem pendências"}</span></button><button className="stat-card" onClick={()=>go("Provas")}><small>PROVAS PARA ANALISAR</small><b>{racesWaiting.length}</b><span>{racesWaiting.length?"Analisar provas →":"Tudo revisado"}</span></button><button className="stat-card" onClick={()=>go("Provas")}><small>PRÓXIMA PROVA</small><b>{daysToRace??"—"}{daysToRace!==null&&<em> dias</em>}</b><span>{nextRace?.name||"Nenhuma cadastrada"}</span></button></section><div className="section-title"><div><small>ORGANIZAÇÃO DOS ALUNOS</small><h2>Grupos de treinamento</h2></div><button onClick={()=>go("Alunos")}>Ver todos →</button></div><section className="groups">{groups.map(group=><button key={group.name} onClick={()=>chooseDistance(group.name)}><i>{group.number}</i><h3>{group.name==="Meia"?"Meia maratona":group.name}</h3><b>{group.count} aluno(s)</b><span>Ver bases, fases e semanas →</span></button>)}</section>{painReports.length>0&&<><div className="section-title feedback-title"><div><small>SAÚDE DOS ALUNOS</small><h2>Relatos que precisam de atenção</h2></div><button onClick={()=>go("Alunos")}>Abrir alunos →</button></div><section className="coach-feedbacks">{painReports.slice(0,4).map(report=><article className="pain" key={report.id}><div><b>{String(report.athlete_name).split(/\s+/).slice(0,2).map((part:string)=>part[0]).join("")}</b><span><strong>{report.athlete_name}</strong><small>{new Date(Number(report.created_at)).toLocaleString("pt-BR")}</small></span></div><em>⚠ {report.body_area} · {report.intensity}/10</em><p>{report.note||report.training_impact}</p><button onClick={()=>go("Alunos")}>Revisar aluno</button></article>)}</section></>}</>;
 }
 
 function PendingTestShortcut({tests,open}:{tests:any[];open:()=>void}){
@@ -707,12 +938,48 @@ function PendingTestShortcut({tests,open}:{tests:any[];open:()=>void}){
   return <button className="dashboard-pending-zones" onClick={open}><span><small>AÇÃO PRIORITÁRIA</small><b>{tests.length} teste(s) aguardando liberação das zonas</b><em>{tests[0].athlete_name} está esperando os ritmos para receber treinos individualizados.</em></span><strong>Revisar e liberar agora →</strong></button>;
 }
 
-function Athletes({ filtered, allAthletes, distance, phase, plan, setDistance, setPhase, setPlan, openProfile }: any) {
+function Athletes({ filtered, allAthletes, distance, phase, plan, setDistance, setPhase, setPlan, openProfile, situation, setSituation, counts, onArchiveChange }: any) {
   const planCount=(name:string)=>allAthletes.filter((a:Athlete)=>athletePlan(a)===name).length;
-  return <><div className="filters"><label>DISTÂNCIA<div>{distances.map(d => <button key={d} className={distance === d ? "selected" : ""} onClick={() => setDistance(d)}>{d}</button>)}</div></label><label>PLANILHA-BASE<div>{planNames.map(name => <button key={name} className={plan === name ? "selected" : ""} onClick={() => setPlan(name)}>{name}{name!=="Todas"&&<b>{planCount(name)}</b>}</button>)}</div></label><label>FASE<div>{phases.map(p => <button key={p} className={phase === p ? "selected" : ""} onClick={() => setPhase(p)}>{p}</button>)}</div></label></div><div className="athlete-list"><header><span>ALUNO</span><span>DISTÂNCIA</span><span>PLANILHA-BASE</span><span>FASE</span><span>SEMANA</span><span>PRÓXIMO TREINO</span><span>SITUAÇÃO</span></header>{filtered.map((a: Athlete) => <article key={a.name} className="athlete-row" onClick={() => openProfile(a)}><span className="athlete-name"><b>{a.initials}</b><strong>{a.name}</strong></span><span>{a.distance}</span><span className="plan-cell">{athletePlan(a)}</span><span>{a.phase}</span><span>{a.week}</span><span>{a.next}</span><span className={a.flag ? "flag" : "ok"}>{a.flag || "Abrir ficha"}</span></article>)}</div></>;
+  const [acaoEmCurso,setAcaoEmCurso]=useState("");
+  const [confirmando,setConfirmando]=useState("");
+  const [motivo,setMotivo]=useState("");
+
+  /** Inativar preserva o histórico; excluir o destruiria. */
+  const mudarSituacao=async(nome:string,action:"archive"|"restore")=>{
+    setAcaoEmCurso(nome);
+    try{
+      await api.post("/api/athletes",{action,name:nome,...(action==="archive"&&motivo?{reason:motivo}:{})});
+      setConfirmando("");setMotivo("");onArchiveChange?.();
+    }catch(error){window.alert(describeError(error,"Não foi possível alterar a situação do aluno."))}
+    finally{setAcaoEmCurso("")}
+  };
+
+  return <><div className="athlete-situation">
+    {(["Ativos","Inativos","Todos"] as const).map(item=>
+      <button key={item} className={situation===item?"selected":""} onClick={()=>setSituation(item)}>
+        {item}{item==="Ativos"&&counts?.active!==undefined?` (${counts.active})`:item==="Inativos"&&counts?.archived!==undefined?` (${counts.archived})`:""}
+      </button>)}
+    <small>Alunos inativos mantêm todo o histórico de treinos, testes e provas.</small>
+  </div>
+  {confirmando&&<div className="athlete-archive-confirm">
+    <b>Inativar {confirmando}?</b>
+    <p>O aluno sai da lista e perde o acesso, mas o histórico continua guardado. Você pode reativar quando quiser.</p>
+    <label>Motivo <small>opcional</small>
+      <input value={motivo} onChange={e=>setMotivo(e.target.value)} placeholder="Ex.: encerrou a assessoria em agosto"/>
+    </label>
+    <div>
+      <button className="gold" disabled={acaoEmCurso===confirmando} onClick={()=>mudarSituacao(confirmando,"archive")}>
+        {acaoEmCurso===confirmando?"Inativando…":"Confirmar inativação"}
+      </button>
+      <button onClick={()=>{setConfirmando("");setMotivo("")}}>Cancelar</button>
+    </div>
+  </div>}
+  <div className="filters"><label>DISTÂNCIA<div>{distances.map(d => <button key={d} className={distance === d ? "selected" : ""} onClick={() => setDistance(d)}>{d}</button>)}</div></label><label>PLANILHA-BASE<div>{planNames.map(name => <button key={name} className={plan === name ? "selected" : ""} onClick={() => setPlan(name)}>{name}{name!=="Todas"&&<b>{planCount(name)}</b>}</button>)}</div></label><label>FASE<div>{phases.map(p => <button key={p} className={phase === p ? "selected" : ""} onClick={() => setPhase(p)}>{p}</button>)}</div></label></div><div className="athlete-list"><header><span>ALUNO</span><span>DISTÂNCIA</span><span>PLANILHA-BASE</span><span>FASE</span><span>SEMANA</span><span>PRÓXIMO TREINO</span><span>SITUAÇÃO</span></header>{filtered.map((a: Athlete) => <article key={a.name} className={`athlete-row${a.archivedAt ? " inativo" : ""}`} onClick={() => openProfile(a)}><span className="athlete-name"><b>{a.initials}</b><strong>{a.name}{a.archivedAt ? <em className="athlete-inactive-tag">inativo</em> : null}</strong></span><span>{a.distance}</span><span className="plan-cell">{athletePlan(a)}</span><span>{a.phase}</span><span>{a.week}</span><span>{a.archivedAt ? (a.archivedReason || "Sem motivo registrado") : a.next}</span><span className="athlete-row-action" onClick={event => event.stopPropagation()}>{a.archivedAt
+  ? <button disabled={acaoEmCurso === a.name} onClick={() => mudarSituacao(a.name, "restore")}>{acaoEmCurso === a.name ? "Reativando…" : "Reativar"}</button>
+  : <><span className={a.flag ? "flag" : "ok"}>{a.flag || "Abrir ficha"}</span><button className="athlete-archive" onClick={() => setConfirmando(a.name)}>Inativar</button></>}</span></article>)}</div></>;
 }
 
-function AthleteProfile({ athlete, close }: { athlete: Athlete; close: () => void }) {
+function AthleteProfile({ athlete, close, onOpenPain }: { athlete: Athlete; close: () => void; onOpenPain?: (id: string) => void }) {
   const [saved, setSaved] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState("");
@@ -965,7 +1232,7 @@ function AthleteProfile({ athlete, close }: { athlete: Athlete; close: () => voi
       setAccessSaving(false);
     }
   };
-  return <div className="overlay" onMouseDown={e => e.target === e.currentTarget && close()}><aside className="drawer athlete-profile"><header><div><span className="overline">FICHA DO ALUNO</span><h2>{athlete.name}</h2><p>{profilePlanningLabel}</p></div><button onClick={close}>×</button></header><div className="profile-quick-actions"><button onClick={()=>setTab("Testes e zonas")}><i>◎</i><span><b>Testes e zonas</b><small>Revisar ritmos</small></span></button><button onClick={()=>window.dispatchEvent(new CustomEvent("zonasapp:open-calendar",{detail:athlete.name}))}><i>□</i><span><b>Montar semana</b><small>Abrir calendário</small></span></button><button onClick={()=>window.dispatchEvent(new CustomEvent("zonasapp:preview-athlete",{detail:athlete.name}))}><i>↔</i><span><b>Ver como aluno</b><small>Conferir a tela</small></span></button></div>{tab === "Cadastro" && !race && <div className="profile-alert">Cadastro incompleto: adicione a próxima prova para facilitar a periodização.</div>}{testHistory.some(test=>test.status!=="Aprovado")&&<button className="profile-zone-pending" onClick={()=>setTab("Testes e zonas")}><span><b>Zonas de treino aguardando sua liberação</b><small>Abra, confira os ritmos e aprove para usar nos treinos de {athlete.name.split(" ")[0]}.</small></span><strong>Liberar agora →</strong></button>}<div className="profile-tabs">{tabs.map(item=><button key={item} className={tab === item ? "selected" : ""} onClick={()=>setTab(item)}>{item}{item==="Testes e zonas"&&testHistory.some(test=>test.status!=="Aprovado")?<b className="tab-alert-dot">!</b>:null}</button>)}</div>
+  return <div className="overlay" onMouseDown={e => e.target === e.currentTarget && close()}><aside className="drawer athlete-profile"><header><div><span className="overline">FICHA DO ALUNO</span><h2>{athlete.name}</h2><p>{profilePlanningLabel}</p></div><button onClick={close}>×</button></header><div className="profile-quick-actions"><button onClick={()=>setTab("Testes e zonas")}><i>◎</i><span><b>Testes e zonas</b><small>Revisar ritmos</small></span></button><button onClick={()=>window.dispatchEvent(new CustomEvent("zonasapp:open-calendar",{detail:athlete.name}))}><i>□</i><span><b>Montar semana</b><small>Abrir calendário</small></span></button><button onClick={()=>window.dispatchEvent(new CustomEvent("zonasapp:preview-athlete",{detail:athlete.name}))}><i>↔</i><span><b>Ver como aluno</b><small>Conferir a tela</small></span></button></div>{onOpenPain && <AthletePainList athleteName={athlete.name} onOpen={onOpenPain} />}{tab === "Cadastro" && !race && <div className="profile-alert">Cadastro incompleto: adicione a próxima prova para facilitar a periodização.</div>}{testHistory.some(test=>test.status!=="Aprovado")&&<button className="profile-zone-pending" onClick={()=>setTab("Testes e zonas")}><span><b>Zonas de treino aguardando sua liberação</b><small>Abra, confira os ritmos e aprove para usar nos treinos de {athlete.name.split(" ")[0]}.</small></span><strong>Liberar agora →</strong></button>}<div className="profile-tabs">{tabs.map(item=><button key={item} className={tab === item ? "selected" : ""} onClick={()=>setTab(item)}>{item}{item==="Testes e zonas"&&testHistory.some(test=>test.status!=="Aprovado")?<b className="tab-alert-dot">!</b>:null}</button>)}</div>
   {tab === "Cadastro" && <>
     <section className="profile-section">
       <h3>Dados e disponibilidade</h3>
@@ -1122,7 +1389,7 @@ function Calendar() {
       filtered.forEach(item=>{
         const article=document.createElement("article");
         const action=document.createElement("b");action.textContent=item.action;
-        const meta=document.createElement("small");meta.textContent=`${new Date(Number(item.created_at)).toLocaleString("pt-BR")} · ${item.actor_email.toLowerCase().includes("jonas")?"Jonas · treinador":"Usuário autenticado"}`;
+        const meta=document.createElement("small");meta.textContent=`${new Date(Number(item.created_at)).toLocaleString("pt-BR")} · ${item.actor_email}`;
         const detail=document.createElement("span");
         let fields:string[]=[];try{fields=JSON.parse(item.changed_fields||"[]")}catch{}
         const baseChanges=fields.filter(field=>field.startsWith("base:")).map(field=>field.replace("base:","").replace(":",": "));
@@ -1136,7 +1403,7 @@ function Calendar() {
       const report=window.open("","_blank");if(!report){window.alert("Permita a abertura da janela para gerar o relatório.");return}
       const style=report.document.createElement("style");style.textContent="body{font:14px Arial;color:#171717;margin:36px}header{border-bottom:3px solid #b68b2f;padding-bottom:16px;margin-bottom:22px}h1{margin:0 0 6px}p{color:#555}article{padding:14px 0;border-bottom:1px solid #ccc}article b,article span,article small{display:block}article small{margin:5px 0;color:#555}article span{line-height:1.5}@media print{body{margin:18mm}button{display:none}}";report.document.head.appendChild(style);
       const header=report.document.createElement("header");const title=report.document.createElement("h1");title.textContent="ZonasApp · Histórico da semana";const subtitle=report.document.createElement("p");subtitle.textContent=`${selected} · ${current.plan} · semana ${calendarPlanWeek} de ${currentPlanningTotal} · ${weekDateLabel(weekStart)}`;header.append(title,subtitle);report.document.body.appendChild(header);
-      records.forEach(item=>{const article=report.document.createElement("article");const action=report.document.createElement("b");action.textContent=item.action;const meta=report.document.createElement("small");meta.textContent=`${new Date(Number(item.created_at)).toLocaleString("pt-BR")} · ${item.actor_email.toLowerCase().includes("jonas")?"Jonas · treinador":"Usuário autenticado"}`;const detail=report.document.createElement("span");let fields:string[]=[];try{fields=JSON.parse(item.changed_fields||"[]")}catch{}detail.textContent=fields.filter(field=>field.startsWith("base:")).map(field=>field.replace("base:","").replace(":",": ")).join(" · ")||`Campos alterados: ${fields.join(", ")||"registro de conferência"}`;article.append(action,meta,detail);report.document.body.appendChild(article)});
+      records.forEach(item=>{const article=report.document.createElement("article");const action=report.document.createElement("b");action.textContent=item.action;const meta=report.document.createElement("small");meta.textContent=`${new Date(Number(item.created_at)).toLocaleString("pt-BR")} · ${item.actor_email}`;const detail=report.document.createElement("span");let fields:string[]=[];try{fields=JSON.parse(item.changed_fields||"[]")}catch{}detail.textContent=fields.filter(field=>field.startsWith("base:")).map(field=>field.replace("base:","").replace(":",": ")).join(" · ")||`Campos alterados: ${fields.join(", ")||"registro de conferência"}`;article.append(action,meta,detail);report.document.body.appendChild(article)});
       const note=report.document.createElement("p");note.textContent=`Relatório gerado em ${new Date().toLocaleString("pt-BR")}. Use a opção “Salvar como PDF” na tela de impressão.`;report.document.body.appendChild(note);window.setTimeout(()=>report.print(),250);
     });
     filter.addEventListener("change",()=>renderHistory(filter.value));renderHistory("todos");
@@ -1185,7 +1452,7 @@ function Calendar() {
       const differences=comparison.filter(item=>item.status!=="IGUAL À BASE");
       const comparisonText=comparison.map(item=>`${item.day}: ${item.status}`).join("\n");
       const summary=differences.length?`${differences.length} treino(s) diferente(s) da planilha-base. Confira se as alterações são intencionais.`:"Todos os treinos conferem com a planilha-base.";
-      const recentHistory=weekHistory.slice(0,3).map(item=>`${new Date(Number(item.created_at)).toLocaleString("pt-BR")} · ${item.actor_email.toLowerCase().includes("jonas")?"Jonas":"Usuário autenticado"} · ${item.action}`).join("\n");
+      const recentHistory=weekHistory.slice(0,3).map(item=>`${new Date(Number(item.created_at)).toLocaleString("pt-BR")} · ${item.actor_email} · ${item.action}`).join("\n");
       if(!window.confirm(`CONFERÊNCIA AUTOMÁTICA\n\n${selected}\n${current.plan} · semana ${calendarPlanWeek} de ${currentPlanningTotal}\nDatas: ${weekTitle}\n\n${comparisonText}\n\n${summary}${recentHistory?`\n\nHISTÓRICO RECENTE\n${recentHistory}`:""}\n\nLiberar esta semana para o aluno?`))return;
       await saveWeek("Liberada",comparison.map(item=>`${item.day}:${item.status}`));
       return;
@@ -1214,7 +1481,9 @@ function Calendar() {
 function Races({races,onChange}:{races:any[];onChange:(races:any[])=>void}) {
   const [saving,setSaving]=useState("");const [error,setError]=useState("");
   const review=async(race:any,status:string,priority:string)=>{setSaving(race.id);setError("");try{await api.post("/api/races-records",{action:"review_race",id:race.id,status,priority});onChange(races.map(item=>item.id===race.id?{...item,status,priority}:item))}catch{setError(race.id)}finally{setSaving("")}};
-  return <><div className="section-title"><div><small>PLANEJAMENTO REAL</small><h2>Provas dos alunos</h2><p>Analise cada prova e defina a importância no planejamento.</p></div><b>{races.length} cadastrada(s)</b></div>{races.length===0?<section className="calendar-empty"><b>Nenhuma prova cadastrada</b><span>Quando o aluno enviar uma prova, ela aparecerá aqui para sua análise.</span></section>:<section className="race-cards">{races.map(race=><article key={race.id}><span className={`pill ${race.status==="Aguardando análise"?"alert":""}`}>{race.status}</span><small>{new Date(`${race.race_date}T12:00:00`).toLocaleDateString("pt-BR")}</small><h3>{race.name}</h3><p>{race.athlete_name} · {race.distance}{race.city?` · ${race.city}`:""}</p>{race.goal&&<blockquote>Objetivo: {race.goal}</blockquote>}<label>Importância<select value={race.priority||"Prova A"} onChange={event=>onChange(races.map(item=>item.id===race.id?{...item,priority:event.target.value}:item))}><option>Prova A</option><option>Prova B</option><option>Treino</option></select></label><div><button className="gold" disabled={saving===race.id} onClick={()=>review(race,"Aprovada",race.priority||"Prova A")}>{saving===race.id?"Salvando…":"Aprovar e usar no planejamento"}</button>{race.status!=="Descartada"&&<button className="outline" disabled={saving===race.id} onClick={()=>review(race,"Descartada",race.priority||"Treino")}>Não periodizar</button>}</div>{error===race.id&&<small className="registration-error">Não foi possível salvar. Tente novamente.</small>}</article>)}</section>}</>;
+  return <><div className="section-title"><div><small>PLANEJAMENTO REAL</small><h2>Provas dos alunos</h2><p>Analise cada prova e defina a importância no planejamento.</p></div><b>{races.length} cadastrada(s)</b></div>{races.length===0?<section className="calendar-empty"><b>Nenhuma prova cadastrada</b><span>Quando o aluno enviar uma prova, ela aparecerá aqui para sua análise.</span></section>:<section className="race-cards">{races.map(race=><article key={race.id}><span className={`pill ${race.status==="Aguardando análise"?"alert":""}`}>{race.status}</span><small>{new Date(`${race.race_date}T12:00:00`).toLocaleDateString("pt-BR")}</small><h3>{race.name}</h3><p>{race.athlete_name} · {race.distance}{race.city?` · ${race.city}`:""}</p>{race.goal&&<blockquote>Objetivo: {race.goal}</blockquote>}<label>Importância<select value={race.priority||"Prova A"} onChange={event=>onChange(races.map(item=>item.id===race.id?{...item,priority:event.target.value}:item))}><option>Prova A</option><option>Prova B</option><option>Treino</option></select></label><div>{race.status==="Aprovada"
+              ? <button className="race-cancel" disabled={saving===race.id} onClick={()=>review(race,"Aguardando análise",race.priority||"Prova A")}>{saving===race.id?"Salvando…":"Cancelar aprovação"}</button>
+              : <><button className="gold" disabled={saving===race.id} onClick={()=>review(race,"Aprovada",race.priority||"Prova A")}>{saving===race.id?"Salvando…":"Aprovar e usar no planejamento"}</button>{race.status!=="Descartada"&&<button className="outline" disabled={saving===race.id} onClick={()=>review(race,"Descartada",race.priority||"Treino")}>Não periodizar</button>}</>}</div>{error===race.id&&<small className="registration-error">Não foi possível salvar. Tente novamente.</small>}</article>)}</section>}</>;
 }
 
 function WorkoutDrawer({ close, athleteName, day, initial, weekLabel, onSave }: { close: () => void; athleteName:string; day:string; initial?:StructuredSession; weekLabel:string; onSave:(session:StructuredSession)=>void }) {
@@ -1339,12 +1608,187 @@ function StructuredWorkoutCard({session}:{session:StructuredSession}){
   </article>
 }
 
-function WorkoutAnalysis({secureStudentMode,weekStart,workoutDay,session}:{secureStudentMode:boolean;weekStart?:string;workoutDay:string;session?:StructuredSession}){
-  const [actualMinutes,setActualMinutes]=useState("");const [actualKm,setActualKm]=useState("");const [result,setResult]=useState<any>(null);const [state,setState]=useState("");
-  const analyze=async()=>{setState("saving");try{if(!secureStudentMode){const plannedMinutes=Number(session?.durationMinutes)||0;const plannedKm=Number(session?.estimatedKm)||0;const scores=[plannedMinutes&&actualMinutes?Math.max(0,100-Math.abs(Number(actualMinutes)-plannedMinutes)/plannedMinutes*100):null,plannedKm&&actualKm?Math.max(0,100-Math.abs(Number(actualKm)-plannedKm)/plannedKm*100):null].filter(v=>v!==null) as number[];if(!scores.length)throw new Error();const correct=Math.round(scores.reduce((a,b)=>a+b,0)/scores.length);setResult({correct,wrong:100-correct,classification:correct>=80?"Dentro do planejado":correct>=60?"Parcialmente correto":"Fora do planejado"});setState("done");return}const execution=await api.post<{correct:number;wrong:number;classification:string}>("/api/student/workout-executions",{weekStart,workoutDay,actualMinutes:Number(actualMinutes)||null,actualKm:Number(actualKm)||null});setResult(execution);setState("done")}catch{setState("error")}};
-  if(!session||session.removed)return null;
-  return <section className="student-workout-analysis"><span className="overline">CONFERIR TREINO REALIZADO</span><h2>Fiz o treino certo?</h2><p>Informe o resultado do relógio. O ZonasApp compara com o treino liberado pelo professor.</p><div className="analysis-plan"><span><small>PLANEJADO</small><b>{session.durationMinutes||"—"} min</b></span><span><small>DISTÂNCIA ESTIMADA</small><b>{session.estimatedKm||"—"} km</b></span></div><div className="analysis-inputs"><label>Tempo realizado (min)<input type="number" min="1" value={actualMinutes} onChange={e=>setActualMinutes(e.target.value)} placeholder="Ex.: 42"/></label><label>Distância realizada (km)<input type="number" min="0.1" step="0.01" value={actualKm} onChange={e=>setActualKm(e.target.value)} placeholder="Ex.: 8,20"/></label></div><button disabled={(!actualMinutes&&!actualKm)||state==="saving"} onClick={analyze}>{state==="saving"?"Analisando…":"Analisar meu treino"}</button>{result&&<article className={`analysis-result ${result.correct>=80?"correct":result.correct>=60?"partial":"outside"}`}><h3>{result.classification}</h3><div><strong>{result.correct}%<small>treino certo</small></strong><strong>{result.wrong}%<small>fora do planejado</small></strong></div><p>{result.correct>=80?"Muito bom: tempo e distância ficaram próximos do planejado.":result.correct>=60?"Parte do objetivo foi cumprida. O professor poderá ajustar o próximo treino.":"O resultado ficou distante da meta. Isso não é punição: serve para o professor entender e ajustar."}</p></article>}{state==="error"&&<p className="pain-error">Não foi possível analisar. Confira os dados e tente novamente.</p>}</section>;
+/**
+ * Conclusão do treino pelo aluno.
+ *
+ * Antes esta tela só oferecia "analisar", e a análise exigia digitar tempo ou
+ * distância: quem apenas correu não tinha como avisar o treinador de que fez o
+ * treino. Agora a conclusão é o ato principal, os números são opcionais, e
+ * quem não treinou também consegue registrar isso — informação igualmente útil
+ * para o treinador reorganizar a semana.
+ *
+ * Quando há integração conectada, o servidor completa tempo, distância, ritmo
+ * médio e frequência cardíaca com a atividade importada daquele dia.
+ */
+
+/**
+ * Últimos sete dias do aluno.
+ *
+ * Sete dias cobrem a semana corrente sem virar uma lista interminável: o que
+ * interessa a quem acabou de treinar é o passado recente, e o histórico longo
+ * fica na aba Evolução.
+ */
+function RecentWorkouts({ secureStudentMode }: { secureStudentMode: boolean }) {
+  type Execucao = {
+    id: string; workout_day: string; week_start: string; status?: string;
+    classification: string; correct_percentage: number;
+    actual_minutes?: number; actual_km?: string; average_pace_seconds?: number;
+    average_heart_rate?: number; source: string; created_at: number; note?: string;
+  };
+  const [itens, setItens] = useState<Execucao[]>([]);
+  const [estado, setEstado] = useState<"carregando" | "pronto" | "vazio">("carregando");
+
+  useEffect(() => {
+    if (!secureStudentMode) { setEstado("vazio"); return; }
+    api.get<{ executions: Execucao[] }>("/api/student/workout-executions?days=7")
+      .then(d => { setItens(d.executions || []); setEstado((d.executions || []).length ? "pronto" : "vazio"); })
+      .catch(() => setEstado("vazio"));
+  }, [secureStudentMode]);
+
+  if (estado === "carregando") return <section className="recent-workouts"><p>Carregando…</p></section>;
+  if (estado === "vazio") return null;
+
+  const ritmo = (s?: number) => s ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : null;
+  const dia = (ms: number) => new Date(Number(ms)).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
+
+  return <section className="recent-workouts">
+    <header>
+      <span className="overline">ÚLTIMOS 7 DIAS</span>
+      <h2>O que você registrou</h2>
+    </header>
+    {itens.map(item => {
+      const naoFeito = item.status === "Não realizado";
+      return <article key={item.id} className={naoFeito ? "faltou" : item.correct_percentage >= 80 ? "bom" : "parcial"}>
+        <span className="recent-day">
+          <b>{item.workout_day}</b>
+          <small>{dia(item.created_at)}</small>
+        </span>
+        <span className="recent-info">
+          <b>{item.classification}</b>
+          <small>
+            {naoFeito ? (item.note || "Sem observação") : [
+              item.actual_minutes ? `${item.actual_minutes} min` : null,
+              item.actual_km ? `${item.actual_km} km` : null,
+              ritmo(item.average_pace_seconds) ? `${ritmo(item.average_pace_seconds)} /km` : null,
+              item.average_heart_rate ? `${item.average_heart_rate} bpm` : null,
+            ].filter(Boolean).join(" · ") || "sem medição"}
+          </small>
+        </span>
+        {!naoFeito && item.correct_percentage > 0 && <strong>{item.correct_percentage}%</strong>}
+      </article>;
+    })}
+  </section>;
 }
+
+function WorkoutAnalysis({secureStudentMode,weekStart,workoutDay,session}:{secureStudentMode:boolean;weekStart?:string;workoutDay:string;session?:StructuredSession}){
+  const [actualMinutes,setActualMinutes]=useState("");
+  const [actualKm,setActualKm]=useState("");
+  const [note,setNote]=useState("");
+  const [result,setResult]=useState<any>(null);
+  const [state,setState]=useState<""|"saving"|"error">("");
+  const [erro,setErro]=useState("");
+  const [motivoAberto,setMotivoAberto]=useState(false);
+
+  const registrar=async(action:"complete"|"skip")=>{
+    setState("saving");setErro("");
+    try{
+      if(!secureStudentMode){
+        // Prévia do treinador: calcula localmente, sem gravar nada.
+        const plannedMinutes=Number(session?.durationMinutes)||0;
+        const plannedKm=Number(session?.estimatedKm)||0;
+        if(action==="skip"){setResult({status:"Não realizado",classification:"Não realizado",correct:0,wrong:100});setState("");return}
+        const scores=[
+          plannedMinutes&&actualMinutes?Math.max(0,100-Math.abs(Number(actualMinutes)-plannedMinutes)/plannedMinutes*100):null,
+          plannedKm&&actualKm?Math.max(0,100-Math.abs(Number(actualKm)-plannedKm)/plannedKm*100):null,
+        ].filter(v=>v!==null) as number[];
+        const correct=scores.length?Math.round(scores.reduce((a,b)=>a+b,0)/scores.length):0;
+        setResult(scores.length
+          ?{status:"Concluído",measured:true,correct,wrong:100-correct,classification:correct>=80?"Dentro do planejado":correct>=60?"Parcialmente correto":"Fora do planejado"}
+          :{status:"Concluído",measured:false,correct:0,wrong:0,classification:"Concluído sem medição"});
+        setState("");return;
+      }
+      const execucao=await api.post<any>("/api/student/workout-executions",{
+        weekStart,workoutDay,action,
+        actualMinutes:Number(actualMinutes)||null,
+        actualKm:Number(actualKm)||null,
+        note:note||undefined,
+      });
+      setResult(execucao);setMotivoAberto(false);setState("");
+    }catch(error){setErro(describeError(error,"Não foi possível registrar. Tente novamente."));setState("error")}
+  };
+
+  if(!session||session.removed)return null;
+
+  const ritmo=(segundos?:number|null)=>segundos?`${Math.floor(segundos/60)}:${String(segundos%60).padStart(2,"0")} /km`:null;
+  const concluido=result?.status==="Concluído";
+  const naoRealizado=result?.status==="Não realizado";
+
+  return <section className="student-workout-analysis">
+    <span className="overline">DEPOIS DO TREINO</span>
+    <h2>{result?"Registro enviado ao treinador":"Você fez este treino?"}</h2>
+    {!result&&<p>Marque como concluído assim que terminar. Informar tempo e distância é opcional — se o seu relógio estiver conectado, a Zonas-App busca sozinha.</p>}
+
+    <div className="analysis-plan">
+      <span><small>PLANEJADO</small><b>{session.durationMinutes||"—"} min</b></span>
+      <span><small>DISTÂNCIA ESTIMADA</small><b>{session.estimatedKm||"—"} km</b></span>
+    </div>
+
+    {!result&&<>
+      <details className="analysis-optional" open={Boolean(actualMinutes||actualKm)}>
+        <summary>Quero informar tempo e distância</summary>
+        <div className="analysis-inputs">
+          <label>Tempo realizado (min)<input type="number" min="1" value={actualMinutes} onChange={e=>setActualMinutes(e.target.value)} placeholder="Ex.: 42"/></label>
+          <label>Distância realizada (km)<input type="number" min="0.1" step="0.01" value={actualKm} onChange={e=>setActualKm(e.target.value)} placeholder="Ex.: 8,20"/></label>
+        </div>
+      </details>
+
+      {motivoAberto&&<label className="analysis-note">Por que não treinou? <small>opcional</small>
+        <textarea value={note} onChange={e=>setNote(e.target.value)} maxLength={400} placeholder="Ex.: acordei indisposta, viagem, chuva forte"/>
+      </label>}
+
+      {erro&&<p className="pain-error">{erro}</p>}
+
+      <div className="analysis-actions">
+        <button className="analysis-complete" disabled={state==="saving"} onClick={()=>registrar("complete")}>
+          {state==="saving"?"Registrando…":"✓ Concluí este treino"}
+        </button>
+        <button className="analysis-skip" disabled={state==="saving"} onClick={()=>motivoAberto?registrar("skip"):setMotivoAberto(true)}>
+          {motivoAberto?"Confirmar que não treinei":"Não consegui treinar"}
+        </button>
+        {motivoAberto&&<button className="analysis-cancel" onClick={()=>{setMotivoAberto(false);setNote("")}}>Cancelar</button>}
+      </div>
+    </>}
+
+    {result&&<article className={`analysis-result ${naoRealizado?"outside":!result.measured?"partial":result.correct>=80?"correct":result.correct>=60?"partial":"outside"}`}>
+      <h3>{result.classification}</h3>
+      {result.measured&&<div>
+        <strong>{result.correct}%<small>treino certo</small></strong>
+        <strong>{result.wrong}%<small>fora do planejado</small></strong>
+      </div>}
+
+      {concluido&&(result.actualMinutes||result.actualKm||result.averagePaceSeconds||result.averageHeartRate)&&
+        <div className="analysis-metrics">
+          {result.actualMinutes&&<span><small>TEMPO</small><b>{result.actualMinutes} min</b></span>}
+          {result.actualKm&&<span><small>DISTÂNCIA</small><b>{result.actualKm} km</b></span>}
+          {ritmo(result.averagePaceSeconds)&&<span><small>RITMO MÉDIO</small><b>{ritmo(result.averagePaceSeconds)}</b></span>}
+          {result.averageHeartRate&&<span><small>FC MÉDIA</small><b>{result.averageHeartRate} bpm</b></span>}
+        </div>}
+
+      {result.fromIntegration&&<p className="analysis-source">Dados trazidos automaticamente de {result.source}.</p>}
+
+      <p>{naoRealizado
+        ?"O treinador foi avisado e poderá reorganizar a sua semana."
+        :!result.measured
+          ?"Conclusão registrada. Conecte o seu relógio em Mais → Integrações para que tempo, ritmo e frequência cardíaca venham sozinhos."
+          :result.correct>=80?"Muito bom: tempo e distância ficaram próximos do planejado."
+          :result.correct>=60?"Parte do objetivo foi cumprida. O treinador poderá ajustar o próximo treino."
+          :"O resultado ficou distante do planejado. O treinador vai revisar com você."}</p>
+
+      <button className="analysis-redo" onClick={()=>{setResult(null);setActualMinutes("");setActualKm("");setNote("")}}>Registrar novamente</button>
+    </article>}
+  </section>;
+}
+
 
 function parsedList(value:unknown){try{const result=JSON.parse(String(value||"[]"));return Array.isArray(result)?result:[]}catch{return[]}}
 function StudentTestsView({data,back}:{data:any;back:()=>void}){
@@ -1474,9 +1918,9 @@ export function StudentView({ onBack, athleteName = "Everton Barbosa" }: { onBac
     {tab==="Mais"&&moreView==="tests"&&<StudentTestsView data={studentTests} back={()=>setMoreView("menu")}/>} 
     {tab==="Mais"&&moreView==="profile"&&<StudentProfileView data={studentProfile} back={()=>setMoreView("menu")}/>} 
     {tab==="Mais"&&moreView==="financial"&&<><button className="student-back" onClick={()=>setMoreView("menu")}>← Voltar</button><span className="overline">MENSALIDADE</span><h1>Financeiro</h1><p>Aqui aparece somente a situação informada pelo professor.</p>{!financialData?<section className="student-financial-card"><p>Carregando sua mensalidade…</p></section>:!financialData.payment?<section className="student-financial-card ok"><b>Sem pendência cadastrada</b><p>Nenhuma cobrança foi lançada para você.</p></section>:<section className={`student-financial-card ${financialData.payment.status==="Pago"?"ok":"pending"}`}><span>{financialData.payment.status==="Pago"?"PAGAMENTO REGISTRADO":"PENDÊNCIA"}</span><h2>{(financialData.payment.amount_cents/100).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</h2><p>Vencimento: {new Date(`${financialData.payment.due_date}T12:00:00`).toLocaleDateString("pt-BR")}</p>{financialData.payment.status==="Pendente"&&<div><small>CHAVE PIX</small><b>{financialData.settings?.pix_key||"Aguardando o professor informar"}</b><em>{financialData.settings?.pix_name||""}</em>{financialData.settings?.pix_key&&<button onClick={()=>void copyText(financialData.settings.pix_key)}>Copiar chave Pix</button>}</div>}{financialData.payment.status==="Pago"&&<strong>✓ Pago</strong>}</section>}</>}
-    {tab==="Mais"&&moreView==="integrations"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setIntegrationState("");setAppleSetup(null)}}>← Voltar</button><span className="overline">RELÓGIO E APLICATIVOS</span><h1>Integrações</h1><p>Conecte de onde a Zonas-App deve receber seus treinos realizados. Nada é acessado sem a sua autorização, e você pode desconectar quando quiser.</p>{appleSetup&&<section className="apple-ingest"><b>Seu token do Apple Saúde</b><p>O Apple Saúde não conversa direto com servidores. No iPhone, crie um Atalho que leia seus treinos e envie para o endereço abaixo com o cabeçalho <code>x-zonas-ingest-token</code>. Este token aparece uma única vez.</p><label>Endereço<code>{appleSetup.ingestUrl}</code></label><label>Token<code>{appleSetup.ingestToken}</code></label><div><button onClick={()=>void copyText(appleSetup.ingestToken)}>Copiar token</button><button onClick={()=>setAppleSetup(null)}>Já guardei</button></div></section>}<section className="integration-center">{(providers.length?providers:PROVIDER_PREVIEW).map((provider:ProviderCard)=>{const icons:Record<string,string>={strava:"S",garmin:"G",zepp:"A",apple:"●"};const connected=provider.connection?.status==="Conectado";const preferred=integrationPreference===provider.label;return <article key={provider.id} className={connected?"selected":""}><i>{icons[provider.id]||"○"}</i><div><b>{provider.label}</b><p>{provider.notes}</p><small>{connected?"CONECTADO COM AUTORIZAÇÃO SUA":!providers.length?"VERIFICANDO DISPONIBILIDADE…":provider.available===false?"AGUARDANDO CADASTRO OFICIAL DO PROFESSOR":"DISPONÍVEL PARA CONECTAR"}</small>{provider.connection?.last_sync_at&&<em className="integration-last-sync">Última importação: {new Date(Number(provider.connection.last_sync_at)).toLocaleString("pt-BR")}</em>}</div><div className="integration-actions">{connected?<><button onClick={()=>providerAction(provider.id,"disconnect")}>Desconectar</button>{provider.id==="strava"&&<button className="connected" disabled={integrationState==="saving"} onClick={()=>providerAction(provider.id,"sync")}>Sincronizar agora</button>}</>:<button disabled={integrationState==="saving"||provider.available===false} onClick={()=>providerAction(provider.id,"connect")}>{provider.available===false?"Indisponível":provider.authType==="device"?"Gerar token":"Conectar"}</button>}{!connected&&!preferred&&<button className="integration-prefer" disabled={integrationState==="saving"} onClick={()=>saveIntegration(provider.label)}>Marcar preferência</button>}</div></article>})}<footer><b>Como funciona</b><p>Você autoriza o serviço → a Zonas-App importa a atividade concluída → ela é comparada ao treino planejado → você e o professor veem a porcentagem de acerto. A Garmin também poderá receber o treino estruturado quando as APIs forem liberadas.</p></footer>{integrationState==="saved"&&<p className="integration-success">Pronto. Suas conexões foram atualizadas.</p>}{integrationState.startsWith("sincronizado:")&&<p className="integration-success">Importação concluída: {integrationState.split(":")[1]} atividade(s) nova(s).</p>}{integrationState==="sync-unavailable"&&<p className="integration-setup">A importação automática deste serviço ainda depende da liberação oficial da API.</p>}{integrationState==="setup-required"&&<p className="integration-setup">O fluxo seguro está pronto. Falta o professor cadastrar a Zonas-App no portal deste serviço e inserir as credenciais oficiais.</p>}{integrationState==="apple-ready"&&<p className="integration-success">Token gerado. Configure o Atalho no seu iPhone com os dados acima.</p>}{integrationState==="error"&&<p className="pain-error">Não foi possível concluir. Tente novamente.</p>}</section></>}
-    {tab==="Mais"&&moreView==="pain"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setPainState("")}}>← Voltar</button><span className="overline">AVISO AO TREINADOR</span><h1>Dores e lesões</h1><p>Preencha em menos de um minuto. O treinador receberá o aviso para revisar seu próximo treino.</p>{painState==="saved"?<section className="pain-success"><b>✓</b><h2>Aviso enviado ao treinador</h2><p>Evite treinos intensos enquanto houver dor. Jonas verá o relato antes de ajustar sua programação.</p><button onClick={()=>{setMoreView("menu");setPainState("")}}>Concluir</button></section>:<section className="pain-form"><label>Onde está o desconforto?<div className="pain-options">{["Joelho","Canela","Panturrilha","Coxa","Quadril","Pé/tornozelo","Coluna","Outro"].map(area=><button key={area} className={painArea===area?"selected":""} onClick={()=>setPainArea(area)}>{area}</button>)}</div></label><label>Intensidade da dor <b>{painIntensity}/10</b><input type="range" min="1" max="10" value={painIntensity} onChange={e=>setPainIntensity(+e.target.value)}/><div className="range-labels"><span>Leve</span><span>Forte</span></div></label><label>A dor atrapalhou o treino?<div className="pain-impact">{["Não treinei","Parei durante","Reduzi o ritmo","Consegui terminar"].map(item=><button key={item} className={painImpact===item?"selected":""} onClick={()=>setPainImpact(item)}>{item}</button>)}</div></label><label>Observação <small>opcional</small><textarea value={painNote} onChange={e=>setPainNote(e.target.value)} placeholder="Conte rapidamente quando começou ou qual movimento incomoda." maxLength={240}/></label>{painState==="error"&&<p className="pain-error">Não foi possível enviar. Tente novamente.</p>}<button className="pain-send" disabled={!painArea||!painImpact||painState==="saving"} onClick={sendPainReport}>{painState==="saving"?"Enviando…":"Avisar meu treinador"}</button><small className="pain-guidance">Em caso de dor intensa, inchaço importante ou dificuldade para caminhar, procure atendimento de saúde.</small></section>}</>}
-    {tab==="Mais"&&moreView==="races"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setRaceState("")}}>← Voltar</button><span className="overline">OBJETIVOS E MARCAS</span><h1>Provas e recordes</h1><p>Cadastre sua prova. Jonas analisa e confirma como ela entra no planejamento.</p><section className="race-record-head"><article><small>RECORDE NOS 10 KM</small><b>{raceData.records?.find((r:any)=>r.distance==="10 km")?.result_time||"33:28"}</b><span>Melhor marca registrada</span></article><article><small>PRÓXIMA PROVA</small><b>{raceData.races?.[0]?.name||"Corrida do SESI"}</b><span>{raceData.races?.[0]?`${raceData.races[0].race_date} · ${raceData.races[0].distance}`:"23/08/2026 · 10 km"}</span></article></section><section className="race-record-form"><span className="overline">NOVA PROVA</span><h2>Quero correr esta prova</h2><div className="race-fields"><label>Nome da prova<input value={raceForm.name} onChange={e=>setRaceForm({...raceForm,name:e.target.value})} placeholder="Ex.: Meia de Pomerode"/></label><label>Data<input type="date" value={raceForm.raceDate} onChange={e=>setRaceForm({...raceForm,raceDate:e.target.value})}/></label><label>Distância<select value={raceForm.distance} onChange={e=>setRaceForm({...raceForm,distance:e.target.value})}>{["5 km","10 km","21,1 km","42,2 km","Outra"].map(d=><option key={d}>{d}</option>)}</select></label><label>Cidade <small>opcional</small><input value={raceForm.city} onChange={e=>setRaceForm({...raceForm,city:e.target.value})}/></label><label className="full">Objetivo <small>opcional</small><input value={raceForm.goal} onChange={e=>setRaceForm({...raceForm,goal:e.target.value})} placeholder="Concluir, buscar recorde ou tempo desejado"/></label></div><button disabled={!raceForm.name||!raceForm.raceDate||raceState==="saving"} onClick={()=>saveRaceRecord("race")}>{raceState==="race-saved"?"Prova enviada para análise ✓":"Enviar prova ao treinador"}</button></section><section className="race-record-form compact"><span className="overline">NOVO RECORDE PESSOAL</span><h2>Registrar melhor marca</h2><div className="race-fields"><label>Distância<select value={recordForm.distance} onChange={e=>setRecordForm({...recordForm,distance:e.target.value})}>{["1,5 km","3 km","5 km","10 km","21,1 km","42,2 km"].map(d=><option key={d}>{d}</option>)}</select></label><label>Tempo<input value={recordForm.resultTime} onChange={e=>setRecordForm({...recordForm,resultTime:e.target.value})} placeholder="00:38:25"/></label><label>Data <small>opcional</small><input type="date" value={recordForm.raceDate} onChange={e=>setRecordForm({...recordForm,raceDate:e.target.value})}/></label><label>Prova <small>opcional</small><input value={recordForm.eventName} onChange={e=>setRecordForm({...recordForm,eventName:e.target.value})}/></label></div>{raceState==="error"&&<p className="pain-error">Não foi possível salvar. Tente novamente.</p>}<button disabled={!recordForm.resultTime||raceState==="saving"} onClick={()=>saveRaceRecord("record")}>{raceState==="record-saved"?"Recorde registrado ✓":"Salvar recorde"}</button></section></>}
-    {tab==="Hoje"&&showTraining&&<WorkoutAnalysis secureStudentMode={secureStudentMode} weekStart={savedWeek?.week_start} workoutDay={today.key} session={todaySession}/>}  
+    {tab==="Mais"&&moreView==="integrations"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setIntegrationState("");setAppleSetup(null)}}>← Voltar</button><span className="overline">RELÓGIO E APLICATIVOS</span><h1>Integrações</h1><p>Conecte de onde a Zonas-App deve receber seus treinos realizados. Nada é acessado sem a sua autorização, e você pode desconectar quando quiser.</p>{appleSetup&&<section className="apple-ingest"><b>Seu token do Apple Saúde</b><p>O Apple Saúde não conversa direto com servidores. No iPhone, crie um Atalho que leia seus treinos e envie para o endereço abaixo com o cabeçalho <code>x-zonas-ingest-token</code>. Este token aparece uma única vez.</p><label>Endereço<code>{appleSetup.ingestUrl}</code></label><label>Token<code>{appleSetup.ingestToken}</code></label><div><button onClick={()=>void copyText(appleSetup.ingestToken)}>Copiar token</button><button onClick={()=>setAppleSetup(null)}>Já guardei</button></div></section>}<section className="integration-center">{(providers.length?providers:PROVIDER_PREVIEW).map((provider:ProviderCard)=>{const icons:Record<string,string>={strava:"S",garmin:"G",zepp:"A",apple:"●"};const connected=provider.connection?.status==="Conectado";const preferred=integrationPreference===provider.label;return <article key={provider.id} className={connected?"selected":""}><i>{icons[provider.id]||"○"}</i><div><b>{provider.label}</b><p>{provider.notes}</p><small>{connected?"CONECTADO COM AUTORIZAÇÃO SUA":provider.connection?.status==="Suspensa"?"CONEXÃO SUSPENSA · O PROFESSOR PRECISA RECONFIGURAR O SERVIÇO":!providers.length?"VERIFICANDO DISPONIBILIDADE…":provider.available===false?"AGUARDANDO CADASTRO OFICIAL DO PROFESSOR":"DISPONÍVEL PARA CONECTAR"}</small>{provider.connection?.last_sync_at&&<em className="integration-last-sync">Última importação: {new Date(Number(provider.connection.last_sync_at)).toLocaleString("pt-BR")}</em>}</div><div className="integration-actions">{connected?<><button onClick={()=>providerAction(provider.id,"disconnect")}>Desconectar</button>{provider.id==="strava"&&<button className="connected" disabled={integrationState==="saving"} onClick={()=>providerAction(provider.id,"sync")}>Sincronizar agora</button>}</>:<button disabled={integrationState==="saving"||provider.available===false} onClick={()=>providerAction(provider.id,"connect")}>{provider.available===false?"Indisponível":provider.authType==="device"?"Gerar token":"Conectar"}</button>}{!connected&&!preferred&&<button className="integration-prefer" disabled={integrationState==="saving"} onClick={()=>saveIntegration(provider.label)}>Marcar preferência</button>}</div></article>})}<footer><b>Como funciona</b><p>Você autoriza o serviço → a Zonas-App importa a atividade concluída → ela é comparada ao treino planejado → você e o professor veem a porcentagem de acerto. A Garmin também poderá receber o treino estruturado quando as APIs forem liberadas.</p></footer>{integrationState==="saved"&&<p className="integration-success">Pronto. Suas conexões foram atualizadas.</p>}{integrationState.startsWith("sincronizado:")&&<p className="integration-success">Importação concluída: {integrationState.split(":")[1]} atividade(s) nova(s).</p>}{integrationState==="sync-unavailable"&&<p className="integration-setup">A importação automática deste serviço ainda depende da liberação oficial da API.</p>}{integrationState==="setup-required"&&<p className="integration-setup">O fluxo seguro está pronto. Falta o professor cadastrar a Zonas-App no portal deste serviço e inserir as credenciais oficiais.</p>}{integrationState==="apple-ready"&&<p className="integration-success">Token gerado. Configure o Atalho no seu iPhone com os dados acima.</p>}{integrationState==="error"&&<p className="pain-error">Não foi possível concluir. Tente novamente.</p>}</section></>}
+    {tab==="Mais"&&moreView==="pain"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setPainState("")}}>← Voltar</button><span className="overline">AVISO AO TREINADOR</span><h1>Dores e lesões</h1><p>Preencha em menos de um minuto. O treinador receberá o aviso para revisar seu próximo treino.</p>{painState==="saved"?<section className="pain-success"><b>✓</b><h2>Aviso enviado ao treinador</h2><p>Evite treinos intensos enquanto houver dor. O treinador verá o relato antes de ajustar sua programação.</p><button onClick={()=>{setMoreView("menu");setPainState("")}}>Concluir</button></section>:<section className="pain-form"><label>Onde está o desconforto?<div className="pain-options">{["Joelho","Canela","Panturrilha","Coxa","Quadril","Pé/tornozelo","Coluna","Outro"].map(area=><button key={area} className={painArea===area?"selected":""} onClick={()=>setPainArea(area)}>{area}</button>)}</div></label><label>Intensidade da dor <b>{painIntensity}/10</b><input type="range" min="1" max="10" value={painIntensity} onChange={e=>setPainIntensity(+e.target.value)}/><div className="range-labels"><span>Leve</span><span>Forte</span></div></label><label>A dor atrapalhou o treino?<div className="pain-impact">{["Não treinei","Parei durante","Reduzi o ritmo","Consegui terminar"].map(item=><button key={item} className={painImpact===item?"selected":""} onClick={()=>setPainImpact(item)}>{item}</button>)}</div></label><label>Observação <small>opcional</small><textarea value={painNote} onChange={e=>setPainNote(e.target.value)} placeholder="Conte rapidamente quando começou ou qual movimento incomoda." maxLength={240}/></label>{painState==="error"&&<p className="pain-error">Não foi possível enviar. Tente novamente.</p>}<button className="pain-send" disabled={!painArea||!painImpact||painState==="saving"} onClick={sendPainReport}>{painState==="saving"?"Enviando…":"Avisar meu treinador"}</button><small className="pain-guidance">Em caso de dor intensa, inchaço importante ou dificuldade para caminhar, procure atendimento de saúde.</small></section>}</>}
+    {tab==="Mais"&&moreView==="races"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setRaceState("")}}>← Voltar</button><span className="overline">OBJETIVOS E MARCAS</span><h1>Provas e recordes</h1><p>Cadastre sua prova. O treinador analisa e confirma como ela entra no planejamento.</p><section className="race-record-head"><article><small>RECORDE NOS 10 KM</small><b>{raceData.records?.find((r:any)=>r.distance==="10 km")?.result_time||"33:28"}</b><span>Melhor marca registrada</span></article><article><small>PRÓXIMA PROVA</small><b>{raceData.races?.[0]?.name||"Corrida do SESI"}</b><span>{raceData.races?.[0]?`${raceData.races[0].race_date} · ${raceData.races[0].distance}`:"23/08/2026 · 10 km"}</span></article></section><section className="race-record-form"><span className="overline">NOVA PROVA</span><h2>Quero correr esta prova</h2><div className="race-fields"><label>Nome da prova<input value={raceForm.name} onChange={e=>setRaceForm({...raceForm,name:e.target.value})} placeholder="Ex.: Meia de Pomerode"/></label><label>Data<input type="date" value={raceForm.raceDate} onChange={e=>setRaceForm({...raceForm,raceDate:e.target.value})}/></label><label>Distância<select value={raceForm.distance} onChange={e=>setRaceForm({...raceForm,distance:e.target.value})}>{["5 km","10 km","21,1 km","42,2 km","Outra"].map(d=><option key={d}>{d}</option>)}</select></label><label>Cidade <small>opcional</small><input value={raceForm.city} onChange={e=>setRaceForm({...raceForm,city:e.target.value})}/></label><label className="full">Objetivo <small>opcional</small><input value={raceForm.goal} onChange={e=>setRaceForm({...raceForm,goal:e.target.value})} placeholder="Concluir, buscar recorde ou tempo desejado"/></label></div><button disabled={!raceForm.name||!raceForm.raceDate||raceState==="saving"} onClick={()=>saveRaceRecord("race")}>{raceState==="race-saved"?"Prova enviada para análise ✓":"Enviar prova ao treinador"}</button></section><section className="race-record-form compact"><span className="overline">NOVO RECORDE PESSOAL</span><h2>Registrar melhor marca</h2><div className="race-fields"><label>Distância<select value={recordForm.distance} onChange={e=>setRecordForm({...recordForm,distance:e.target.value})}>{["1,5 km","3 km","5 km","10 km","21,1 km","42,2 km"].map(d=><option key={d}>{d}</option>)}</select></label><label>Tempo<input value={recordForm.resultTime} onChange={e=>setRecordForm({...recordForm,resultTime:e.target.value})} placeholder="00:38:25"/></label><label>Data <small>opcional</small><input type="date" value={recordForm.raceDate} onChange={e=>setRecordForm({...recordForm,raceDate:e.target.value})}/></label><label>Prova <small>opcional</small><input value={recordForm.eventName} onChange={e=>setRecordForm({...recordForm,eventName:e.target.value})}/></label></div>{raceState==="error"&&<p className="pain-error">Não foi possível salvar. Tente novamente.</p>}<button disabled={!recordForm.resultTime||raceState==="saving"} onClick={()=>saveRaceRecord("record")}>{raceState==="record-saved"?"Recorde registrado ✓":"Salvar recorde"}</button></section></>}
+    {tab==="Hoje"&&showTraining&&<WorkoutAnalysis secureStudentMode={secureStudentMode} weekStart={savedWeek?.week_start} workoutDay={today.key} session={todaySession}/>}{tab==="Hoje"&&<RecentWorkouts secureStudentMode={secureStudentMode}/>}  
   </section><nav className="student-nav">{[["Hoje","⌂"],["Minha semana","▤"],["Evolução","↗"],["Mais","≡"]].map(([name,icon])=><button key={name} className={tab===name?"active":""} onClick={()=>{setTab(name);if(name!=="Mais")setMoreView("menu")}}><i>{icon}</i><span>{name}</span></button>)}</nav></main>
 }

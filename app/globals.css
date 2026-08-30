@@ -18,6 +18,8 @@
   --text: #f6f3ea;
   --muted: #9c9991;
   --red: #f16b5e;
+  /* Altura da faixa que avisa em qual área de treinador se está. */
+  --faixa-visita: 46px;
   --green: #62cc91;
 }
 
@@ -8184,6 +8186,32 @@ input {
   cursor: pointer;
 }
 
+/* O convite flutuante ganhou um × que o dispensa. Ele fica ao lado da pílula, e
+   não sobreposto a ela, para continuar sendo um alvo de toque inteiro no
+   celular. O convite dentro da página não recebe esse botão, então o arranjo em
+   linha vale só para o cartão flutuante. */
+.install-app-card:not(.install-app-inline) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.install-app-card>.install-app-dismiss {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid #66532c;
+  border-radius: 999px;
+  background: #1b1915;
+  color: #f6ead0;
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1;
+  box-shadow: 0 10px 30px #0008;
+  cursor: pointer;
+}
+
 .install-app-card>div {
   position: absolute;
   right: 0;
@@ -10410,4 +10438,1756 @@ input {
     background: #25231e;
     color: var(--gold2);
   }
+}
+
+/* --- Conclusão do treino pelo aluno --------------------------------------- */
+
+.analysis-actions {
+  display: grid;
+  gap: 9px;
+  margin-top: 14px;
+}
+
+.analysis-complete {
+  padding: 15px;
+  border: none;
+  border-radius: 11px;
+  font-size: 16px;
+  font-weight: 800;
+  color: #14130f;
+  background: linear-gradient(140deg, var(--gold2), var(--gold));
+  cursor: pointer;
+}
+
+.analysis-complete:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.analysis-skip,
+.analysis-cancel {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.analysis-skip:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.analysis-optional {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 12px 14px;
+}
+
+.analysis-optional > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--gold);
+  list-style: none;
+}
+
+.analysis-optional > summary::-webkit-details-marker {
+  display: none;
+}
+
+.analysis-optional > summary:before {
+  content: "+ ";
+  font-weight: 700;
+}
+
+.analysis-optional[open] > summary:before {
+  content: "− ";
+}
+
+.analysis-note {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.analysis-note textarea {
+  min-height: 76px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0f0f10;
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+/* Métricas trazidas do relógio, que o formulário manual não captura. */
+.analysis-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  gap: 9px;
+  margin: 14px 0;
+}
+
+.analysis-metrics span {
+  display: grid;
+  gap: 4px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0f0f10;
+}
+
+.analysis-metrics small {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--gold);
+}
+
+.analysis-metrics b {
+  font-size: 17px;
+}
+
+.analysis-source {
+  font-size: 12px;
+  color: var(--gold);
+}
+
+.analysis-redo {
+  margin-top: 12px;
+  padding: 9px 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+@media (max-width: 760px) {
+  .analysis-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* --- Situação do aluno: ativo ou inativo ---------------------------------- */
+
+.athlete-situation {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.athlete-situation button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 20px;
+  padding: 7px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.athlete-situation button.selected {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: #15120c;
+  font-weight: 700;
+}
+
+.athlete-situation small {
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: auto;
+}
+
+.athlete-archive-confirm {
+  border: 1px solid var(--gold);
+  background: rgba(215, 170, 57, 0.08);
+  border-radius: 12px;
+  padding: 16px 18px;
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.athlete-archive-confirm p {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.athlete-archive-confirm label {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.athlete-archive-confirm input {
+  background: #0f0f10;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 10px 12px;
+  color: var(--text);
+}
+
+.athlete-archive-confirm > div {
+  display: flex;
+  gap: 8px;
+}
+
+.athlete-archive-confirm button {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  padding: 10px 15px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.athlete-archive-confirm button.gold {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: #15120c;
+  font-weight: 800;
+}
+
+.athlete-row.inativo {
+  opacity: 0.6;
+}
+
+.athlete-inactive-tag {
+  font-style: normal;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: #3a3a38;
+  color: var(--muted);
+  border-radius: 10px;
+  padding: 3px 7px;
+  margin-left: 8px;
+}
+
+.athlete-row-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.athlete-row-action button {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  padding: 6px 11px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.athlete-row-action button:hover {
+  border-color: var(--gold);
+  color: var(--gold2);
+}
+
+.athlete-archive:hover {
+  border-color: var(--red) !important;
+  color: var(--red) !important;
+}
+
+/* --- Últimos 7 dias do aluno ---------------------------------------------- */
+
+.recent-workouts {
+  margin-top: 18px;
+}
+
+.recent-workouts > header {
+  margin-bottom: 11px;
+}
+
+.recent-workouts h2 {
+  font-size: 19px;
+  margin-top: 4px;
+}
+
+.recent-workouts article {
+  display: grid;
+  grid-template-columns: 54px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 11px;
+  margin-bottom: 8px;
+}
+
+.recent-workouts article.bom { border-left-color: var(--green); }
+.recent-workouts article.parcial { border-left-color: var(--gold); }
+.recent-workouts article.faltou { border-left-color: var(--red); opacity: 0.75; }
+
+.recent-day {
+  display: grid;
+  gap: 2px;
+  text-align: center;
+}
+
+.recent-day b {
+  font-size: 13px;
+  letter-spacing: 0.04em;
+}
+
+.recent-day small,
+.recent-info small {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.recent-info {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.recent-info b {
+  font-size: 14px;
+}
+
+.recent-workouts article strong {
+  font-size: 17px;
+  color: var(--gold);
+}
+
+/* =============================================================================
+   Painel de manutenção
+   =============================================================================
+
+   Deliberadamente mais denso e mais frio que o resto do produto: aqui a leitura
+   é de diagnóstico, não de treino. Mantém o dourado só como acento.
+   ============================================================================= */
+
+.dev-shell {
+  min-height: 100dvh;
+  background: #0a0a0b;
+  color: var(--text);
+  padding: 22px clamp(16px, 4vw, 40px) 60px;
+  font-size: 14px;
+}
+
+.dev-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dev-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dev-brand > span {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 30px;
+  border-radius: 6px;
+  background: #2a2a2c;
+  color: var(--gold);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.dev-brand strong {
+  display: block;
+  font-size: 15px;
+}
+
+.dev-brand small {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.dev-top-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dev-top-actions button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 9px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dev-top-actions button:hover:not(:disabled) {
+  border-color: var(--gold);
+  color: var(--gold2);
+}
+
+.dev-signout:hover {
+  border-color: var(--red) !important;
+  color: var(--red) !important;
+}
+
+.dev-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 18px 0;
+}
+
+.dev-tabs button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 7px;
+  padding: 8px 15px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.dev-tabs button.active {
+  background: #23221e;
+  border-color: #5d4d2c;
+  color: var(--gold2);
+}
+
+.dev-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 11px;
+  margin-bottom: 16px;
+}
+
+.dev-cards article {
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 16px;
+  background: #111112;
+}
+
+.dev-cards article.ok { border-left: 3px solid var(--green); }
+.dev-cards article.alerta { border-left: 3px solid var(--red); }
+
+.dev-cards small {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}
+
+.dev-cards b {
+  display: block;
+  font-size: 30px;
+  margin: 7px 0 3px;
+}
+
+.dev-cards span {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.dev-panel {
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 18px;
+  background: #111112;
+  margin-bottom: 13px;
+  overflow-x: auto;
+}
+
+.dev-panel h2 {
+  font-size: 16px;
+  margin-bottom: 4px;
+}
+
+.dev-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+.dev-empty {
+  font-size: 13px;
+  color: var(--muted);
+  padding: 14px 0;
+}
+
+.dev-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  min-width: 520px;
+}
+
+.dev-table th {
+  text-align: left;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.dev-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #202021;
+  vertical-align: top;
+}
+
+.dev-table code {
+  font-size: 11.5px;
+  color: var(--gold2);
+}
+
+.dev-status {
+  display: inline-block;
+  min-width: 34px;
+  text-align: center;
+  border-radius: 5px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.dev-status.s2 { background: #183326; color: #69d397; }
+.dev-status.s4 { background: #3a2f19; color: var(--gold2); }
+.dev-status.s5 { background: #3a251d; color: #ff8b76; }
+
+.dev-role {
+  border-radius: 5px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  background: #2a2a2c;
+  color: var(--muted);
+}
+
+.dev-role.dev { background: #3a2f19; color: var(--gold2); }
+.dev-role.coach { background: #1e3348; color: #7fb6e0; }
+.dev-role.student { background: #183326; color: #69d397; }
+
+.dev-env {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.dev-env span {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px 12px;
+  font-size: 12px;
+}
+
+.dev-env .sim { color: #69d397; border-color: #2c4d3b; }
+.dev-env .nao { color: #ff8b76; border-color: #4d2f28; }
+
+.dev-providers {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 9px;
+}
+
+.dev-providers article {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 11px 13px;
+}
+
+.dev-providers article.pronto { border-color: #2c4d3b; }
+
+.dev-providers b {
+  display: block;
+  font-size: 13px;
+}
+
+.dev-providers small {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.dev-volumes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.dev-volumes span {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 11px 13px;
+  display: grid;
+  gap: 3px;
+}
+
+.dev-volumes b {
+  font-size: 19px;
+  color: var(--gold2);
+}
+
+.dev-volumes small {
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.dev-volumes .vazia b { color: var(--muted); }
+.dev-volumes .ausente { opacity: 0.5; }
+
+.dev-error {
+  border: 1px solid rgba(241, 107, 94, 0.4);
+  background: rgba(241, 107, 94, 0.1);
+  color: var(--red);
+  border-radius: 9px;
+  padding: 11px 14px;
+  margin-top: 14px;
+  font-size: 13px;
+}
+
+.dev-loading {
+  color: var(--muted);
+  padding: 30px 0;
+}
+
+.dev-footer {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+  padding-top: 10px;
+}
+
+@media (max-width: 760px) {
+  .dev-top-actions {
+    width: 100%;
+  }
+  .dev-top-actions button {
+    flex: 1;
+  }
+}
+
+/* --- Seleção de área de treinador (manutenção) ---------------------------- */
+
+.dev-coaches .dev-hint {
+  max-width: 74ch;
+}
+
+.dev-visiting {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  border: 1px solid #5d4d2c;
+  background: #23221e;
+  border-radius: 9px;
+  padding: 11px 14px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.dev-visiting b {
+  color: var(--gold2);
+}
+
+.dev-visiting button {
+  margin-left: auto;
+  border: 1px solid var(--gold);
+  background: var(--gold);
+  color: #15120c;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dev-coach-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
+  gap: 10px;
+}
+
+.dev-coach-grid article {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  display: grid;
+  gap: 4px;
+  align-content: start;
+}
+
+.dev-coach-grid article.atual {
+  border-color: #5d4d2c;
+  background: #1b1a17;
+}
+
+.dev-coach-grid b {
+  font-size: 14px;
+}
+
+.dev-coach-grid small {
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.dev-coach-grid span {
+  font-size: 12px;
+  color: var(--gold2);
+  margin-bottom: 6px;
+}
+
+.dev-coach-grid button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dev-coach-grid button:hover {
+  border-color: var(--gold);
+  color: var(--gold2);
+}
+
+.dev-coach-novo {
+  justify-content: center;
+  border-style: dashed !important;
+}
+
+.dev-coach-novo input {
+  background: #0f0f10;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 11px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.dev-coach-novo > div {
+  display: flex;
+  gap: 6px;
+}
+
+.dev-coach-novo > div button {
+  flex: 1;
+}
+
+.dev-senha {
+  border: 1px solid var(--gold);
+  background: rgba(215, 170, 57, 0.08);
+  border-radius: 9px;
+  padding: 11px 14px;
+  margin-top: 12px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dev-senha code {
+  background: #0f0f10;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 14px;
+  user-select: all;
+}
+
+.dev-senha button {
+  margin-left: auto;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  border-radius: 7px;
+  padding: 7px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Faixa dentro da área do treinador, para não haver dúvida de onde se está. */
+/*
+   A faixa fica FORA do fluxo do grid de propósito.
+   `.shell` é `grid-template-columns: 232px 1fr`; como filho comum, a faixa
+   ocupava a segunda célula — o lugar do conteúdo — e empurrava `.content` para
+   a linha de baixo, com a largura da barra lateral e fora da tela.
+*/
+.dev-visiting-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #23221e;
+  border-bottom: 1px solid #5d4d2c;
+  color: var(--gold2);
+  padding: 0 18px;
+  height: var(--faixa-visita);
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.dev-visiting-banner > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dev-visiting-banner b {
+  color: var(--gold2);
+}
+
+.dev-visiting-banner button {
+  margin-left: auto;
+  border: 1px solid #5d4d2c;
+  background: transparent;
+  color: var(--gold2);
+  border-radius: 7px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Abre espaço para a faixa sem que ela vire uma célula do grid. */
+.shell.com-visita {
+  padding-top: var(--faixa-visita);
+}
+
+.shell.com-visita .sidebar {
+  top: var(--faixa-visita);
+  height: calc(100vh - var(--faixa-visita));
+}
+
+@media (max-width: 760px) {
+  .dev-visiting-banner {
+    font-size: 11.5px;
+    padding: 7px 12px;
+  }
+  .shell.com-visita {
+    padding-top: var(--faixa-visita);
+  }
+}
+
+/* --- Seleção de área de treinador (manutenção) ---------------------------- */
+
+.dev-coaches .dev-hint {
+  max-width: 74ch;
+}
+
+.dev-visiting {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  border: 1px solid #5d4d2c;
+  background: #23221e;
+  border-radius: 9px;
+  padding: 11px 14px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.dev-visiting b {
+  color: var(--gold2);
+}
+
+.dev-visiting button {
+  margin-left: auto;
+  border: 1px solid var(--gold);
+  background: var(--gold);
+  color: #15120c;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.dev-coach-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
+  gap: 10px;
+}
+
+.dev-coach-grid article {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  display: grid;
+  gap: 4px;
+  align-content: start;
+}
+
+.dev-coach-grid article.atual {
+  border-color: #5d4d2c;
+  background: #1b1a17;
+}
+
+.dev-coach-grid b {
+  font-size: 14px;
+}
+
+.dev-coach-grid small {
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.dev-coach-grid span {
+  font-size: 12px;
+  color: var(--gold2);
+  margin-bottom: 6px;
+}
+
+.dev-coach-grid button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dev-coach-grid button:hover {
+  border-color: var(--gold);
+  color: var(--gold2);
+}
+
+.dev-coach-novo {
+  justify-content: center;
+  border-style: dashed !important;
+}
+
+.dev-coach-novo input {
+  background: #0f0f10;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 11px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.dev-coach-novo > div {
+  display: flex;
+  gap: 6px;
+}
+
+.dev-coach-novo > div button {
+  flex: 1;
+}
+
+.dev-senha {
+  border: 1px solid var(--gold);
+  background: rgba(215, 170, 57, 0.08);
+  border-radius: 9px;
+  padding: 11px 14px;
+  margin-top: 12px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dev-senha code {
+  background: #0f0f10;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 14px;
+  user-select: all;
+}
+
+.dev-senha button {
+  margin-left: auto;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  border-radius: 7px;
+  padding: 7px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Faixa dentro da área do treinador, para não haver dúvida de onde se está. */
+/*
+   A faixa fica FORA do fluxo do grid de propósito.
+   `.shell` é `grid-template-columns: 232px 1fr`; como filho comum, a faixa
+   ocupava a segunda célula — o lugar do conteúdo — e empurrava `.content` para
+   a linha de baixo, com a largura da barra lateral e fora da tela.
+*/
+.dev-visiting-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #23221e;
+  border-bottom: 1px solid #5d4d2c;
+  color: var(--gold2);
+  padding: 0 18px;
+  height: var(--faixa-visita);
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.dev-visiting-banner > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dev-visiting-banner b {
+  color: var(--gold2);
+}
+
+.dev-visiting-banner button {
+  margin-left: auto;
+  border: 1px solid #5d4d2c;
+  background: transparent;
+  color: var(--gold2);
+  border-radius: 7px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Abre espaço para a faixa sem que ela vire uma célula do grid. */
+.shell.com-visita {
+  padding-top: var(--faixa-visita);
+}
+
+.shell.com-visita .sidebar {
+  top: var(--faixa-visita);
+  height: calc(100vh - var(--faixa-visita));
+}
+
+@media (max-width: 760px) {
+  .dev-visiting-banner {
+    font-size: 11.5px;
+    padding: 7px 12px;
+  }
+  .shell.com-visita {
+    padding-top: var(--faixa-visita);
+  }
+}
+
+/* --- Passos de um relato de dor ------------------------------------------- */
+
+/* Linha do tempo do caso: o que já foi feito e o que ainda falta. */
+.pain-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+  list-style: none;
+  padding: 0;
+}
+
+.pain-steps li {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 8px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #0f0f10;
+}
+
+.pain-steps li.feito {
+  border-color: #2c4d3b;
+}
+
+.pain-steps i {
+  font-style: normal;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 11px;
+  background: #2a2a2c;
+  color: var(--muted);
+}
+
+.pain-steps li.feito i {
+  background: #183326;
+  color: #69d397;
+}
+
+.pain-steps b {
+  display: block;
+  font-size: 12px;
+}
+
+.pain-steps small {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+.pain-next {
+  font-size: 13px;
+  color: var(--gold2);
+  background: rgba(215, 170, 57, 0.08);
+  border-left: 3px solid var(--gold);
+  border-radius: 0 8px 8px 0;
+  padding: 10px 13px;
+}
+
+.pain-ok {
+  font-size: 13px;
+  color: #69d397;
+  background: rgba(105, 211, 151, 0.09);
+  border-radius: 8px;
+  padding: 10px 13px;
+}
+
+/* A ação sugerida ganha destaque; as outras continuam disponíveis. */
+.pain-case-actions button.sugerido {
+  border-color: var(--gold);
+  color: var(--gold2);
+  font-weight: 700;
+}
+
+/* Formulário de um passo: uma pergunta por vez, com exemplo. */
+.pain-form {
+  display: grid;
+  gap: 11px;
+  border: 1px solid var(--gold);
+  background: rgba(215, 170, 57, 0.05);
+  border-radius: 11px;
+  padding: 15px;
+}
+
+.pain-form > b {
+  font-size: 14px;
+  color: var(--gold2);
+}
+
+.pain-form label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.pain-form label small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.pain-form textarea {
+  min-height: 84px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #0f0f10;
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+.pain-form textarea::placeholder {
+  color: #6e6b64;
+}
+
+.pain-form select {
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #0f0f10;
+  color: var(--text);
+  font: inherit;
+}
+
+.pain-sem-semana {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pain-form-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pain-form-actions button {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  padding: 11px 18px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pain-form-actions button.gold {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: #15120c;
+  font-weight: 800;
+}
+
+.pain-form-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* O histórico completo fica recolhido: interessa quando se procura, não sempre. */
+.pain-case-history > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--gold);
+  list-style: none;
+  padding: 4px 0;
+}
+
+.pain-case-history > summary::-webkit-details-marker {
+  display: none;
+}
+
+.pain-case-history > summary:before {
+  content: "▸ ";
+}
+
+.pain-case-history[open] > summary:before {
+  content: "▾ ";
+}
+
+.pain-case-history[open] {
+  display: grid;
+  gap: 9px;
+}
+
+/* --- Caso aberto ---------------------------------------------------------- */
+
+.pain-dash-detail {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  padding: 20px;
+  display: grid;
+  gap: 15px;
+  align-content: start;
+}
+
+.pain-dash-vazio {
+  text-align: center;
+  padding: 50px 20px;
+  color: var(--muted);
+}
+
+.pain-dash-vazio b {
+  display: block;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.pain-dash-vazio p {
+  font-size: 13px;
+  max-width: 44ch;
+  margin: 0 auto;
+}
+
+.pain-dash-detail > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.pain-dash-detail h3 {
+  font-size: 19px;
+}
+
+.pain-dash-detail > header small {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.pain-dash-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+  gap: 8px;
+}
+
+.pain-dash-facts span {
+  display: grid;
+  gap: 3px;
+  font-size: 12.5px;
+  background: #0f0f10;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 10px 12px;
+  overflow-wrap: anywhere;
+}
+
+.pain-dash-facts small {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--gold);
+}
+
+/* --- Área de registro ----------------------------------------------------- */
+
+.pain-dash-work {
+  display: grid;
+  gap: 13px;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.pain-dash-work > label {
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+}
+
+.pain-dash-status > div {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.pain-dash-status button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 20px;
+  padding: 8px 15px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.pain-dash-status button.selected {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.pain-dash-status button.selected.pending { background: #3a2f19; border-color: #6b5520; color: var(--gold2); }
+.pain-dash-status button.selected.analise { background: #2b2f3a; border-color: #46506b; color: #a3b4d6; }
+.pain-dash-status button.selected.review { background: #1e3348; border-color: #35577a; color: #7fb6e0; }
+.pain-dash-status button.selected.ok { background: #183326; border-color: #2c4d3b; color: #69d397; }
+
+.pain-dash-work textarea {
+  min-height: 96px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0f0f10;
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+.pain-dash-work textarea::placeholder {
+  color: #6e6b64;
+}
+
+.pain-dash-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pain-dash-actions button {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  padding: 12px 18px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pain-dash-actions button.gold {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: #15120c;
+  font-weight: 800;
+}
+
+.pain-dash-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pain-dash-week > summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--gold);
+  list-style: none;
+  padding: 4px 0;
+}
+
+.pain-dash-week > summary::-webkit-details-marker { display: none; }
+.pain-dash-week > summary:before { content: "▸ "; }
+.pain-dash-week[open] > summary:before { content: "▾ "; }
+
+.pain-dash-week > div {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 9px;
+}
+
+.pain-dash-week select {
+  flex: 1;
+  min-width: 200px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #0f0f10;
+  color: var(--text);
+  font: inherit;
+}
+
+.pain-dash-week button {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  padding: 10px 16px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.pain-sem-semana {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-top: 8px;
+}
+
+.pain-ok {
+  font-size: 13px;
+  color: #69d397;
+  background: rgba(105, 211, 151, 0.09);
+  border-radius: 8px;
+  padding: 10px 13px;
+}
+
+.pain-case-quote {
+  font-style: italic;
+  border-left: 3px solid var(--gold);
+  padding-left: 13px;
+  font-size: 14px;
+}
+
+.pain-contact {
+  border: 1px solid #278b4d;
+  background: #1f7a42;
+  color: #fff;
+  border-radius: 9px;
+  padding: 9px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+/* --- Histórico ------------------------------------------------------------ */
+
+.pain-dash-history {
+  border-top: 1px solid var(--line);
+  padding-top: 15px;
+  display: grid;
+  gap: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.pain-dash-history article {
+  border-left: 2px solid var(--line);
+  padding-left: 13px;
+}
+
+.pain-dash-history b { font-size: 13px; }
+
+.pain-dash-history small {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin: 2px 0 4px;
+}
+
+.pain-dash-history p { font-size: 13px; }
+
+.pain-filters {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.pain-filters button {
+  flex: 1;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 8px 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pain-filters button.selected {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: #15120c;
+  font-weight: 700;
+}
+
+@media (max-width: 1000px) {
+  .pain-dash-body {
+    grid-template-columns: 1fr;
+  }
+  .pain-dash-list {
+    max-height: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .pain-dash-metrics {
+    width: 100%;
+  }
+  .pain-dash-metrics article {
+    flex: 1;
+    min-width: 0;
+    padding: 11px 8px;
+  }
+  .pain-dash-actions button {
+    width: 100%;
+  }
+}
+
+/* --- Lesões dentro da ficha do aluno -------------------------------------- */
+
+.athlete-pain {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.athlete-pain > .overline {
+  color: var(--red);
+}
+
+/* Lesão em aberto muda a decisão do treino da semana: fica em destaque. */
+.athlete-pain-open {
+  display: grid;
+  grid-template-columns: 34px 1fr auto;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 13px 15px;
+  border: 1px solid #6b5520;
+  border-left: 3px solid var(--gold);
+  border-radius: 11px;
+  background: rgba(215, 170, 57, 0.07);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.athlete-pain-open.grave {
+  border-color: #7d3b33;
+  border-left-color: var(--red);
+  background: rgba(241, 107, 94, 0.07);
+}
+
+.athlete-pain-open:hover {
+  background: rgba(215, 170, 57, 0.13);
+}
+
+.athlete-pain-open b {
+  display: block;
+  font-size: 14px;
+}
+
+.athlete-pain-open small {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.athlete-pain-open em {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--gold);
+  white-space: nowrap;
+}
+
+/* Encerradas são histórico, não pendência: ficam recolhidas. */
+.athlete-pain-past > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+  list-style: none;
+  padding: 6px 0;
+}
+
+.athlete-pain-past > summary::-webkit-details-marker { display: none; }
+.athlete-pain-past > summary:before { content: "▸ "; }
+.athlete-pain-past[open] > summary:before { content: "▾ "; }
+
+.athlete-pain-past[open] {
+  display: grid;
+  gap: 7px;
+}
+
+.athlete-pain-past button {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0f0f10;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.athlete-pain-past b { font-size: 13px; }
+
+.athlete-pain-past small {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.athlete-pain-past p {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+
+/* --- Tela de acompanhamento da lesão -------------------------------------- */
+
+.pain-screen {
+  display: grid;
+  gap: 15px;
+  align-content: start;
+}
+
+.pain-screen > header p {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-top: 5px;
+}
+
+.pain-screen .pain-dash-work {
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.pain-dash-empty {
+  font-size: 13px;
+  color: var(--muted);
+  padding: 20px 0;
+}
+
+/* --- Números do painel: cada um leva ao lugar onde se age sobre ele -------- */
+
+.stats .stat-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  padding: 18px;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.stats .stat-card:hover {
+  border-color: #7e662e;
+  background: #1f1d18;
+}
+
+.stats .stat-card small {
+  display: block;
+  font-size: 8px;
+  color: var(--muted);
+  letter-spacing: 0.12em;
+}
+
+.stats .stat-card b {
+  font-size: 29px;
+  display: block;
+  margin: 9px 0 4px;
+}
+
+.stats .stat-card b em {
+  font-size: 13px;
+  font-style: normal;
+  color: var(--muted);
+}
+
+.stats .stat-card span {
+  font-size: 10px;
+  color: var(--gold);
+}
+
+.attention-link {
+  cursor: pointer;
+}
+
+/* Prova aprovada: resta apenas desfazer, e desfazer é uma ação de risco. */
+.race-cancel {
+  border: 1px solid var(--red);
+  background: transparent;
+  color: var(--red);
+  border-radius: 9px;
+  padding: 11px 16px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.race-cancel:hover:not(:disabled) {
+  background: rgba(241, 107, 94, 0.12);
+}
+
+.race-cancel:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }

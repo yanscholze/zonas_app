@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import InstallApp from "./InstallApp";
 
 export type Session =
+  /** Conta de manutenção: acesso irrestrito, com diagnóstico do sistema. */
+  | { authenticated: true; role: "dev"; email: string; name: string; mustChangePassword: boolean }
   | { authenticated: true; role: "coach"; email: string; name: string; mustChangePassword: boolean }
   | { authenticated: true; role: "student"; email: string; name: string; athleteName: string; mustChangePassword: boolean };
 

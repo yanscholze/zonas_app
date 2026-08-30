@@ -14,7 +14,33 @@ export const athletes = sqliteTable("athletes", {
   trainingDays: text("training_days"),
   integration: text("integration"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
-});
+  /**
+   * Quando o aluno foi inativado. Nulo enquanto ativo.
+   *
+   * Aluno que sai é inativado, nunca apagado: o histórico de treinos, testes e
+   * queixas continua valendo como registro do trabalho feito, e apagá-lo
+   * destruiria o passado do atleta e as estatísticas do treinador.
+   */
+  archivedAt: integer("archived_at"),
+  archivedReason: text("archived_reason"),
+  /**
+   * Treinador dono deste aluno.
+   *
+   * O sistema nasceu para um treinador só e nenhuma tabela guardava esse
+   * vínculo. Como todas as outras se ligam ao aluno por `athlete_name`, marcar
+   * o dono aqui basta para separar as carteiras: o que cada treinador enxerga
+   * decorre de quais alunos são dele. Nulo significa um aluno anterior a esta
+   * coluna, que continua pertencendo ao treinador principal.
+   */
+  coachEmail: text("coach_email"),
+}, (table) => ({
+  /**
+   * O nome do aluno é a chave que liga ficha, treinos, testes, provas e
+   * cobranças — `athlete_name` aparece em dezoito tabelas. Sem unicidade, dois
+   * homônimos compartilhariam silenciosamente todo o histórico um do outro.
+   */
+  nameIdx: uniqueIndex("athletes_name_idx").on(table.name),
+}));
 
 export const athleteProfiles = sqliteTable("athlete_profiles", {
   athleteName: text("athlete_name").primaryKey(),
@@ -76,7 +102,27 @@ export const painReports = sqliteTable("pain_reports", {
   note: text("note"),
   status: text("status").notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  /* Acompanhamento da queixa, do aviso do aluno até a alta. */
+  reviewedBy: text("reviewed_by"),
+  reviewedAt: integer("reviewed_at"),
+  contactedAt: integer("contacted_at"),
+  coachNote: text("coach_note"),
+  resolution: text("resolution"),
+  resolvedAt: integer("resolved_at"),
+  linkedWeekStart: text("linked_week_start"),
 });
+
+/** Cada movimento de um relato de dor: contato, avaliação, ajuste e desfecho. */
+export const painReportUpdates = sqliteTable("pain_report_updates", {
+  id: text("id").primaryKey(),
+  reportId: text("report_id").notNull(),
+  actorEmail: text("actor_email").notNull(),
+  action: text("action").notNull(),
+  note: text("note"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => ({
+  reportIdx: index("pain_report_updates_report_idx").on(table.reportId, table.createdAt),
+}));
 
 export const trainingFeedbacks = sqliteTable("training_feedbacks", {
   id: text("id").primaryKey(),
@@ -107,6 +153,12 @@ export const workoutExecutions = sqliteTable("workout_executions", {
   classification: text("classification").notNull(),
   source: text("source").notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  /* Conclusão explícita e métricas vindas das integrações. */
+  status: text("status"),
+  note: text("note"),
+  averageHeartRate: integer("average_heart_rate"),
+  averagePaceSeconds: integer("average_pace_seconds"),
+  externalActivityId: text("external_activity_id"),
 }, (table) => ({
   athleteIdx: index("workout_executions_athlete_created_idx").on(table.athleteName, table.createdAt),
 }));
@@ -163,6 +215,14 @@ export const userSessions = sqliteTable("user_sessions", {
   tokenHash: text("token_hash").primaryKey(), userId: text("user_id").notNull(), email: text("email").notNull(),
   expiresAt: integer("expires_at").notNull(), createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   lastSeenAt: integer("last_seen_at", { mode: "timestamp_ms" }).notNull(),
+  /**
+   * Treinador que a conta de manutenção está visitando.
+   *
+   * Fica na sessão, e não no navegador, para que o servidor decida o que
+   * mostrar: quem está de fato agindo continua sendo o `user_id`, e é esse
+   * nome que vai para os registros de auditoria.
+   */
+  impersonatingUserId: text("impersonating_user_id"),
 }, (table) => ({
   expiresIdx: index("user_sessions_expires_idx").on(table.expiresAt),
 }));
