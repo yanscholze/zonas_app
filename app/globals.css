@@ -1076,15 +1076,32 @@ input {
   .shell {
     display: block;
   }
+  /*
+     Barra de navegação flutuante do treinador. Ela precisa ser declarada aqui,
+     e não na seção mobile-dashboard.css de overrides.css, porque globals.css
+     importa overrides.css na primeira linha: em empate de especificidade quem
+     vence é este arquivo. Enquanto a barra morava só lá, este bloco a anulava
+     com `position:static` e ela nunca chegava a aparecer.
+     `top:auto` neutraliza o `top:0` da regra base de `.sidebar`, que de outro
+     modo grudaria a barra no topo mesmo com `bottom:10px`.
+  */
   .sidebar {
-    position: static;
-    width: 100%;
-    height: auto;
-    padding: 14px;
+    position: fixed;
+    z-index: 50;
+    top: auto;
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    width: auto;
+    height: 67px;
+    padding: 8px 10px;
     display: flex;
     flex-direction: row;
     align-items: center;
-    overflow: auto;
+    border: 1px solid #3d3930;
+    border-radius: 18px;
+    background: #171718eb;
+    box-shadow: 0 14px 40px #000;
   }
   .sidebar .brand div,
   .coach,
@@ -1093,7 +1110,10 @@ input {
   }
   .sidebar nav {
     display: flex;
-    margin: 0 0 0 14px;
+    width: 100%;
+    justify-content: space-around;
+    margin: 0;
+    overflow: hidden;
   }
   .sidebar nav button {
     font-size: 0;
@@ -1103,8 +1123,9 @@ input {
     width: auto;
     font-size: 18px;
   }
+  /* Os 92px reservam o espaço da barra flutuante (67px + 10px + folga). */
   .content {
-    padding: 0 14px 40px;
+    padding: 0 14px 92px;
   }
   .top {
     height: 82px;
@@ -11501,6 +11522,15 @@ input {
   }
   .shell.com-visita {
     padding-top: var(--faixa-visita);
+  }
+  /*
+     No celular a barra lateral vira a barra flutuante de baixo, então a faixa
+     de visita não precisa empurrá-la: sem isto o `top` acima esticaria a barra
+     da faixa até o rodapé.
+  */
+  .shell.com-visita .sidebar {
+    top: auto;
+    height: 67px;
   }
 }
 
