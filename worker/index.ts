@@ -15,6 +15,7 @@ import {
   hashPassword,
   identityFromRequest,
   isLockedOut,
+  isValidDevLogin,
   isValidEmail,
   passwordProblem,
   readSessionToken,
@@ -112,6 +113,7 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/integrations": new Set(["action","provider","athleteName","payload","weekStart","workoutDay"]),
   "/api/integrations/strava/subscription": new Set(["action","id"]),
   "/api/dev/coaches": new Set(["action","email","name","password"]),
+  "/api/dev/accounts": new Set(["action","email"]),
   "/api/student/integrations": new Set(["action","provider"]),
 };
 
@@ -903,7 +905,7 @@ async function studentRacesRecordsApi(request: Request, env: Env, athleteName: s
 }
 
 async function athletesApi(request: Request, env: Env): Promise<Response> {
-  await ensureTables(env, schema.athletes, schema.athletePlanning, schema.athleteAccess);
+  await ensureTables(env, schema.athletes, schema.athletePlanning, schema.athleteAccess, schema.athleteProfiles);
   await atribuiAlunosSemDono(env);
   const url = new URL(request.url);
   if (request.method === "GET") {
@@ -916,10 +918,20 @@ async function athletesApi(request: Request, env: Env): Promise<Response> {
     const carteira = recorteDeAlunos(carteiraDe(request));
     const condicoes = [situacao, carteira.clausula].filter(Boolean);
     const filtro = condicoes.length ? `WHERE ${condicoes.join(" AND ")}` : "";
-    const result = await env.DB.prepare(`SELECT athletes.*, athlete_access.status AS access_status, athlete_planning.plan AS saved_plan, athlete_planning.phase AS planning_phase, athlete_planning.week_number AS planning_week_number, athlete_planning.total_weeks AS planning_total_weeks FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name = athletes.name LEFT JOIN athlete_planning ON athlete_planning.athlete_name = athletes.name ${filtro} ORDER BY athletes.created_at DESC`).bind(...carteira.valores).all();
+    const result = await env.DB.prepare(`SELECT athletes.*, athlete_access.status AS access_status, athlete_planning.plan AS saved_plan, athlete_planning.phase AS planning_phase, athlete_planning.week_number AS planning_week_number, athlete_planning.total_weeks AS planning_total_weeks, athlete_profiles.training_days AS profile_training_days FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name = athletes.name LEFT JOIN athlete_planning ON athlete_planning.athlete_name = athletes.name LEFT JOIN athlete_profiles ON athlete_profiles.athlete_name = athletes.name ${filtro} ORDER BY athletes.created_at DESC`).bind(...carteira.valores).all();
+    /* Os dias de treino do aluno vivem em `athlete_profiles`: é lá que o
+       cadastro do aluno e a ficha do treinador gravam. A cópia em `athletes`
+       nasceu do pedido de acesso e envelhece sozinha — o calendário lia essa
+       cópia vazia e marcava a semana inteira como indisponível, mesmo com a
+       semana liberada. Aqui a lista passa a ter uma fonte só. */
+    const alunos = (result.results as Array<Record<string, unknown>>).map(linha => {
+      const { profile_training_days: diasDoPerfil, ...aluno } = linha;
+      const dias = String(diasDoPerfil ?? "");
+      return { ...aluno, training_days: dias && dias !== "[]" ? dias : String(aluno.training_days ?? "[]") };
+    });
     const totaisSql = `SELECT SUM(CASE WHEN archived_at IS NULL THEN 1 ELSE 0 END) AS ativos, SUM(CASE WHEN archived_at IS NOT NULL THEN 1 ELSE 0 END) AS inativos FROM athletes${carteira.clausula ? ` WHERE ${carteira.clausula.replace(/athletes\./g, "")}` : ""}`;
     const totais = await env.DB.prepare(totaisSql).bind(...carteira.valores).first() as { ativos?: number; inativos?: number } | null;
-    return Response.json({ athletes: result.results, counts: { active: Number(totais?.ativos ?? 0), archived: Number(totais?.inativos ?? 0) } });
+    return Response.json({ athletes: alunos, counts: { active: Number(totais?.ativos ?? 0), archived: Number(totais?.inativos ?? 0) } });
   }
   if (request.method === "POST") {
     const input = await request.json() as Record<string, unknown>;
@@ -2303,6 +2315,18 @@ async function devOverviewApi(request: Request, env: Env): Promise<Response> {
     env.DB.prepare("SELECT provider, COUNT(*) AS total, MAX(started_at) AS ultima FROM external_activities GROUP BY provider").all(),
   ]);
 
+  /* Os três números do resumo precisam de contagem própria.
+     As listas acima são recortes para exibir em tabela — 80 erros, 40 sessões —
+     e usar o tamanho delas como total fazia o cartão travar no limite do
+     recorte: "erros nas últimas 24 h" parava de crescer em 80 justamente
+     quando havia muitos erros. E "integrações" contava provedores com alguma
+     atividade importada, não conexões: no máximo quatro, por definição. */
+  const [totalErros24h, totalSessoes, totalConexoes] = await Promise.all([
+    env.DB.prepare("SELECT COUNT(*) AS total FROM application_errors WHERE created_at > ?").bind(agora - 86_400_000).first(),
+    env.DB.prepare("SELECT COUNT(*) AS total FROM user_sessions WHERE expires_at > ?").bind(agora).first(),
+    env.DB.prepare("SELECT COUNT(*) AS total FROM external_integrations WHERE status = 'Conectado'").first(),
+  ]) as Array<{ total?: number } | null>;
+
   // Volume de cada tabela, uma consulta por tabela porque o SQLite não expõe
   // contagem de linhas em metadado confiável.
   const volumes: Record<string, number> = {};
@@ -2315,20 +2339,20 @@ async function devOverviewApi(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  const errosRecentes = (erros.results as Array<{ created_at: number }>).filter(e => Number(e.created_at) > agora - 86_400_000);
-
   return Response.json({
     generatedAt: agora,
     saude: {
-      errosUltimas24h: errosRecentes.length,
+      errosUltimas24h: Number(totalErros24h?.total ?? 0),
       contasBloqueadas: (contas.results as Array<{ status?: string }>).filter(c => c.status === "Bloqueado").length,
-      sessoesAtivas: sessoes.results.length,
-      integracoesConectadas: (atividades.results as unknown[]).length,
+      sessoesAtivas: Number(totalSessoes?.total ?? 0),
+      integracoesConectadas: Number(totalConexoes?.total ?? 0),
     },
     ambiente: {
       // Só a presença das variáveis, nunca o valor.
       coachEmailConfigurado: Boolean(env.COACH_EMAIL),
-      devLoginConfigurado: Boolean(env.DEV_LOGIN),
+      // Presença não basta: um DEV_LOGIN inválido não cria conta nenhuma, e
+      // marcar "configurado" nesse caso esconderia justamente a falha.
+      devLoginConfigurado: Boolean(env.DEV_LOGIN) && isValidDevLogin(String(env.DEV_LOGIN)),
       chaveDeCifraConfigurada: Boolean(env.STRAVA_TOKEN_ENCRYPTION_KEY),
       provedores: Object.values(PROVIDERS).map(p => ({ id: p.id, label: p.label, disponivel: providerIsReady(env, p), estado: providerStatusLabel(env, p) })),
     },
@@ -2407,6 +2431,117 @@ async function devCoachesApi(request: Request, env: Env): Promise<Response> {
   }
 
   return Response.json({ error: "unknown_action" }, { status: 400 });
+}
+
+/**
+ * Contas vistas pela manutenção.
+ *
+ * O `/api/accounts` do treinador cuida apenas dos alunos da carteira dele: cria
+ * sempre com papel de aluno e recusa bloquear um treinador. A manutenção
+ * precisa alcançar qualquer conta, e por isso a autorização é outra — daí um
+ * caminho próprio, e não um ramo dentro daquele.
+ *
+ * Excluir é a única ação sem volta, e por isso é a mais restrita: só sai de
+ * cena quem não é dono de nada. Um treinador com alunos, a conta configurada no
+ * ambiente e a própria sessão de quem está agindo continuam de pé — para esses
+ * existe bloquear, que derruba as sessões e pode ser desfeito.
+ */
+async function devAccountsApi(request: Request, env: Env): Promise<Response> {
+  await ensureTables(env, schema.userAccounts, schema.userSessions, schema.athletes, schema.securityEvents);
+  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+
+  const input = await request.json() as Record<string, unknown>;
+  const acao = boundedText(input.action, 20);
+  const email = boundedText(input.email, 254).toLowerCase();
+  const conta = await accountByEmail(env.DB, email);
+  if (!conta) return Response.json({ error: "account_not_found" }, { status: 404 });
+
+  const autor = normalizedAuthenticatedEmail(request) ?? "manutenção";
+  const registra = (evento: string, detalhe: string) => env.DB.prepare(
+    "INSERT INTO security_events (id, actor_email, event_type, route, details, created_at) VALUES (?, ?, ?, '/api/dev/accounts', ?, ?)",
+  ).bind(crypto.randomUUID(), autor, evento, detalhe, Date.now()).run();
+
+  if (acao === "reset_password") {
+    const senhaTemporaria = generateTemporaryPassword();
+    await setPassword(env.DB, conta.id, senhaTemporaria, true);
+    await destroySessionsForUser(env.DB, conta.id);
+    await registra("Manutenção redefiniu uma senha", `Conta ${conta.email}`);
+    return Response.json({ reset: true, email: conta.email, temporaryPassword: senhaTemporaria });
+  }
+
+  if (acao === "block" || acao === "unblock") {
+    if (acao === "block" && conta.email === autor) {
+      return Response.json({ error: "cannot_block_self" }, { status: 400 });
+    }
+    if (acao === "block" && conta.role === "dev" && await ehUltimaManutencaoAtiva(env, conta.id)) {
+      return Response.json({ error: "last_dev_account" }, { status: 400 });
+    }
+    const status = acao === "block" ? "Bloqueado" : "Ativo";
+    await env.DB.prepare("UPDATE user_accounts SET status = ?, updated_at = ? WHERE id = ?")
+      .bind(status, Date.now(), conta.id).run();
+    if (acao === "block") await destroySessionsForUser(env.DB, conta.id);
+    if (conta.athlete_name) {
+      await linkAthleteAccess(env, conta.athlete_name, conta.email, status, autor);
+    }
+    await registra(acao === "block" ? "Manutenção bloqueou uma conta" : "Manutenção liberou uma conta", `Conta ${conta.email}`);
+    return Response.json({ status });
+  }
+
+  if (acao === "delete") {
+    const impedimento = await impedimentoParaExcluir(env, request, conta, autor);
+    if (impedimento) return Response.json(impedimento, { status: 409 });
+    await destroySessionsForUser(env.DB, conta.id);
+    await env.DB.prepare("DELETE FROM user_accounts WHERE id = ?").bind(conta.id).run();
+    await registra("Manutenção excluiu uma conta", `Conta ${conta.email} · papel ${conta.role}`);
+    return Response.json({ deleted: true, email: conta.email });
+  }
+
+  return Response.json({ error: "unknown_action" }, { status: 400 });
+}
+
+/** A última conta de manutenção ativa não pode ser fechada: ninguém reabriria. */
+async function ehUltimaManutencaoAtiva(env: Env, id: string): Promise<boolean> {
+  const restantes = await env.DB.prepare(
+    "SELECT COUNT(*) AS total FROM user_accounts WHERE role = 'dev' AND status = 'Ativo' AND id <> ?",
+  ).bind(id).first() as { total?: number } | null;
+  return Number(restantes?.total ?? 0) === 0;
+}
+
+/**
+ * Por que esta conta não pode ser excluída.
+ *
+ * Devolve `null` quando a exclusão é segura. Cada recusa diz o motivo e o que
+ * fazer antes, porque "não foi possível excluir" sem explicação obriga a
+ * adivinhar.
+ */
+async function impedimentoParaExcluir(
+  env: Env,
+  request: Request,
+  conta: { id: string; email: string; role: string },
+  autor: string,
+): Promise<{ error: string; motivo: string; saida: string } | null> {
+  if (conta.email === autor) {
+    return { error: "cannot_delete_self", motivo: "Esta é a conta com que você está usando o painel agora.", saida: "Entre com outra conta de manutenção para excluir esta." };
+  }
+  if (conta.email === coachEmailOf(env)) {
+    return { error: "configured_coach", motivo: "Esta é a conta definida em COACH_EMAIL.", saida: "A aplicação a recriaria na próxima chamada. Troque a variável de ambiente antes." };
+  }
+  if (conta.role === "dev" && await ehUltimaManutencaoAtiva(env, conta.id)) {
+    return { error: "last_dev_account", motivo: "É a última conta de manutenção ativa.", saida: "Crie outra conta de manutenção antes de excluir esta." };
+  }
+  if (conta.role === "coach") {
+    const alunos = await env.DB.prepare("SELECT COUNT(*) AS total FROM athletes WHERE coach_email = ?").bind(conta.email).first() as { total?: number } | null;
+    const total = Number(alunos?.total ?? 0);
+    if (total > 0) {
+      return {
+        error: "coach_has_athletes",
+        motivo: `Este treinador ainda é dono de ${total === 1 ? "1 aluno" : `${total} alunos`}.`,
+        saida: "Sem dono, esses alunos sumiriam de todas as listas. Transfira a carteira ou bloqueie a conta em vez de excluir.",
+      };
+    }
+  }
+  void request;
+  return null;
 }
 
 async function racesRecordsApi(request: Request, env: Env): Promise<Response> {
@@ -2608,6 +2743,13 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
       if (limited) return limited;
       const invalid = await validateApiEnvelope(request, url); if (invalid) return invalid;
       const duplicate = await preventDuplicateSubmission(request, url, env, actorEmail); if (duplicate) return duplicate;
+    }
+
+    if (url.pathname === "/api/dev/accounts") {
+      const negado = requireDevApiAccess(request);
+      if (negado) return negado;
+      try { return await devAccountsApi(request, env); }
+      catch { return await applicationFailure(env, request, "contas de manutenção", "dev_accounts_unavailable"); }
     }
 
     if (url.pathname === "/api/dev/coaches") {

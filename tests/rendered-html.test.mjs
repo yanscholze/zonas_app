@@ -173,10 +173,11 @@ test("lets the coach preview the exact experience of any selected athlete", asyn
 test("opens and reveals the complete workout when a student taps a week day", async () => {
   const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   const css = await readCss("../app/overrides.css");
+  const base = await readCss("../app/globals.css");
   assert.match(source, /detail\?\.scrollIntoView\(\{behavior:"smooth",block:"start"\}\)/);
   assert.match(source, /detail\?\.focus\(\{preventScroll:true\}\)/);
   assert.match(source, /className="student-week-detail" tabIndex=\{-1\}/);
-  assert.match(css, /\.student-week-grid article\.selected/);
+  assert.match(base, /\.student-week-list article\.selected/);
   assert.match(css, /scroll-margin-top/);
 });
 
@@ -192,9 +193,11 @@ test("requires a second confirmation for sensitive coach actions", async () => {
   assert.match(source, /Confirmar bloqueio de/);
   assert.match(source, /Confirmar: trancar semana/);
   assert.match(source, /Os treinos deixarão de aparecer imediatamente na área do aluno/);
-  assert.match(source, /window\.confirm\(`CONFERÊNCIA AUTOMÁTICA/);
-  assert.match(source, /Liberar esta semana para o aluno\?/);
-  assert.match(source, /Complete os treinos estruturados antes de liberar/);
+  // A conferência antes de liberar continua obrigatória; o que mudou é que ela
+  // deixou de ser um `window.confirm` e virou um diálogo da própria interface.
+  assert.match(source, /titulo:`Liberar esta semana para \$\{selected\.split\(" "\)\[0\]\}\?`/);
+  assert.match(source, /confirmar:"Liberar para o aluno →"/);
+  assert.match(source, /Falta estruturar treino antes de liberar/);
 });
 
 test("advances a plan week only after explicit coach approval", async () => {
@@ -661,8 +664,9 @@ test("simplifies finance, refreshes student visuals, and exports recovery backup
   assert.match(client, /Última cópia há/);
   assert.match(worker, /zonasapp-backup-v1/);
   assert.match(worker, /content-disposition/);
-  assert.match(visual, /\.student-week-grid/);
   assert.match(visual, /grid-template-columns:1fr/);
+  const base = await readCss("../app/globals.css");
+  assert.match(base, /\.student-week-list/);
 });
 
 test("persists student workout feedback for coach review", async () => {
@@ -1022,13 +1026,245 @@ test("builds student evolution from recorded workouts instead of demonstration n
   assert.match(client, /REALIZADO/);
   assert.match(client, /ÚLTIMOS RETORNOS REAIS/);
   assert.match(client, /Este aluno ainda não registrou resultados ou feedbacks/);
-  assert.match(client, /const monthExecutions=executions\.filter/);
+  // O rótulo dizia "no mês" enquanto a busca trazia sete dias. Agora a janela
+  // pedida ao servidor e o texto na tela são a mesma coisa.
+  assert.match(client, /workout-executions\?days=30/);
+  assert.match(client, /const janelaKm=executions\.reduce/);
   assert.match(client, /correct_percentage/);
-  assert.match(client, /VOLUME REGISTRADO NO MÊS/);
+  assert.match(client, /VOLUME REGISTRADO · 30 DIAS/);
   assert.match(client, /Sua evolução começará no primeiro treino/);
   assert.doesNotMatch(client, /86,4 <em>km<\/em>/);
   assert.doesNotMatch(client, /83% concluídos/);
   assert.doesNotMatch(client, /\[\["20–26 jul",3,3\]/);
+});
+
+test("tells the student the pace of the zone the workout asks for", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // O treino liberado guarda a zona ("Z2"), não o ritmo, e o cartão exibia a
+  // frase "zona aprovada" no lugar do número. O ritmo já existia no teste
+  // aprovado, a duas telas de distância.
+  assert.match(client, /function approvedZones\(tests:unknown\)/);
+  assert.match(client, /const zonasAprovadas=approvedZones\(studentTests\)/);
+  assert.match(client, /<StructuredWorkoutCard session=\{todaySession\} zones=\{zonasAprovadas\}\/>/);
+  assert.match(client, /<StructuredWorkoutCard session=\{openedWeekSession\} zones=\{zonasAprovadas\}\/>/);
+  assert.match(client, /Ritmo individual ainda não liberado/);
+  assert.doesNotMatch(client, /"zona aprovada"/);
+});
+
+test("answers what comes next on a rest day", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // Antes o dia sem treino era uma caixa vazia de 300px. O próximo treino da
+  // semana já está liberado e responde "e agora?".
+  assert.match(client, /const proximaSessao=/);
+  assert.match(client, /HOJE É DESCANSO/);
+  assert.match(client, /Semana concluída/);
+  assert.match(css, /\.student-rest/);
+  assert.doesNotMatch(client, /Hoje é dia de descanso/);
+});
+
+test("adds up the week the student already ran", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // Os registros de execução existiam; nenhuma tela do aluno os somava.
+  assert.match(client, /const diasConcluidos=diasComTreino\.filter/);
+  assert.match(client, /className="student-week-progress"/);
+  assert.match(client, /className="student-progress-bar"/);
+  assert.match(css, /\.student-progress-bar span/);
+  // A situação de cada dia aparece na semana, incluindo o dia de hoje.
+  assert.match(client, /const estado=!session\?"descanso":feito\?"feito":naoRealizado\?"faltou":"pendente"/);
+  assert.match(css, /\.student-week-list article\.feito/);
+});
+
+test("never shows the student a number that is not theirs", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Com a tabela vazia a tela exibia um recorde e uma prova inventados, e a
+  // prévia do professor mostrava uma cobrança fixa e um planejamento fixo.
+  assert.doesNotMatch(client, /"33:28"/);
+  assert.doesNotMatch(client, /Corrida do SESI/);
+  assert.doesNotMatch(client, /amount_cents:11000/);
+  assert.doesNotMatch(client, /week_number:8,total_weeks:16/);
+  // A prévia diz que é prévia em vez de preencher com um valor qualquer.
+  assert.match(client, /A mensalidade real do aluno não é exibida aqui/);
+  // E a unidade do ritmo aparece uma vez, não duas.
+  assert.doesNotMatch(client, /\{pace\(Number\(zone\.fast\)\)\}\/km/);
+  assert.doesNotMatch(client, /\{pace\(Number\(tempo\.targetPace\)\)\}\/km/);
+});
+
+test("reads the athlete training days from a single source", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // `training_days` estava gravado em `athletes` e em `athlete_profiles`. A
+  // cópia em `athletes` nasce do pedido de acesso e envelhece: com ela vazia o
+  // calendário marcava os sete dias como indisponíveis, mesmo com a semana
+  // liberada e o aluno vendo os treinos.
+  assert.match(worker, /LEFT JOIN athlete_profiles ON athlete_profiles\.athlete_name = athletes\.name/);
+  assert.match(worker, /athlete_profiles\.training_days AS profile_training_days/);
+  assert.match(worker, /training_days: dias && dias !== "\[\]"/);
+  // E a coluna auxiliar não vaza para a resposta.
+  assert.match(worker, /const \{ profile_training_days: diasDoPerfil, \.\.\.aluno \} = linha/);
+  assert.match(worker, /Response\.json\(\{ athletes: alunos/);
+});
+
+test("counts programmed workouts, not available days", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // O rodapé do calendário dizia "N treinos programados" contando os dias
+  // disponíveis do aluno: o número aparecia mesmo com a semana em branco.
+  assert.match(client, /plural\(readyWorkoutCount,"treino programado","treinos programados"\)/);
+  assert.doesNotMatch(client, /\{current\.days\.length\} treinos programados/);
+  // Sem dias cadastrados a tela explica o que falta em vez de mostrar sete
+  // quadros apagados sem motivo.
+  assert.match(client, /Nenhum dia de treino cadastrado para este aluno/);
+  assert.match(client, /available-note\$\{current\.days\.length\?"":" sem-dias"\}/);
+});
+
+test("keeps a single Pix form on the finance screen", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // Havia dois formulários de chave Pix: o do passo a passo, que funciona, e um
+  // segundo bloco completo que o CSS escondia com display:none.
+  assert.doesNotMatch(client, /className="financial-settings"/);
+  assert.doesNotMatch(css, /\.financial-quick-setup~\.financial-settings/);
+  assert.match(client, /className="financial-quick-setup"/);
+  assert.match(client, /Chave Pix<input value=\{pixKey\}/);
+});
+
+test("lets the coach find an athlete by name", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // Eram 22 botões de filtro e nenhuma busca, num painel mais alto que a lista.
+  assert.match(client, /className="filtro-busca"/);
+  assert.match(client, /a\.name\.toLocaleLowerCase\("pt-BR"\)\.includes\(termo\)/);
+  assert.match(client, /Nenhum aluno com/);
+  // Planilha-base sem aluno nenhum fica recolhida atrás de um botão.
+  assert.match(client, /sem aluno`/);
+  assert.match(css, /\.filters \.filtro-busca input/);
+});
+
+test("never asks or warns through a browser dialog", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // `window.confirm` devolve "não" na hora, e sem aparecer, depois que o
+  // navegador oferece "impedir que esta página crie caixas de diálogo
+  // adicionais". Era o que fazia "Liberar semana para o aluno" parar de
+  // responder: a rotina no servidor estava certa, a pergunta é que sumia.
+  const dev = await readFile(new URL("../app/DevDashboard.tsx", import.meta.url), "utf8");
+  const avisos = await readFile(new URL("../app/avisos.tsx", import.meta.url), "utf8");
+  const nativos = `${client}${dev}`.match(/window\.(alert|confirm)\(/g) ?? [];
+  assert.equal(nativos.length, 0, "nenhum diálogo do navegador deve restar");
+  // O aviso é uma peça compartilhada: mora em módulo próprio e é montada tanto
+  // na área do treinador quanto no painel de manutenção.
+  assert.match(avisos, /export function CentralDeAvisos\(\)/);
+  assert.match(client, /<CentralDeAvisos \/>/);
+  assert.match(dev, /<CentralDeAvisos \/>/);
+  assert.match(css, /\.avisos-do-sistema/);
+  assert.match(css, /\.confirmacao-sistema/);
+});
+
+test("always answers the coach after a release attempt", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Antes, cancelar a conferência devolvia ao calendário sem mensagem nenhuma
+  // e sem mudar nada na tela: era impossível saber se a ação tinha falhado.
+  assert.match(client, /const aceitou=await pergunte\(\{/);
+  assert.match(client, /avise\("atencao","Liberação cancelada"/);
+  assert.match(client, /const liberou=await saveWeek\("Liberada"/);
+  assert.match(client, /liberou\?"Semana liberada":"Não foi possível liberar a semana"/);
+});
+
+test("lets the coach switch accounts from the sidebar", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // Sair só existia no topo da tela. Junto do perfil é onde se procura quando a
+  // intenção é trocar de login, e por isso o bloco passou a mostrar o e-mail da
+  // conta em uso em vez do papel.
+  assert.match(client, /className="coach-exit"/);
+  assert.match(client, /aria-label="Sair e entrar com outra conta"/);
+  assert.match(client, /<small>\{session\.email\}<\/small>/);
+  assert.match(css, /\.coach-exit/);
+});
+
+test("counts dev diagnostics without stopping at the table limit", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const dev = await readFile(new URL("../app/DevDashboard.tsx", import.meta.url), "utf8");
+  // Os cartões do resumo usavam o tamanho das listas exibidas: 80 erros e 40
+  // sessões. O número parava de crescer justamente quando passava do limite.
+  assert.match(worker, /SELECT COUNT\(\*\) AS total FROM application_errors WHERE created_at > \?/);
+  assert.match(worker, /SELECT COUNT\(\*\) AS total FROM user_sessions WHERE expires_at > \?/);
+  assert.doesNotMatch(worker, /errosUltimas24h: errosRecentes\.length/);
+  assert.doesNotMatch(worker, /sessoesAtivas: sessoes\.results\.length/);
+  // E "integrações" contava provedores com atividade importada — no máximo
+  // quatro — em vez de conexões de verdade.
+  assert.match(worker, /FROM external_integrations WHERE status = 'Conectado'/);
+  assert.match(dev, /relógios e aplicativos conectados/);
+});
+
+test("accepts an e-mail as the maintenance login and closes the previous one", async () => {
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // O login de manutenção só aceitava nome curto: escrever um e-mail em
+  // DEV_LOGIN devolvia "not_configured" e a conta simplesmente não existia,
+  // enquanto o painel continuava mostrando "DEV_LOGIN ✓".
+  assert.match(auth, /return \/\^\[a-zA-Z0-9\._-\]\{1,60\}\$\/\.test\(valor\) \|\| isValidEmail\(valor\)/);
+  assert.match(worker, /devLoginConfigurado: Boolean\(env\.DEV_LOGIN\) && isValidDevLogin\(String\(env\.DEV_LOGIN\)\)/);
+  // E trocar o login deixava a conta anterior de pé, com a senha antiga
+  // valendo: cada troca somava uma porta de acesso irrestrito.
+  assert.match(auth, /WHERE role = 'dev' AND email <> \? AND status <> 'Bloqueado'/);
+  assert.match(auth, /UPDATE user_accounts SET status = 'Bloqueado'/);
+  assert.match(auth, /await destroySessionsForUser\(db, conta\.id\)/);
+});
+
+test("lets maintenance manage any account, and refuses the deletions that orphan data", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const dev = await readFile(new URL("../app/DevDashboard.tsx", import.meta.url), "utf8");
+  // O /api/accounts do treinador só alcança alunos: cria sempre com papel de
+  // aluno e recusa bloquear um treinador. A manutenção precisa de outro alcance.
+  assert.match(worker, /async function devAccountsApi/);
+  assert.match(worker, /url\.pathname === "\/api\/dev\/accounts"/);
+  assert.match(worker, /acao === "reset_password"/);
+  assert.match(worker, /acao === "delete"/);
+  // Excluir é a única ação sem volta, e por isso é a mais restrita.
+  assert.match(worker, /cannot_delete_self/);
+  assert.match(worker, /configured_coach/);
+  assert.match(worker, /last_dev_account/);
+  assert.match(worker, /coach_has_athletes/);
+  // Cada recusa diz o motivo e a saída — "não foi possível" obrigaria a adivinhar.
+  assert.match(worker, /motivo: string; saida: string/);
+  assert.match(dev, /acaoNaConta\(c, "delete"\)/);
+  assert.match(dev, /detalhe\?\.motivo \? "Não é possível excluir esta conta"/);
+});
+
+test("keeps the privacy policy compliant with the LGPD", async () => {
+  const privacy = await readFile(new URL("../app/privacy/page.tsx", import.meta.url), "utf8");
+  const auth = await readFile(new URL("../app/AuthGate.tsx", import.meta.url), "utf8");
+  const entry = await readFile(new URL("../app/StudentEntry.tsx", import.meta.url), "utf8");
+  // O documento existia, mas sem o que a lei pede: controlador, base legal de
+  // cada tratamento, prazo de guarda, direitos completos e suboperadores.
+  assert.match(privacy, /Encarregado pelo tratamento de dados pessoais/);
+  assert.match(privacy, /Base legal: execução do contrato/);
+  assert.match(privacy, /São dados sensíveis de saúde/);
+  assert.match(privacy, /Por quanto tempo guardamos/);
+  assert.match(privacy, /portabilidade dos seus dados a outro fornecedor/);
+  assert.match(privacy, /Cloudflare, Inc\./);
+  assert.match(privacy, /Transferência internacional/);
+  assert.match(privacy, /Menores de 18 anos/);
+  // E precisa ser alcançável antes de entrar e antes de cadastrar.
+  assert.match(auth, /href="\/privacy"/);
+  assert.match(entry, /href="\/privacy"/);
+});
+
+test("reads the exported activity file in the browser", async () => {
+  const leitor = await readFile(new URL("../app/atividade-arquivo.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Ler a página pública de uma atividade seria raspagem, proibida pelos termos
+  // da API. O arquivo exportado não depende de aprovação de fabricante nenhum.
+  assert.match(leitor, /function leTcx/);
+  assert.match(leitor, /function leGpx/);
+  assert.match(leitor, /TotalTimeSeconds/);
+  assert.match(leitor, /trkpt/);
+  assert.match(leitor, /haversine/);
+  // O arquivo não sobe: sobem tempo e distância, como se digitados.
+  assert.match(leitor, /A leitura acontece aqui, no navegador/);
+  assert.match(client, /className="analysis-arquivo"/);
+  assert.match(client, /accept="\.gpx,\.tcx/);
 });
 
 test("uses real coach dashboard counts and reviews every registered race", async () => {
@@ -1163,7 +1399,7 @@ test("opens the student on today's workout with a friendlier mobile experience",
   assert.match(client, /\[\["Hoje","⌂"\],\["Minha semana","▤"\]/);
   assert.match(css, /\.student-instructions>article/);
   assert.match(css, /\.quick-feedback/);
-  assert.match(css, /\.student-week-grid/);
+  assert.match(await readCss("app/globals.css"), /\.student-week-list/);
   assert.match(css, /\.student-nav\{left:10px/);
 });
 
@@ -1615,12 +1851,47 @@ test("keeps the install prompt below open dialogs", async () => {
 test("gives the invite buttons one shared shape", async () => {
   const css = await readCss("../app/globals.css");
   // O botão do WhatsApp não tinha .gold nem .outline, então não herdava raio
-  // nem espaçamento e destoava em altura dos vizinhos.
-  assert.match(css, /\.invite-link-actions button\{[^}]*border-radius:9px/);
-  assert.match(css, /\.invite-link-actions button\{[^}]*padding:11px 16px/);
+  // nem espaçamento e destoava em altura dos vizinhos. O raio deixou de ser um
+  // 9px avulso e passa pelo sistema: verificar o token em vez do número mantém
+  // o propósito do teste e ainda garante que a forma não saia da escala.
+  // WhatsApp e e-mail viraram <a>, então a forma tem de valer para os dois
+  // tipos de elemento — é o mesmo propósito, agora cobrindo mais um caso.
+  assert.match(css, /\.invite-link-actions button,\.invite-link-actions a\{[^}]*border-radius:var\(--radius-md\)/);
+  assert.match(css, /\.invite-link-actions button,\.invite-link-actions a\{[^}]*padding:11px 16px/);
+  // Altura mínima igual em todos, senão o link fica mais baixo que o botão.
+  assert.match(css, /\.invite-link-actions button,\.invite-link-actions a\{[^}]*min-height:var\(--control-lg\)/);
   assert.match(css, /\.account-issued-actions\{display:flex/);
   // Um provedor indisponível não pode ter o mesmo peso visual de uma ação real.
   assert.match(css, /\.integration-center article button:disabled\{[^}]*cursor:not-allowed/);
+});
+
+test("offers a working way to send the invite on every browser", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // O recorte começa nos auxiliares de nível de módulo que o componente usa
+  // para ler o navegador, e não na função em si.
+  const convite = client.slice(client.indexOf("const semAssinatura"), client.indexOf("function AccessRequests"));
+
+  // O botão "Outras opções" chamava navigator.share e, sem a API, caía no
+  // copiar gravando um estado que muda o rótulo do botão vizinho — para quem
+  // clicava, ele não fazia nada. navigator.share não existe no Chrome de Linux
+  // nem no Firefox, então o caminho nativo não pode ser o único oferecido.
+  assert.match(convite, /wa\.me\/\?text=/, "o convite precisa de um caminho por WhatsApp");
+  assert.match(convite, /mailto:\?subject=/, "o convite precisa de um caminho por e-mail");
+  assert.match(convite, /copyText\(message\)/, "o convite precisa de um caminho por cópia");
+
+  // O compartilhamento do sistema (AirDrop no Apple, Quick Share no Android)
+  // só pode aparecer quando o navegador realmente o oferece.
+  assert.match(convite, /typeof navigator\.share === "function"/);
+  assert.match(convite, /temShareNativo && <button/, "o botão nativo tem de ser condicional");
+
+  // WhatsApp e e-mail precisam ser <a>: a abertura por script é barrada por
+  // bloqueador de pop-up e não responde a Ctrl/Cmd+clique. O parêntese é
+  // proposital — procura a chamada, não a menção dela num comentário.
+  assert.doesNotMatch(convite, /window\.open\(/);
+
+  // A origem só existe no navegador; lê-la no corpo do componente faria o
+  // servidor renderizar um link vazio e o cliente outro.
+  assert.doesNotMatch(convite, /typeof window!=="undefined"\?window\.location\.origin/);
 });
 
 test("greets the coach by the name on the account, not a name baked into the code", async () => {
@@ -2030,15 +2301,46 @@ test("drops resolved injuries out of the notice board", async () => {
 test("makes every number on the panel lead somewhere", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   const css = await readCss("../app/globals.css");
-  // Um número que indica pendência e não leva a lugar nenhum obriga a
-  // procurar no menu o que já estava na tela.
-  const cartoes = client.match(/<button className="stat-card"/g) ?? [];
-  assert.equal(cartoes.length, 4, "os quatro números do painel precisam ser clicáveis");
-  assert.match(client, /className="stat-card" onClick=\{\(\)=>go\("Alunos"\)\}/);
-  assert.match(client, /className="stat-card" onClick=\{\(\)=>go\("Provas"\)\}/);
-  // O de dor abre a lesão em vez de mandar para a lista de alunos.
-  assert.match(client, /openPain\(\{id:painReports\[0\]\.id,athleteName:painReports\[0\]\.athlete_name\}\)/);
-  assert.match(css, /\.stats \.stat-card\{/);
+  // Um número que não leva a lugar nenhum obriga a procurar no menu o que já
+  // estava na tela.
+  assert.match(client, /<button onClick=\{\(\)=>go\("Alunos"\)\}><small>Alunos ativos<\/small>/);
+  assert.match(client, /<button onClick=\{\(\)=>go\("Provas"\)\}><small>Próxima prova<\/small>/);
+  // E cada grupo de treinamento abre a lista já filtrada por aquela distância.
+  assert.match(client, /onClick=\{\(\)=>chooseDistance\(group\.name\)\}/);
+  assert.match(css, /\.coach-week-facts button\{/);
+});
+
+test("keeps a single queue for what needs the coach decision", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Um único relato de dor chegava a ocupar cinco blocos do painel ao mesmo
+  // tempo. A Central de avisos é a fila; o resto da tela é contexto que não se
+  // repete. Cada bloco abaixo era uma cópia do mesmo aviso.
+  assert.match(client, /className="coach-notification-center"/);
+  assert.doesNotMatch(client, /className="stat-card"/);
+  assert.doesNotMatch(client, /className="attention"/);
+  assert.doesNotMatch(client, /className="coach-feedbacks"/);
+  assert.doesNotMatch(client, /className="dashboard-pending-zones"/);
+  // E a dobra do painel informa em vez de vender.
+  assert.doesNotMatch(client, /Treinos claros/);
+});
+
+test("does not report a percentage for a workout nobody measured", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // O servidor grava 0/0 quando o aluno conclui sem informar tempo nem
+  // distância. Exibir "0% certo" acusaria um erro que ninguém mediu.
+  assert.match(client, /item\.classification==="Concluído sem medição"\?<div className="accuracy-numbers"><em>Sem medição<\/em><\/div>/);
+  // A conferência mostra os maiores desvios e guarda a lista inteira atrás de
+  // um clique, em vez de ocupar um terço da página.
+  assert.match(client, /const destaque=\[\.\.\.foraDoPlano\].*\.slice\(0,3\)/);
+  assert.match(client, /className="accuracy-toggle"/);
+});
+
+test("agrees the verb with the number of pending situations", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Saía "1 situação precisam da sua decisão": plural() flexiona o substantivo
+  // e deixava o verbo sempre no plural.
+  assert.match(client, /const concordar = \(quantidade: number/);
+  assert.match(client, /concordar\(pendencias,"precisa","precisam"\)/);
 });
 
 test("leaves only an undo on a race that was already approved", async () => {

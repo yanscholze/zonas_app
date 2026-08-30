@@ -191,6 +191,9 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             </button>
           )}
           <small>Esqueceu a senha? O professor redefine para você pelo painel.</small>
+          {/* A LGPD pede que a política esteja acessível antes do cadastro, não
+              só depois de entrar: é aqui que o consentimento começa. */}
+          <small className="auth-legal"><a href="/privacy">Política de Privacidade</a> · <a href="/terms">Termos de Uso</a></small>
         </footer>
 
         <InstallApp inline />

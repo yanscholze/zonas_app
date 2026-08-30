@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, describeError } from "./api-client";
 import { signOut, type Session } from "./AuthGate";
+import { avise, pergunte, CentralDeAvisos } from "./avisos";
 
 /**
  * Painel de manutenção.
@@ -89,6 +90,33 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
     } catch (e) { setErro(describeError(e, "Não foi possível abrir a área deste treinador.")); }
   };
 
+  /**
+   * Ações da manutenção sobre uma conta.
+   *
+   * Excluir é a única sem volta, e o servidor recusa quando a conta ainda é
+   * dona de alguma coisa. A recusa vem com motivo e saída, e é isso que a tela
+   * mostra — "não foi possível" sozinho obrigaria a adivinhar.
+   */
+  const acaoNaConta = async (conta: Conta, acao: "reset_password" | "block" | "unblock" | "delete") => {
+    const rotulos = {
+      reset_password: { titulo: `Gerar nova senha temporária para ${conta.email}?`, descricao: "A senha atual deixa de valer na hora e as sessões abertas caem. A nova aparece uma única vez.", confirmar: "Gerar senha", perigo: false },
+      block: { titulo: `Bloquear ${conta.email}?`, descricao: "A conta perde o acesso imediatamente e as sessões abertas caem. Pode ser liberada depois.", confirmar: "Bloquear conta", perigo: true },
+      unblock: { titulo: `Liberar ${conta.email}?`, descricao: "A conta volta a entrar com a senha que já tinha.", confirmar: "Liberar conta", perigo: false },
+      delete: { titulo: `Excluir ${conta.email}?`, descricao: "A conta é apagada e não há como desfazer. O servidor recusa se ela ainda for dona de alunos.", confirmar: "Excluir definitivamente", perigo: true },
+    }[acao];
+    if (!await pergunte(rotulos)) return;
+    try {
+      const r = await api.post<{ temporaryPassword?: string; status?: string; deleted?: boolean }>("/api/dev/accounts", { action: acao, email: conta.email });
+      if (r.temporaryPassword) setSenhaNova({ email: conta.email, senha: r.temporaryPassword });
+      else avise("ok", acao === "delete" ? "Conta excluída" : "Conta atualizada", `${conta.email}${r.status ? ` · ${r.status}` : ""}`);
+      await carregar();
+    } catch (e) {
+      const detalhe = (e as { details?: { motivo?: string; saida?: string } }).details;
+      avise("erro", detalhe?.motivo ? "Não é possível excluir esta conta" : "Não foi possível concluir",
+        detalhe?.motivo ? `${detalhe.motivo} ${detalhe.saida ?? ""}`.trim() : describeError(e, "Tente novamente em alguns instantes."));
+    }
+  };
+
   const criarTreinador = async () => {
     if (novo.name.trim().length < 3 || !novo.email.includes("@")) {
       setErro("Informe nome e e-mail do treinador."); return;
@@ -130,7 +158,7 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
       <nav className="dev-tabs">
         {([
           ["resumo", "Resumo"],
-          ["erros", `Erros${dados?.erros.length ? ` (${dados.erros.length})` : ""}`],
+          ["erros", `Erros${dados?.saude.errosUltimas24h ? ` (${dados.saude.errosUltimas24h})` : ""}`],
           ["contas", `Contas${dados?.contas.length ? ` (${dados.contas.length})` : ""}`],
           ["seguranca", "Segurança"],
           ["banco", "Banco"],
@@ -184,30 +212,32 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
             {semDono > 0 && <p className="dev-hint">{semDono} aluno(s) ainda sem treinador dono.</p>}
           </section>
 
+          {/* Cada número leva à tela onde ele é detalhado: um indicador que não
+              abre nada obriga a procurar no menu o que já estava à vista. */}
           <section className="dev-cards">
-            <article className={semErros ? "ok" : "alerta"}>
+            <button className={semErros ? "ok" : "alerta"} onClick={() => setAba("erros")}>
               <small>ERROS · 24 H</small>
               <b>{saude?.errosUltimas24h}</b>
-              <span>{semErros ? "nenhuma falha registrada" : "requer atenção"}</span>
-            </article>
-            <article>
+              <span>{semErros ? "nenhuma falha registrada" : "requer atenção"} →</span>
+            </button>
+            <button onClick={() => setAba("contas")}>
               <small>SESSÕES ATIVAS</small>
               <b>{saude?.sessoesAtivas}</b>
-              <span>logins válidos agora</span>
-            </article>
-            <article>
+              <span>logins válidos agora{(saude?.sessoesAtivas ?? 0) > dados.sessoes.length ? ` · tabela mostra ${dados.sessoes.length}` : ""} →</span>
+            </button>
+            <button onClick={() => setAba("contas")}>
               <small>CONTAS</small>
               <b>{dados.contas.length}</b>
-              <span>{saude?.contasBloqueadas} bloqueada(s)</span>
-            </article>
-            <article>
+              <span>{saude?.contasBloqueadas} bloqueada(s) →</span>
+            </button>
+            <button onClick={() => document.getElementById("dev-ambiente")?.scrollIntoView({ behavior: "smooth", block: "start" })}>
               <small>INTEGRAÇÕES</small>
               <b>{saude?.integracoesConectadas}</b>
-              <span>com atividade importada</span>
-            </article>
+              <span>relógios e aplicativos conectados →</span>
+            </button>
           </section>
 
-          <section className="dev-panel">
+          <section className="dev-panel" id="dev-ambiente">
             <h2>Ambiente</h2>
             <p className="dev-hint">Só a presença de cada variável — o valor nunca sai do servidor.</p>
             <div className="dev-env">
@@ -244,7 +274,7 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
 
         {aba === "erros" && <section className="dev-panel">
           <h2>Erros da aplicação</h2>
-          <p className="dev-hint">Registrados pelo Worker. Guardam área, código e status — nunca dado de aluno.</p>
+          <p className="dev-hint">Registrados pelo Worker. Guardam área, código e status — nunca dado de aluno. A tabela mostra as 80 ocorrências mais recentes; o cartão do resumo conta todas as últimas 24 horas.</p>
           {dados.erros.length === 0 ? <p className="dev-empty">Nenhum erro registrado.</p> : (
             <table className="dev-table">
               <thead><tr><th>Quando</th><th>Área</th><th>Código</th><th>Método</th><th>Status</th></tr></thead>
@@ -265,7 +295,7 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
           <section className="dev-panel">
             <h2>Todas as contas</h2>
             <table className="dev-table">
-              <thead><tr><th>Papel</th><th>Login</th><th>Nome</th><th>Aluno</th><th>Situação</th><th>Último acesso</th><th>Falhas</th></tr></thead>
+              <thead><tr><th>Papel</th><th>Login</th><th>Nome</th><th>Aluno</th><th>Situação</th><th>Último acesso</th><th>Falhas</th><th>Ações</th></tr></thead>
               <tbody>{dados.contas.map(c => (
                 <tr key={c.id}>
                   <td><span className={`dev-role ${c.role}`}>{c.role}</span></td>
@@ -275,6 +305,13 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
                   <td>{c.status}{Number(c.must_change_password) === 1 ? " · senha temporária" : ""}</td>
                   <td>{quando(c.last_login_at)}</td>
                   <td>{c.failed_attempts || 0}{c.locked_until ? " · travada" : ""}</td>
+                  <td className="dev-acoes">
+                    <button onClick={() => void acaoNaConta(c, "reset_password")}>Nova senha</button>
+                    {c.status === "Bloqueado"
+                      ? <button onClick={() => void acaoNaConta(c, "unblock")}>Liberar</button>
+                      : <button onClick={() => void acaoNaConta(c, "block")}>Bloquear</button>}
+                    <button className="dev-excluir" onClick={() => void acaoNaConta(c, "delete")}>Excluir</button>
+                  </td>
                 </tr>
               ))}</tbody>
             </table>
@@ -343,6 +380,7 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
 
         <footer className="dev-footer">Diagnóstico gerado em {quando(dados.generatedAt)}</footer>
       </>}
+      <CentralDeAvisos />
     </main>
   );
 }

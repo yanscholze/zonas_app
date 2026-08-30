@@ -283,12 +283,18 @@ export function isValidEmail(email: string): boolean {
 }
 
 /**
- * Identificador de login aceito para a conta de manutenção. Diferente das
- * contas de treinador e aluno, não precisa ser um e-mail — é um nome curto que
- * o dono digita, e nunca recebe mensagem nenhuma.
+ * Identificador de login aceito para a conta de manutenção.
+ *
+ * Aceita um nome curto — a conta não recebe mensagem nenhuma — ou um e-mail,
+ * porque quem instala costuma preferir o próprio endereço. O e-mail precisa
+ * ser diferente do usado pela conta de treinador: `user_accounts.email` tem
+ * índice único, e repetir o endereço converteria a conta existente em conta de
+ * manutenção. Um sufixo `+dev` resolve, e chega na mesma caixa de entrada.
  */
 export function isValidDevLogin(login: string): boolean {
-  return /^[a-zA-Z0-9._-]{1,60}$/.test(login);
+  const valor = login.trim();
+  if (valor.length < 1 || valor.length > 254) return false;
+  return /^[a-zA-Z0-9._-]{1,60}$/.test(valor) || isValidEmail(valor);
 }
 
 /**
@@ -306,6 +312,19 @@ export async function ensureDevAccount(
   if (!devPassword || devPassword.length < MIN_PASSWORD_LENGTH) return "not_configured";
   const login = devLogin.trim().toLowerCase();
   const existente = await db.prepare("SELECT id FROM user_accounts WHERE email = ? AND role = 'dev' LIMIT 1").bind(login).first();
+
+  /* Trocar DEV_LOGIN deixava a conta anterior ativa, com a senha antiga ainda
+     valendo: cada mudança de login somava mais uma porta de acesso irrestrito.
+     A conta configurada agora é a única de manutenção que continua de pé, e as
+     sessões da anterior caem junto. */
+  const anteriores = await db.prepare(
+    "SELECT id FROM user_accounts WHERE role = 'dev' AND email <> ? AND status <> 'Bloqueado'",
+  ).bind(login).all();
+  for (const conta of (anteriores.results ?? []) as Array<{ id: string }>) {
+    await db.prepare("UPDATE user_accounts SET status = 'Bloqueado', updated_at = ? WHERE id = ?").bind(Date.now(), conta.id).run();
+    await destroySessionsForUser(db, conta.id);
+  }
+
   if (existente) return "ready";
   await createAccount(db, {
     email: login,
