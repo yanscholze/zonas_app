@@ -1402,6 +1402,7 @@ test("turns a written workout into structured steps before release", async () =>
 test("implements the approved mobile coach dashboard instead of leaving it as a mockup", async () => {
   const client = await readFile("app/ZonasAppClient.tsx", "utf8");
   const mobileCss = await readCss("app/overrides.css");
+  const css = await readCss("app/globals.css");
   assert.match(client, /VISÃO DO PROFESSOR/);
   assert.match(client, /Olá, \{coachName\.split\(" "\)\[0\]\}/);
   assert.match(client, /Treinos hoje/);
@@ -1411,7 +1412,15 @@ test("implements the approved mobile coach dashboard instead of leaving it as a 
   assert.match(client, /Atividade recente/);
   assert.match(client, /Transforme cada treino em evolução/);
   assert.match(mobileCss, /\.mobile-coach-home/);
-  assert.match(mobileCss, /\.sidebar\{position:fixed/);
+  assert.match(mobileCss, /\.sidebar nav button:nth-child\(n\+5\)\{display:none\}/);
+  // A barra flutuante precisa ser declarada em globals.css: overrides.css é
+  // importado na primeira linha dele e perde qualquer empate de especificidade.
+  // Enquanto ela morava só em overrides.css, `position:static` a anulava.
+  assert.match(css, /\.sidebar\{position:fixed;z-index:50;top:auto;left:10px;right:10px;bottom:10px/);
+  assert.doesNotMatch(css, /\.sidebar\{position:static/);
+  assert.doesNotMatch(mobileCss, /\.sidebar\{position:fixed/);
+  // O conteúdo reserva o espaço da barra.
+  assert.match(css, /\.content\{padding:0 14px 92px\}/);
 });
 
 test("opens the student on today's workout with a friendlier mobile experience", async () => {
