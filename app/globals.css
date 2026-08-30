@@ -8186,6 +8186,32 @@ input {
   cursor: pointer;
 }
 
+/* O convite flutuante ganhou um × que o dispensa. Ele fica ao lado da pílula, e
+   não sobreposto a ela, para continuar sendo um alvo de toque inteiro no
+   celular. O convite dentro da página não recebe esse botão, então o arranjo em
+   linha vale só para o cartão flutuante. */
+.install-app-card:not(.install-app-inline) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.install-app-card>.install-app-dismiss {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid #66532c;
+  border-radius: 999px;
+  background: #1b1915;
+  color: #f6ead0;
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1;
+  box-shadow: 0 10px 30px #0008;
+  cursor: pointer;
+}
+
 .install-app-card>div {
   position: absolute;
   right: 0;
