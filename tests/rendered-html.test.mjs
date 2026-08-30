@@ -1141,19 +1141,39 @@ test("turns a written workout into structured steps before release", async () =>
   assert.match(css, /\.written-workout-converter/);
 });
 
-test("implements the approved mobile coach dashboard instead of leaving it as a mockup", async () => {
+test("serves one coach panel at every width, with a single pending queue", async () => {
   const client = await readFile("app/ZonasAppClient.tsx", "utf8");
+  const css = await readCss("app/globals.css");
   const mobileCss = await readCss("app/overrides.css");
-  assert.match(client, /VISÃO DO PROFESSOR/);
-  assert.match(client, /Olá, \{coachName\.split\(" "\)\[0\]\}/);
-  assert.match(client, /Treinos hoje/);
-  assert.match(client, /Pendentes/);
-  assert.match(client, /Concluídos/);
-  assert.match(client, /Novo treino/);
-  assert.match(client, /Atividade recente/);
-  assert.match(client, /Transforme cada treino em evolução/);
-  assert.match(mobileCss, /\.mobile-coach-home/);
-  assert.match(mobileCss, /\.sidebar\{position:fixed/);
+
+  // O celular tinha um painel próprio que repetia o resto da tela. Ele saiu:
+  // os mesmos blocos do desktop atendem as duas larguras, e o que o celular
+  // ganha é a barra lateral virando barra inferior.
+  assert.doesNotMatch(client, /MobileCoachHome/);
+  assert.doesNotMatch(mobileCss, /mobile-coach-home|mobile-coach-stats|mobile-recent|mobile-new-workout/);
+  assert.match(mobileCss, /\.sidebar nav button:nth-child\(n\+5\)\{display:none\}/);
+
+  // Uma fila só. O quadro "ATENÇÃO" do hero e os cartões de saúde do rodapé
+  // listavam os mesmos relatos que a central, então saíram — do código e do CSS.
+  assert.match(client, /className="coach-notification-center"/);
+  assert.doesNotMatch(client, /className="attention"/);
+  assert.doesNotMatch(client, /className="coach-feedbacks"/);
+  assert.doesNotMatch(css, /\}\.attention\{/);
+  assert.doesNotMatch(css, /coach-feedbacks/);
+
+  // O texto do relato só existia nos cartões que saíram, então passou a compor
+  // o detalhe do aviso em vez de se perder.
+  assert.match(client, /item\.note\|\|item\.training_impact/);
+
+  // "Treinos hoje" também só existia no celular: desceu para os números do
+  // painel com o cálculo intacto.
+  assert.match(client, /const workoutsToday=athletes\.filter\(athlete=>!String\(athlete\.next\)\.includes\("Aguardando"\)\)\.length/);
+  assert.match(client, /<small>TREINOS HOJE<\/small><b>\{workoutsToday\}<\/b>/);
+
+  // Cinco números não cabem lado a lado em telas estreitas: encolhem em etapas.
+  assert.match(css, /\.stats\{display:grid;grid-template-columns:repeat\(5,1fr\)/);
+  assert.match(css, /\.stats,\.groups\{grid-template-columns:repeat\(3,1fr\)\}/);
+  assert.match(css, /\.stats\{grid-template-columns:repeat\(2,1fr\)\}/);
 });
 
 test("opens the student on today's workout with a friendlier mobile experience", async () => {
@@ -2033,9 +2053,10 @@ test("makes every number on the panel lead somewhere", async () => {
   // Um número que indica pendência e não leva a lugar nenhum obriga a
   // procurar no menu o que já estava na tela.
   const cartoes = client.match(/<button className="stat-card"/g) ?? [];
-  assert.equal(cartoes.length, 4, "os quatro números do painel precisam ser clicáveis");
+  assert.equal(cartoes.length, 5, "os cinco números do painel precisam ser clicáveis");
   assert.match(client, /className="stat-card" onClick=\{\(\)=>go\("Alunos"\)\}/);
   assert.match(client, /className="stat-card" onClick=\{\(\)=>go\("Provas"\)\}/);
+  assert.match(client, /className="stat-card" onClick=\{\(\)=>go\("Calendário"\)\}/);
   // O de dor abre a lesão em vez de mandar para a lista de alunos.
   assert.match(client, /openPain\(\{id:painReports\[0\]\.id,athleteName:painReports\[0\]\.athlete_name\}\)/);
   assert.match(css, /\.stats \.stat-card\{/);

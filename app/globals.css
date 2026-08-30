@@ -207,9 +207,9 @@ input {
   width: 100%;
 }
 
+/* Um cartão só: a fila de pendências que dividia esta faixa vive na central. */
 .hero {
   display: grid;
-  grid-template-columns: 1.6fr 1fr;
   gap: 15px;
 }
 
@@ -249,42 +249,6 @@ input {
   margin-bottom: 26px;
 }
 
-.attention {
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  padding: 20px;
-  background: var(--panel);
-}
-
-.attention>header {
-  display: flex;
-  justify-content: space-between;
-  color: var(--muted);
-  font-size: 9px;
-  letter-spacing: .13em;
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 15px;
-}
-
-.attention>header b {
-  color: var(--gold);
-}
-
-.attention article {
-  display: grid;
-  grid-template-columns: 8px 1fr auto;
-  gap: 11px;
-  align-items: center;
-  padding: 19px 0;
-  border-bottom: 1px solid var(--line);
-}
-
-.attention article i {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-}
-
 .red {
   background: var(--red);
 }
@@ -293,20 +257,9 @@ input {
   background: #e6a337;
 }
 
-.attention article strong,
-.attention article small {
-  display: block;
-  font-size: 12px;
-}
-
-.attention article small {
-  color: var(--muted);
-  margin-top: 4px;
-}
-
 .stats {
   display: grid;
-  grid-template-columns: repeat(4,1fr);
+  grid-template-columns: repeat(5,1fr);
   gap: 11px;
   margin: 15px 0 38px;
 }
@@ -1063,6 +1016,7 @@ input {
     display: grid;
     place-items: center;
   }
+  .stats,
   .groups {
     grid-template-columns: repeat(3,1fr);
   }
@@ -1112,14 +1066,15 @@ input {
   .top h1 {
     font-size: 19px;
   }
-  .hero {
-    grid-template-columns: 1fr;
-  }
   .hero h2 {
     font-size: 29px;
   }
   .stats {
     grid-template-columns: repeat(2,1fr);
+  }
+  /* Cinco cartões em duas colunas: o último ocupa a linha em vez de sobrar. */
+  .stats .stat-card:last-child {
+    grid-column: span 2;
   }
   .groups {
     display: flex;
@@ -1244,7 +1199,6 @@ input {
   }
 }
 
-.attention-link,
 .athlete-row {
   cursor: pointer;
 }
@@ -1843,86 +1797,6 @@ input {
   }
 }
 
-.feedback-title {
-  margin-top: 34px;
-}
-
-.coach-feedbacks {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 11px;
-}
-
-.coach-feedbacks article {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 16px;
-}
-
-.coach-feedbacks article.pain {
-  border-color: #6e382f;
-}
-
-.coach-feedbacks article>div {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-
-.coach-feedbacks article>div>b {
-  width: 32px;
-  height: 32px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: #2e291d;
-  color: var(--gold);
-  font-size: 9px;
-}
-
-.coach-feedbacks article strong,
-.coach-feedbacks article small {
-  display: block;
-}
-
-.coach-feedbacks article small {
-  font-size: 8px;
-  color: var(--muted);
-  margin-top: 3px;
-}
-
-.coach-feedbacks article em {
-  display: inline-block;
-  margin-top: 13px;
-  padding: 5px 8px;
-  border-radius: 14px;
-  background: #3a251d;
-  color: #ff9b76;
-  font-style: normal;
-  font-size: 9px;
-}
-
-.coach-feedbacks article:not(.pain) em {
-  background: #342d1c;
-  color: #eac064;
-}
-
-.coach-feedbacks article p {
-  color: var(--muted);
-  font-size: 10px;
-  min-height: 24px;
-}
-
-.coach-feedbacks article button {
-  border: 0;
-  background: transparent;
-  color: var(--gold);
-  padding: 0;
-  font-weight: 800;
-  font-size: 9px;
-}
-
 .history-tab {
   min-height: 320px;
 }
@@ -2007,9 +1881,6 @@ input {
 }
 
 @media(max-width:760px) {
-  .coach-feedbacks {
-    grid-template-columns: 1fr;
-  }
   .history-head {
     align-items: flex-start;
     gap: 8px;
@@ -12140,10 +12011,6 @@ input {
 .stats .stat-card span {
   font-size: 10px;
   color: var(--gold);
-}
-
-.attention-link {
-  cursor: pointer;
 }
 
 /* Prova aprovada: resta apenas desfazer, e desfazer é uma ação de risco. */
