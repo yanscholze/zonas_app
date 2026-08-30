@@ -98,6 +98,28 @@ test("makes ZonasApp installable on phones and computers", async () => {
   assert.match(serviceWorker, /zonasapp-shell-v2/);
 });
 
+test("lets the floating install invite be dismissed for the session", async () => {
+  const installer = await readFile(new URL("../app/InstallApp.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // O convite flutuante só sumia quando o aplicativo era mesmo instalado, então
+  // quem usa o ZonasApp pelo navegador ficava com o canto inferior direito
+  // coberto para sempre — a conferência automática no painel do treinador e o
+  // cabeçalho da Central de avisos no celular.
+  assert.match(installer, /"zonasapp:install-dismissed"/);
+  assert.match(installer, /className="install-app-dismiss"/);
+  assert.match(installer, /aria-label="Dispensar o convite para instalar"/);
+  assert.match(installer, /sessionStorage\.getItem\(DISMISSED_KEY\)/);
+  assert.match(installer, /sessionStorage\.setItem\(DISMISSED_KEY/);
+  // A dispensa vale pelo tempo da sessão do navegador: guardar em localStorage
+  // faria o convite nunca mais voltar.
+  assert.doesNotMatch(installer, /localStorage/);
+  // O convite dentro da página não cobre nada, então nem ganha o × nem some
+  // junto com o cartão flutuante.
+  assert.match(installer, /dismissed && !inline/);
+  assert.match(installer, /!inline && <button className="install-app-dismiss"/);
+  assert.match(css, /\.install-app-card>\.install-app-dismiss\{[^}]*border-radius:999px/);
+});
+
 const developmentPreviewMeta =
   /<meta(?=[^>]*\bname=["']codex-preview["'])(?=[^>]*\bcontent=["']development["'])[^>]*>/i;
 
