@@ -1437,6 +1437,38 @@ test("lets the coach create and edit their own base plans", async () => {
   assert.match(worker, /plan_in_use/);
 });
 
+test("makes the injury assessment an action, not a label", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  // A avaliação existia só como texto escrito de passagem ao trocar a situação
+  // do caso: não havia como saber, depois, o que o treinador decidiu fazer.
+  assert.match(schema, /assessmentConduct: text\("assessment_conduct"\)/);
+  assert.match(worker, /acao === "assess"/);
+  assert.match(worker, /const CONDUTAS_DE_LESAO = \[/);
+  assert.match(worker, /reviewed_by = \?, reviewed_at = \?, assessment_conduct = \?/);
+  // A conduta escolhida no cliente é uma das que o servidor aceita.
+  assert.match(client, /const CONDUTAS = \[/);
+  assert.match(client, /action: "assess", conduct: conduta/);
+  // E o quadro passa a mostrar a conduta, não o texto livre.
+  assert.match(client, /<small>AVALIAÇÃO<\/small>\{caso\.assessment_conduct \|\| "ainda não"\}/);
+});
+
+test("keeps a single place to generate the month charges", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // A geração chegou a existir no cartão do topo e num cartão próprio logo
+  // abaixo, com o mesmo botão: duas portas para a mesma ação convidam a gerar
+  // duas vezes sem perceber.
+  assert.doesNotMatch(client, /className="financial-generate"/);
+  assert.match(client, /className="financial-quick-setup"/);
+  assert.match(client, /2\. QUEM RECEBE A COBRANÇA/);
+  assert.match(client, /3\. Gerar cobranças do mês/);
+  assert.equal((client.match(/action:"generate_month"/g) ?? []).length, 1);
+  // E o controle nativo de arquivo some da vista sem sair do alcance do teclado.
+  assert.match(client, /clipPath:"inset\(50%\)"/);
+  assert.doesNotMatch(client, /"Anexar comprovante"/);
+});
+
 test("uses real coach dashboard counts and reviews every registered race", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");

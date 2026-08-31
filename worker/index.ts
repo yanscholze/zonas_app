@@ -98,7 +98,7 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/athlete-planning": new Set(["athleteName","plan","phase","weekNumber","totalWeeks"]),
   "/api/performance-tests": new Set(["athleteName","testDate","distanceKm","minutes","seconds","age","id","action","zones","tempoRuns"]),
   "/api/training-weeks": new Set(["athleteName","weekStart","plan","phase","weekLabel","trainingDays","sessions","status","auditDifferences","expectedUpdatedAt"]),
-  "/api/pain-reports": new Set(["athleteName","bodyArea","intensity","trainingImpact","note","action","id","weekStart","status"]),
+  "/api/pain-reports": new Set(["athleteName","bodyArea","intensity","trainingImpact","note","action","id","weekStart","status","conduct"]),
   "/api/races-records": new Set(["kind","athleteName","name","raceDate","distance","city","goal","priority","resultTime","eventName","action","id","status"]),
   "/api/athlete-access": new Set(["athleteName","email","status"]),
   "/api/access-request": new Set(["name","phone","objective","distance","trainingDays","integration"]),
@@ -1334,6 +1334,14 @@ async function ensurePainReports(env: Env) {
 /** Estados pelos quais um relato caminha, do aviso do aluno até a alta. */
 const PAIN_STATUSES = ["Novo", "Em análise", "Verificado", "Resolvido"] as const;
 
+/** Condutas possíveis depois de avaliar uma queixa. */
+const CONDUTAS_DE_LESAO = [
+  "Segue treinando normalmente",
+  "Reduzir carga nesta semana",
+  "Pausar e reavaliar",
+  "Encaminhar para profissional de saúde",
+];
+
 async function registraMovimentoDor(env: Env, reportId: string, actor: string, action: string, note: string | null) {
   await env.DB.prepare(
     "INSERT INTO pain_report_updates (id, report_id, actor_email, action, note, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -1417,6 +1425,24 @@ async function painReportsApi(request: Request, env: Env): Promise<Response> {
     await env.DB.prepare(`UPDATE pain_reports SET ${campos.join(", ")} WHERE id = ?`).bind(...valores, reportId).run();
     await registraMovimentoDor(env, reportId, actor, `Situação: ${novoStatus}`, note || null);
     return Response.json({ status: novoStatus, updatedAt: agora });
+  }
+
+  /* A avaliação era só um texto escrito de passagem ao trocar a situação. Como
+     passo próprio, ela carimba quem avaliou e quando, e registra a conduta —
+     que é o que muda o treino da semana. */
+  if (acao === "assess") {
+    const conduta = boundedText(input.conduct, 60);
+    if (!CONDUTAS_DE_LESAO.includes(conduta)) {
+      return Response.json({ error: "invalid_conduct", allowed: CONDUTAS_DE_LESAO }, { status: 400 });
+    }
+    await env.DB.prepare(`UPDATE pain_reports SET
+        status = CASE WHEN status = 'Resolvido' THEN status ELSE 'Verificado' END,
+        reviewed_by = ?, reviewed_at = ?, assessment_conduct = ?, coach_note = COALESCE(?, coach_note)
+      WHERE id = ?`)
+      .bind(actor, agora, conduta, note || null, reportId).run();
+    await registraMovimentoDor(env, reportId, actor, `Avaliação: ${conduta}`, note || null);
+    const depois = await env.DB.prepare("SELECT status FROM pain_reports WHERE id = ? LIMIT 1").bind(reportId).first() as { status?: string } | null;
+    return Response.json({ status: depois?.status ?? "Verificado", reviewedAt: agora, conduct: conduta });
   }
 
   if (acao === "review") {

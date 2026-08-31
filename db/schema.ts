@@ -115,6 +115,14 @@ export const painReports = sqliteTable("pain_reports", {
   /* Acompanhamento da queixa, do aviso do aluno até a alta. */
   reviewedBy: text("reviewed_by"),
   reviewedAt: integer("reviewed_at"),
+  /**
+   * Conduta decidida na avaliação.
+   *
+   * A avaliação existia apenas como texto livre, escrito de passagem ao mudar
+   * a situação do caso: não havia como saber, depois, o que o treinador
+   * decidiu fazer. A conduta é o que muda o treino da semana.
+   */
+  assessmentConduct: text("assessment_conduct"),
   contactedAt: integer("contacted_at"),
   coachNote: text("coach_note"),
   resolution: text("resolution"),

@@ -9508,7 +9508,9 @@ p, span, b, strong, small, em, li, td, th, label {
   min-width: 170px;
 }
 
-.financial-quick-setup>div {
+/* `>div` alcançava qualquer filho direto, e o bloco de alcance da cobrança
+   virou uma das quatro colunas de campos ao entrar aqui. A grade é dos campos. */
+.financial-quick-setup>div:not(.financial-scope) {
   display: grid;
   grid-template-columns: 1fr .55fr 1.4fr 1fr;
   gap: 9px;
@@ -11846,6 +11848,31 @@ p, span, b, strong, small, em, li, td, th, label {
   font-size: var(--fs-xs);
 }
 
+/* A avaliação virou um passo com conduta, e não mais um texto solto. */
+.pain-dash-conduta>div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.pain-dash-conduta button {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.pain-dash-conduta button.selected {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: #111;
+  font-weight: var(--fw-bold);
+}
+
 /* --- Planilhas criadas pelo treinador -------------------------------------- */
 
 .plan-form {
@@ -12147,12 +12174,31 @@ p, span, b, strong, small, em, li, td, th, label {
   cursor: pointer;
 }
 
-/* Um botão de gerar, com o alcance escolhido antes. */
+/* Um botão de gerar, com o alcance escolhido antes, dentro do mesmo cartão do
+   padrão: a geração chegou a existir em dois lugares com o mesmo botão. */
 .financial-scope {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+
+.financial-scope>.overline {
+  display: block;
+  margin-bottom: var(--space-2);
+}
+
+.financial-scope>div {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-  margin-bottom: var(--space-3);
+}
+
+.financial-scope-class {
+  margin-top: var(--space-3);
+}
+
+.financial-scope-athletes {
+  margin-top: var(--space-3);
 }
 
 .financial-scope button,
@@ -12249,8 +12295,13 @@ p, span, b, strong, small, em, li, td, th, label {
   cursor: pointer;
 }
 
-.payment-receipt-add input {
-  display: none;
+.payment-receipt-add {
+  position: relative;
+}
+
+.payment-receipt-add:focus-within {
+  border-style: solid;
+  border-color: var(--gold);
 }
 
 .comprovante-aberto {
