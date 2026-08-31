@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Cópias do projeto criadas pelas sessões de fundo. São o mesmo código de
+    // novo: sem isto, o lint do projeto reporta cada problema uma vez por
+    // cópia e o total deixa de dizer alguma coisa.
+    ".claude/worktrees/**",
   ]),
 ]);
 

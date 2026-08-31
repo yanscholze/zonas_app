@@ -1399,28 +1399,38 @@ test("turns a written workout into structured steps before release", async () =>
   assert.match(css, /\.written-workout-converter/);
 });
 
-test("implements the approved mobile coach dashboard instead of leaving it as a mockup", async () => {
+test("serves one coach panel at every width, with a single pending queue", async () => {
   const client = await readFile("app/ZonasAppClient.tsx", "utf8");
-  const mobileCss = await readCss("app/overrides.css");
   const css = await readCss("app/globals.css");
-  assert.match(client, /VISÃO DO PROFESSOR/);
-  assert.match(client, /Olá, \{coachName\.split\(" "\)\[0\]\}/);
-  assert.match(client, /Treinos hoje/);
-  assert.match(client, /Pendentes/);
-  assert.match(client, /Concluídos/);
-  assert.match(client, /Novo treino/);
-  assert.match(client, /Atividade recente/);
-  assert.match(client, /Transforme cada treino em evolução/);
-  assert.match(mobileCss, /\.mobile-coach-home/);
+  const mobileCss = await readCss("app/overrides.css");
+
+  // O celular tinha um painel próprio que repetia o resto da tela. Ele saiu:
+  // os mesmos blocos do desktop atendem as duas larguras, e o que o celular
+  // ganha é a barra lateral virando barra inferior.
+  assert.doesNotMatch(client, /MobileCoachHome/);
+  assert.doesNotMatch(mobileCss, /mobile-coach-home|mobile-coach-stats|mobile-recent|mobile-new-workout/);
   assert.match(mobileCss, /\.sidebar nav button:nth-child\(n\+5\)\{display:none\}/);
-  // A barra flutuante precisa ser declarada em globals.css: overrides.css é
-  // importado na primeira linha dele e perde qualquer empate de especificidade.
-  // Enquanto ela morava só em overrides.css, `position:static` a anulava.
-  assert.match(css, /\.sidebar\{position:fixed;z-index:50;top:auto;left:10px;right:10px;bottom:10px/);
-  assert.doesNotMatch(css, /\.sidebar\{position:static/);
-  assert.doesNotMatch(mobileCss, /\.sidebar\{position:fixed/);
-  // O conteúdo reserva o espaço da barra.
-  assert.match(css, /\.content\{padding:0 14px 92px\}/);
+
+  // Uma fila só. O quadro "ATENÇÃO" do hero e os cartões de saúde do rodapé
+  // listavam os mesmos relatos que a central, então saíram — do código e do CSS.
+  assert.match(client, /className="coach-notification-center"/);
+  assert.doesNotMatch(client, /className="attention"/);
+  assert.doesNotMatch(client, /className="coach-feedbacks"/);
+  assert.doesNotMatch(css, /\}\.attention\{/);
+  assert.doesNotMatch(css, /coach-feedbacks/);
+
+  // O texto do relato só existia nos cartões que saíram, então passou a compor
+  // o detalhe do aviso em vez de se perder.
+  assert.match(client, /item\.note\|\|item\.training_impact/);
+
+  // A contagem que só existia no celular sobreviveu na faixa da semana, com o
+  // mesmo cálculo de antes.
+  assert.match(client, /const comTreino=athletes\.filter\(athlete=>!String\(athlete\.next\)\.includes\("Aguardando"\)\)\.length/);
+  assert.match(client, /com treino programado/);
+
+  // E a faixa encolhe em uma coluna quando não cabe lado a lado.
+  assert.match(css, /\.coach-week\{display:grid/);
+  assert.match(css, /@media\(max-width:1080px\)\{\.coach-week\{grid-template-columns:1fr/);
 });
 
 test("opens the student on today's workout with a friendlier mobile experience", async () => {
@@ -2371,8 +2381,7 @@ test("agrees the verb with the number of pending situations", async () => {
   // Saía "1 situação precisam da sua decisão": plural() flexiona o substantivo
   // e deixava o verbo sempre no plural.
   assert.match(client, /const concordar = \(quantidade: number/);
-  assert.match(client, /concordar\(pendencias,"precisa","precisam"\)/);
-});
+  assert.match(client, /concordar\(pendencias,"precisa","precisam"\)/);});
 
 test("leaves only an undo on a race that was already approved", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");

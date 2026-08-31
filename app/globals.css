@@ -1329,7 +1329,6 @@ p, span, b, strong, small, em, li, td, th, label {
   z-index: 20;
 }
 
-
 /* =============================================================================
    AVISOS E CONFIRMAÇÕES DO SISTEMA
    Substituem `window.alert` e `window.confirm`, que não tinham a aparência do
@@ -1828,8 +1827,7 @@ p, span, b, strong, small, em, li, td, th, label {
     height: 82px;
   }
   .top h1 {
-    font-size:var(--fs-lg);
-  }
+    font-size:var(--fs-lg);  }
   .athlete-list {
     overflow: auto;
   }
