@@ -108,6 +108,7 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/student/feedbacks": new Set(["feeling","note","weekStart","workoutDay"]),
   "/api/student/workout-executions": new Set(["weekStart","workoutDay","actualMinutes","actualKm","action","note"]),
   "/api/student/integration-preference": new Set(["integration"]),
+  "/api/student/performance-tests": new Set(["id","minutes","seconds"]),
   "/api/financial": new Set(["action","pixKey","pixName","defaultAmount","dueDay","athleteName","referenceMonth","amount","status","dueDate","classId","name","scope","className","athletes","image","note"]),
   "/api/feedbacks": new Set(["id","status"]),
   "/api/student/races-records": new Set(["kind","name","raceDate","distance","city","goal","priority","resultTime","eventName"]),
@@ -983,6 +984,27 @@ async function studentProfileApi(request: Request, env: Env, athleteName: string
 }
 
 async function studentPerformanceTestsApi(request: Request, env: Env, athleteName: string): Promise<Response> {
+  await ensureTables(env, schema.performanceTests);
+
+  /* O aluno devolve só o que ele mede: o tempo. As zonas continuam saindo do
+     cálculo do treinador na revisão — é ele quem responde pelos ritmos. */
+  if (request.method === "POST") {
+    const input = await request.json() as Record<string, unknown>;
+    const id = boundedText(input.id, 80);
+    const minutes = Number(input.minutes);
+    const seconds = Number(input.seconds);
+    if (!id) return Response.json({ error: "test_required" }, { status: 400 });
+    if (!Number.isFinite(minutes) || minutes < 0 || minutes > 120 || !Number.isFinite(seconds) || seconds < 0 || seconds > 59) {
+      return Response.json({ error: "invalid_test_time" }, { status: 400 });
+    }
+    const total = Math.round(minutes * 60 + seconds);
+    if (total < 240) return Response.json({ error: "test_time_too_short", motivo: "O tempo informado é curto demais para um teste.", saida: "Confira os minutos e os segundos." }, { status: 400 });
+    const alvo = await env.DB.prepare("SELECT id FROM performance_tests WHERE id = ? AND athlete_name = ? AND status = 'Solicitado' LIMIT 1").bind(id, athleteName).first();
+    if (!alvo) return Response.json({ error: "test_not_found" }, { status: 404 });
+    await env.DB.prepare("UPDATE performance_tests SET total_seconds = ?, status = 'Aguardando revisão' WHERE id = ?").bind(total, id).run();
+    return Response.json({ sent: true, totalSeconds: total });
+  }
+
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
   await ensureTables(env, schema.performanceTests);
   const tests = await env.DB.prepare("SELECT id,test_date,distance_km,total_seconds,vam,vo2,fc_max,pace_seconds,zones,tempo_runs,status FROM performance_tests WHERE athlete_name = ? ORDER BY test_date DESC,created_at DESC").bind(athleteName).all();
@@ -1214,6 +1236,35 @@ async function performanceTestsApi(request: Request, env: Env): Promise<Response
   if (request.method === "POST") {
     const input = await request.json() as Record<string,unknown>;
     const action = boundedText(input.action,20);
+
+    /* O teste passou a ter um começo: o treinador pede, o aluno realiza e
+       devolve o tempo, e só então o treinador revisa e libera as zonas. Antes
+       o treinador digitava o resultado inteiro sozinho, e não havia como o
+       aluno saber que precisava correr um teste. */
+    if (action === "request") {
+      const athleteName = boundedText(input.athleteName,120);
+      const distanceKm = Number(input.distanceKm);
+      const testDate = boundedText(input.testDate,10);
+      if (!athleteName) return Response.json({error:"athlete_required"},{status:400});
+      if (![3,5].includes(distanceKm)) return Response.json({error:"invalid_test_distance"},{status:400});
+      if (testDate && !isIsoDate(testDate)) return Response.json({error:"invalid_test_date"},{status:400});
+      const pendente = await env.DB.prepare("SELECT id FROM performance_tests WHERE athlete_name = ? AND status IN ('Solicitado','Aguardando revisão') LIMIT 1").bind(athleteName).first();
+      if (pendente) return Response.json({error:"test_already_pending", motivo:"Já existe um teste em aberto para este aluno.", saida:"Revise ou cancele o atual antes de pedir outro."},{status:409});
+      const id = crypto.randomUUID();
+      await env.DB.prepare(`INSERT INTO performance_tests
+        (id,athlete_name,test_date,distance_km,total_seconds,age,vam,vo2,fc_max,pace_seconds,zones,tempo_runs,status,created_at)
+        VALUES (?,?,?,?,0,0,'0','0',0,'0','[]','[]','Solicitado',?)`)
+        .bind(id, athleteName, testDate || new Date().toISOString().slice(0,10), distanceKm, Date.now()).run();
+      return Response.json({requested:true,id,athleteName,distanceKm},{status:201});
+    }
+
+    if (action === "cancel_request") {
+      const id = boundedText(input.id,80);
+      if (!id) return Response.json({error:"test_required"},{status:400});
+      await env.DB.prepare("DELETE FROM performance_tests WHERE id = ? AND status IN ('Solicitado','Aguardando revisão')").bind(id).run();
+      return Response.json({cancelled:true});
+    }
+
     if (action === "review" || action === "approve") {
       const id = boundedText(input.id,80);
       const zones = Array.isArray(input.zones) ? input.zones : [];

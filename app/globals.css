@@ -11966,6 +11966,130 @@ p, span, b, strong, small, em, li, td, th, label {
   }
 }
 
+/* --- Teste de desempenho: pedido, resposta e revisão ----------------------- */
+
+.test-request {
+  margin: var(--space-4) 0;
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-3);
+}
+
+.test-request>div {
+  display: flex;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 var(--space-3);
+}
+
+.test-request>div button {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.test-request>div button.selected {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: #111;
+  font-weight: var(--fw-bold);
+}
+
+.test-request>.gold {
+  height: var(--control-md);
+  padding: 0 var(--space-4);
+}
+
+.test-request-open,
+.test-request-back {
+  margin: var(--space-3) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.test-request-back {
+  color: var(--green);
+}
+
+.test-request-open button {
+  margin-left: var(--space-2);
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--red);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+/* Lado do aluno: o pedido chega como uma tarefa, não como um aviso. */
+.student-test-request {
+  margin: var(--space-4) 0;
+  padding: var(--space-5);
+  border: 1px solid #c49a37;
+  border-radius: var(--radius-lg);
+  background: #fff;
+}
+
+.student-test-request h2 {
+  margin: var(--space-2) 0;
+  font: 500 20px Georgia, serif;
+}
+
+.student-test-request p {
+  margin: 0 0 var(--space-4);
+  color: #6f6a62;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-base);
+}
+
+.student-test-request>div {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.student-test-request label {
+  display: grid;
+  gap: var(--space-1);
+  color: #6f6a62;
+  font-size: var(--fs-overline);
+  letter-spacing: var(--tracking-overline);
+}
+
+.student-test-request input {
+  height: var(--control-lg);
+  padding: 0 var(--space-3);
+  border: 1px solid #ded9cd;
+  border-radius: var(--radius-md);
+  background: #fff;
+  color: #1b1a18;
+  font-size: var(--fs-md);
+}
+
+.student-test-request>.gold {
+  width: 100%;
+  height: var(--control-lg);
+}
+
+.student-test-waiting {
+  display: grid;
+  gap: var(--space-1);
+  margin: var(--space-4) 0;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: #edf8f1;
+  color: #23593d;
+}
+
+.student-test-waiting span {
+  font-size: var(--fs-sm);
+}
+
 /* Assumir que o aluno não tem prova-alvo. */
 .profile-section>.sem-prova {
   display: grid;
@@ -12014,6 +12138,24 @@ p, span, b, strong, small, em, li, td, th, label {
 
 .week>article.arrastando {
   opacity: .5;
+}
+
+/* Dia disponível e ainda sem treino: é o buraco da semana. Verde porque está
+   livre para receber, não porque esteja certo. */
+.week>article.dia-vazio {
+  border-color: var(--green);
+  border-style: dashed;
+}
+
+.week>article.dia-vazio>header small,
+.week>article.dia-vazio>header b {
+  color: var(--green);
+}
+
+/* Durante o arrasto, o dia que o aluno não pode treinar diz que não aceita. */
+.week>article.recusa-arrasto {
+  opacity: .35;
+  cursor: not-allowed;
 }
 
 .week>article.alvo-do-arrasto {

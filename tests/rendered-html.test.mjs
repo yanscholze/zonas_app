@@ -1469,6 +1469,33 @@ test("keeps a single place to generate the month charges", async () => {
   assert.doesNotMatch(client, /"Anexar comprovante"/);
 });
 
+test("runs the performance test as a round trip", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Antes o treinador digitava o resultado inteiro sozinho e o aluno não tinha
+  // como saber que precisava correr um teste. Agora o teste tem um começo.
+  assert.match(worker, /action === "request"/);
+  assert.match(worker, /'Solicitado'/);
+  assert.match(worker, /test_already_pending/);
+  // O aluno devolve só o tempo; as zonas continuam saindo da revisão.
+  assert.match(worker, /UPDATE performance_tests SET total_seconds = \?, status = 'Aguardando revisão'/);
+  assert.match(worker, /AND status = 'Solicitado' LIMIT 1/);
+  assert.match(client, /className="student-test-request"/);
+  assert.match(client, /action:"request",athleteName,distanceKm:distanciaPedida/);
+});
+
+test("marks the days the athlete can train but has no workout", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // O buraco da semana é o dia disponível e vazio: é o que falta preencher.
+  assert.match(client, /const vazioEDisponivel=podeReceber&&\(!sessions\[day\]\|\|sessions\[day\]\.removed\)/);
+  assert.match(css, /\.week>article\.dia-vazio/);
+  // E o arrasto recusa o dia em que o aluno não treina, dizendo isso.
+  assert.match(client, /if\(podeReceber\)\{evento\.preventDefault\(\)/);
+  assert.match(client, /!current\.days\.includes\(destino\)\)return/);
+  assert.match(css, /\.week>article\.recusa-arrasto/);
+});
+
 test("uses real coach dashboard counts and reviews every registered race", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
