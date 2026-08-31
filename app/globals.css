@@ -1030,15 +1030,32 @@ input {
   .shell {
     display: block;
   }
+  /*
+     Barra de navegação flutuante do treinador. Ela precisa ser declarada aqui,
+     e não na seção mobile-dashboard.css de overrides.css, porque globals.css
+     importa overrides.css na primeira linha: em empate de especificidade quem
+     vence é este arquivo. Enquanto a barra morava só lá, este bloco a anulava
+     com `position:static` e ela nunca chegava a aparecer.
+     `top:auto` neutraliza o `top:0` da regra base de `.sidebar`, que de outro
+     modo grudaria a barra no topo mesmo com `bottom:10px`.
+  */
   .sidebar {
-    position: static;
-    width: 100%;
-    height: auto;
-    padding: 14px;
+    position: fixed;
+    z-index: 50;
+    top: auto;
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    width: auto;
+    height: 67px;
+    padding: 8px 10px;
     display: flex;
     flex-direction: row;
     align-items: center;
-    overflow: auto;
+    border: 1px solid #3d3930;
+    border-radius: 18px;
+    background: #171718eb;
+    box-shadow: 0 14px 40px #000;
   }
   .sidebar .brand div,
   .coach,
@@ -1047,7 +1064,10 @@ input {
   }
   .sidebar nav {
     display: flex;
-    margin: 0 0 0 14px;
+    width: 100%;
+    justify-content: space-around;
+    margin: 0;
+    overflow: hidden;
   }
   .sidebar nav button {
     font-size: 0;
@@ -1057,8 +1077,9 @@ input {
     width: auto;
     font-size: 18px;
   }
+  /* Os 92px reservam o espaço da barra flutuante (67px + 10px + folga). */
   .content {
-    padding: 0 14px 40px;
+    padding: 0 14px 92px;
   }
   .top {
     height: 82px;
@@ -8057,6 +8078,32 @@ input {
   cursor: pointer;
 }
 
+/* O convite flutuante ganhou um × que o dispensa. Ele fica ao lado da pílula, e
+   não sobreposto a ela, para continuar sendo um alvo de toque inteiro no
+   celular. O convite dentro da página não recebe esse botão, então o arranjo em
+   linha vale só para o cartão flutuante. */
+.install-app-card:not(.install-app-inline) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.install-app-card>.install-app-dismiss {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid #66532c;
+  border-radius: 999px;
+  background: #1b1915;
+  color: #f6ead0;
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1;
+  box-shadow: 0 10px 30px #0008;
+  cursor: pointer;
+}
+
 .install-app-card>div {
   position: absolute;
   right: 0;
@@ -11346,6 +11393,15 @@ input {
   }
   .shell.com-visita {
     padding-top: var(--faixa-visita);
+  }
+  /*
+     No celular a barra lateral vira a barra flutuante de baixo, então a faixa
+     de visita não precisa empurrá-la: sem isto o `top` acima esticaria a barra
+     da faixa até o rodapé.
+  */
+  .shell.com-visita .sidebar {
+    top: auto;
+    height: 67px;
   }
 }
 

@@ -98,6 +98,28 @@ test("makes ZonasApp installable on phones and computers", async () => {
   assert.match(serviceWorker, /zonasapp-shell-v2/);
 });
 
+test("lets the floating install invite be dismissed for the session", async () => {
+  const installer = await readFile(new URL("../app/InstallApp.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // O convite flutuante só sumia quando o aplicativo era mesmo instalado, então
+  // quem usa o ZonasApp pelo navegador ficava com o canto inferior direito
+  // coberto para sempre — a conferência automática no painel do treinador e o
+  // cabeçalho da Central de avisos no celular.
+  assert.match(installer, /"zonasapp:install-dismissed"/);
+  assert.match(installer, /className="install-app-dismiss"/);
+  assert.match(installer, /aria-label="Dispensar o convite para instalar"/);
+  assert.match(installer, /sessionStorage\.getItem\(DISMISSED_KEY\)/);
+  assert.match(installer, /sessionStorage\.setItem\(DISMISSED_KEY/);
+  // A dispensa vale pelo tempo da sessão do navegador: guardar em localStorage
+  // faria o convite nunca mais voltar.
+  assert.doesNotMatch(installer, /localStorage/);
+  // O convite dentro da página não cobre nada, então nem ganha o × nem some
+  // junto com o cartão flutuante.
+  assert.match(installer, /dismissed && !inline/);
+  assert.match(installer, /!inline && <button className="install-app-dismiss"/);
+  assert.match(css, /\.install-app-card>\.install-app-dismiss\{[^}]*border-radius:999px/);
+});
+
 const developmentPreviewMeta =
   /<meta(?=[^>]*\bname=["']codex-preview["'])(?=[^>]*\bcontent=["']development["'])[^>]*>/i;
 
@@ -1174,6 +1196,25 @@ test("serves one coach panel at every width, with a single pending queue", async
   assert.match(css, /\.stats\{display:grid;grid-template-columns:repeat\(5,1fr\)/);
   assert.match(css, /\.stats,\.groups\{grid-template-columns:repeat\(3,1fr\)\}/);
   assert.match(css, /\.stats\{grid-template-columns:repeat\(2,1fr\)\}/);
+  const css = await readCss("app/globals.css");
+  assert.match(client, /VISÃO DO PROFESSOR/);
+  assert.match(client, /Olá, \{coachName\.split\(" "\)\[0\]\}/);
+  assert.match(client, /Treinos hoje/);
+  assert.match(client, /Pendentes/);
+  assert.match(client, /Concluídos/);
+  assert.match(client, /Novo treino/);
+  assert.match(client, /Atividade recente/);
+  assert.match(client, /Transforme cada treino em evolução/);
+  assert.match(mobileCss, /\.mobile-coach-home/);
+  assert.match(mobileCss, /\.sidebar nav button:nth-child\(n\+5\)\{display:none\}/);
+  // A barra flutuante precisa ser declarada em globals.css: overrides.css é
+  // importado na primeira linha dele e perde qualquer empate de especificidade.
+  // Enquanto ela morava só em overrides.css, `position:static` a anulava.
+  assert.match(css, /\.sidebar\{position:fixed;z-index:50;top:auto;left:10px;right:10px;bottom:10px/);
+  assert.doesNotMatch(css, /\.sidebar\{position:static/);
+  assert.doesNotMatch(mobileCss, /\.sidebar\{position:fixed/);
+  // O conteúdo reserva o espaço da barra.
+  assert.match(css, /\.content\{padding:0 14px 92px\}/);
 });
 
 test("opens the student on today's workout with a friendlier mobile experience", async () => {
