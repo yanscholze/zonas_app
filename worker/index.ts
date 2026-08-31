@@ -126,6 +126,25 @@ function boundedText(value: unknown, max: number): string {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
 }
 
+/**
+ * Dias de treino aceitos, sempre no mesmo vocabulário.
+ *
+ * Os dias são comparados como texto no calendário, na semana gravada e no
+ * perfil. Havia quatro leituras diferentes do mesmo campo: umas aceitavam
+ * qualquer texto, outra descartava em silêncio o que não estivesse em
+ * maiúsculas. Guardar "Seg" onde o resto guarda "SEG" faz o dia nunca casar, e
+ * o aluno acaba sem nenhum dia disponível.
+ */
+const DIAS_DA_SEMANA = ["SEG","TER","QUA","QUI","SEX","SÁB","DOM"];
+
+function diasDeTreino(valor: unknown): string[] {
+  if (!Array.isArray(valor)) return [];
+  const normalizados = valor
+    .map(dia => boundedText(dia, 12).toLocaleUpperCase("pt-BR"))
+    .filter(dia => DIAS_DA_SEMANA.includes(dia));
+  return [...new Set(normalizados)].slice(0, 7);
+}
+
 function isIsoDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(`${value}T00:00:00Z`));
 }
@@ -880,7 +899,7 @@ async function accessRequestApi(request: Request, env: Env, sessionEmail: string
     const integration = boundedText(input.integration, 30) || "Sem integração";
     const allowedDistances = ["Iniciantes", "5 km", "10 km", "Meia", "Maratona"];
     const allowedIntegrations = [...SUPPORTED_PROVIDER_LABELS, "Sem integração"];
-    const trainingDays = Array.isArray(input.trainingDays) ? input.trainingDays.map(day => boundedText(day, 12)).filter(day => ["SEG","TER","QUA","QUI","SEX","SÁB","DOM"].includes(day)).slice(0, 7) : [];
+    const trainingDays = diasDeTreino(input.trainingDays);
     if (!name || name.length < 3 || !allowedDistances.includes(distance) || !trainingDays.length || !allowedIntegrations.includes(integration)) return Response.json({ error: "invalid_registration" }, { status: 400 });
     const existing = await env.DB.prepare("SELECT status FROM access_requests WHERE email = ? LIMIT 1").bind(email).first() as {status?:string}|null;
     if (existing?.status === "Aprovado") return Response.json({ error: "already_approved" }, { status: 409 });
@@ -912,7 +931,7 @@ async function accessRequestsCoachApi(request: Request, env: Env): Promise<Respo
       await env.DB.prepare("UPDATE access_requests SET status='Recusado', reviewed_by=?, reviewed_at=?, updated_at=? WHERE id=?").bind(actor,now,now,id).run();
       return Response.json({id,status:"Recusado"});
     }
-    const name=String(row.name); const email=String(row.email); const distance=String(row.distance); const days=String(row.training_days||"[]"); const integration=String(row.integration||"Sem integração");
+    const name=String(row.name); const email=String(row.email); const distance=String(row.distance); const days=JSON.stringify(diasDeTreino((()=>{try{return JSON.parse(String(row.training_days||"[]"))}catch{return[]}})())); const integration=String(row.integration||"Sem integração");
     const initials=name.split(/\s+/).filter(Boolean).slice(0,2).map(part=>part[0]?.toUpperCase()).join("")||"AL";
     const plan=distance==="Iniciantes"?"Iniciantes":distance==="5 km"?"5 km Bronze":distance==="10 km"?"10 km Lion":distance==="Meia"?"Meia Start":"One Marathon";
     const totalWeeks=distance==="Iniciantes"?10:distance==="5 km"?10:distance==="10 km"?16:distance==="Meia"?14:20;
@@ -1064,7 +1083,7 @@ async function athletesApi(request: Request, env: Env): Promise<Response> {
     const phase = boundedText(input.phase, 40);
     const week = boundedText(input.week, 30);
     const nextWorkout = boundedText(input.nextWorkout, 160);
-    const trainingDays = Array.isArray(input.trainingDays) ? input.trainingDays.map(day => boundedText(day, 12)).filter(Boolean).slice(0, 7) : [];
+    const trainingDays = diasDeTreino(input.trainingDays);
     if (!name) return Response.json({ error: "name_required" }, { status: 400 });
     if (!initials || !distance || !phase || !week) return Response.json({ error: "required_fields" }, { status: 400 });
     const jaExiste = await env.DB.prepare("SELECT name FROM athletes WHERE name = ? LIMIT 1").bind(name).first();
@@ -1077,6 +1096,16 @@ async function athletesApi(request: Request, env: Env): Promise<Response> {
       (id, name, initials, distance, phase, week, next_workout, status, phone, email, training_days, integration, created_at, coach_email)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(id, name, initials, distance, phase, week, nextWorkout, boundedText(input.status, 120) || null, boundedText(input.phone, 30) || null, boundedText(input.email, 254).toLowerCase() || null, JSON.stringify(trainingDays), boundedText(input.integration, 40) || null, createdAt, carteiraDe(request))
+      .run();
+    /* O cadastro pelo treinador gravava só `athletes`, enquanto a aprovação de
+       um pedido de acesso gravava também `athlete_profiles`. Como o perfil é a
+       fonte dos dias de treino, o aluno criado por aqui nascia sem dia nenhum e
+       o calendário mostrava a semana inteira indisponível. */
+    await ensureTables(env, schema.athleteProfiles);
+    await env.DB.prepare(`INSERT INTO athlete_profiles (athlete_name, phone, birth_date, objective, integration, training_days, updated_at)
+      VALUES (?, ?, NULL, NULL, ?, ?, ?)
+      ON CONFLICT(athlete_name) DO UPDATE SET phone=excluded.phone, integration=excluded.integration, training_days=excluded.training_days, updated_at=excluded.updated_at`)
+      .bind(name, boundedText(input.phone, 30) || null, boundedText(input.integration, 60) || null, JSON.stringify(trainingDays), createdAt)
       .run();
     return Response.json({ id, createdAt }, { status: 201 });
   }
@@ -1095,7 +1124,7 @@ async function athleteProfileApi(request: Request, env: Env): Promise<Response> 
   if (request.method === "POST") {
     const input = await request.json() as Record<string, unknown>;
     const athleteName = boundedText(input.athleteName, 120);
-    const trainingDays = Array.isArray(input.trainingDays) ? input.trainingDays.map(day => boundedText(day, 12)).filter(Boolean).slice(0, 7) : [];
+    const trainingDays = diasDeTreino(input.trainingDays);
     const birthDate = boundedText(input.birthDate, 10);
     if (!athleteName) return Response.json({ error: "athlete_required" }, { status: 400 });
     if (birthDate && !isIsoDate(birthDate)) return Response.json({ error: "invalid_birth_date" }, { status: 400 });
@@ -1239,7 +1268,7 @@ async function trainingWeeksApi(request: Request, env: Env): Promise<Response> {
       const stored = await env.DB.prepare("SELECT updated_at FROM training_weeks WHERE athlete_name = ? AND week_start = ? LIMIT 1").bind(athleteName, weekStart).first() as { updated_at?: number } | null;
       if (stored?.updated_at && Number(stored.updated_at) !== expectedUpdatedAt) return Response.json({ error: "week_changed", message: "A semana foi alterada em outra tela. Atualize antes de salvar novamente." }, { status: 409 });
     }
-    const trainingDays = Array.isArray(input.trainingDays) ? input.trainingDays.map(day => boundedText(day, 12)).filter(Boolean).slice(0, 7) : [];
+    const trainingDays = diasDeTreino(input.trainingDays);
     if (!input.sessions || Array.isArray(input.sessions) || typeof input.sessions !== "object") return Response.json({ error: "invalid_sessions" }, { status: 400 });
     if (boundedText(input.status ?? "Rascunho", 30) === "Liberada") {
       const sessions = input.sessions as Record<string, unknown>;

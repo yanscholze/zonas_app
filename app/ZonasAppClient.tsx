@@ -1540,13 +1540,15 @@ function AthleteProfile({ athlete, close, onOpenPain }: { athlete: Athlete; clos
 function NewAthlete({ close, save }: { close: () => void; save: (athlete: Athlete, details: Record<string, unknown>) => Promise<void> }) {
   const [name, setName] = useState("");
   const [distance, setDistance] = useState("Iniciantes");
-  const [days, setDays] = useState(["Seg", "Qua", "Sex"]);
+  const [days, setDays] = useState(["SEG", "QUA", "SEX"]);
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [integration, setIntegration] = useState("Garmin");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const weekDays = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
+  /* Mesmo vocabulário do resto do sistema: o calendário, a semana gravada e o
+     perfil comparam os dias como texto, e "Seg" nunca casaria com "SEG". */
+  const weekDays = ["SEG", "TER", "QUA", "QUI", "SEX", "SÁB", "DOM"];
   const toggleDay = (day: string) => setDays(days.includes(day) ? days.filter(d => d !== day) : [...days, day]);
   const submit = async () => {
     if (!name.trim()) return;

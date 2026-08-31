@@ -359,7 +359,9 @@ test("saves and reloads each athlete profile through protected persistence", asy
   const headers = { "content-type":"application/json", ...coachCookie };
   const save = await worker.fetch(new Request("https://zonasapp.example/api/athlete-profile", {method:"POST",headers,body:JSON.stringify({athleteName:"Everton Barbosa",phone:"47999990000",birthDate:"1997-11-11",objective:"10 km",integration:"Garmin",trainingDays:["Ter","Qui","Sáb"]})}), env, {waitUntil(){},passThroughOnException(){}});
   assert.equal(save.status, 200);
-  assert.ok(writes.some(({sql,values}) => sql.includes("INSERT INTO athlete_profiles") && values.includes("Everton Barbosa") && values.includes('["Ter","Qui","Sáb"]')));
+  // Os dias são gravados sempre em maiúsculas: o calendário, a semana e o
+  // perfil comparam como texto, e "Ter" nunca casaria com "TER".
+  assert.ok(writes.some(({sql,values}) => sql.includes("INSERT INTO athlete_profiles") && values.includes("Everton Barbosa") && values.includes('["TER","QUI","SÁB"]')));
   const load = await worker.fetch(new Request("https://zonasapp.example/api/athlete-profile?athlete=Everton%20Barbosa", {headers:{...coachCookie}}), env, {waitUntil(){},passThroughOnException(){}});
   assert.equal(load.status, 200);
   assert.equal((await load.json()).profile.integration, "Garmin");
@@ -1375,6 +1377,21 @@ test("registers the requests refused at the door", async () => {
   // apenas na tela e faziam o envelope recusar o corpo inteiro.
   assert.doesNotMatch(client, /body: JSON\.stringify\(\{ \.\.\.athlete, nextWorkout/);
   assert.match(client, /body: JSON\.stringify\(\{ name: athlete\.name, initials: athlete\.initials/);
+});
+
+test("keeps one vocabulary for the training days", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Havia quatro leituras do mesmo campo: umas aceitavam qualquer texto, outra
+  // descartava em silêncio o que não estivesse em maiúsculas. O formulário
+  // gravava "Seg" e o resto do sistema procurava "SEG".
+  assert.match(worker, /function diasDeTreino\(valor: unknown\): string\[\]/);
+  assert.equal((worker.match(/const trainingDays = diasDeTreino\(input\.trainingDays\);/g) ?? []).length, 4);
+  assert.doesNotMatch(worker, /input\.trainingDays\.map\(day => boundedText\(day, 12\)\)/);
+  assert.match(client, /const weekDays = \["SEG", "TER", "QUA", "QUI", "SEX", "SÁB", "DOM"\]/);
+  // E o cadastro pelo treinador passou a gravar o perfil, como a aprovação de
+  // pedido de acesso já fazia: é de lá que saem os dias disponíveis.
+  assert.match(worker, /INSERT INTO athlete_profiles \(athlete_name, phone, birth_date, objective, integration, training_days, updated_at\)/);
 });
 
 test("uses real coach dashboard counts and reviews every registered race", async () => {
