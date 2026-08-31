@@ -1229,9 +1229,27 @@ test("accepts an e-mail as the maintenance login and closes the previous one", a
   assert.match(worker, /devLoginConfigurado: Boolean\(env\.DEV_LOGIN\) && isValidDevLogin\(String\(env\.DEV_LOGIN\)\)/);
   // E trocar o login deixava a conta anterior de pé, com a senha antiga
   // valendo: cada troca somava uma porta de acesso irrestrito.
-  assert.match(auth, /WHERE role = 'dev' AND email <> \? AND status <> 'Bloqueado'/);
+  assert.match(auth, /WHERE role = 'dev' AND id <> \? AND status <> 'Bloqueado'/);
   assert.match(auth, /UPDATE user_accounts SET status = 'Bloqueado'/);
   assert.match(auth, /await destroySessionsForUser\(db, conta\.id\)/);
+});
+
+test("never leaves the system without a maintenance account", async () => {
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+  // A primeira versão fechava as contas antigas ANTES de garantir a nova, e
+  // comparava por e-mail. Com o ambiente lido pela metade, isso bloqueou as
+  // duas contas de manutenção de uma vez e deixou o sistema sem nenhum acesso
+  // de dev — que é o topo da cadeia e quem destrancaria os outros.
+  const corpo = auth.slice(auth.indexOf("export async function ensureDevAccount"), auth.indexOf("async function registraFechamentoDeManutencao"));
+  const criaOuReativa = Math.min(corpo.indexOf("idConfigurado = criada.id"), corpo.indexOf("UPDATE user_accounts SET status = 'Ativo'"));
+  const fecha = corpo.indexOf("WHERE role = 'dev' AND id <> ?");
+  assert.ok(criaOuReativa > -1 && fecha > criaOuReativa, "a conta configurada precisa existir e estar ativa antes de fechar as outras");
+  // A conta apontada pelo ambiente se conserta sozinha se estiver bloqueada.
+  assert.match(auth, /UPDATE user_accounts SET status = 'Ativo', updated_at = \? WHERE id = \? AND status <> 'Ativo'/);
+  // Mas a trava por tentativa e erro de senha continua valendo.
+  assert.doesNotMatch(corpo, /locked_until = NULL/);
+  // E o fechamento automático deixa rastro: sem registro, era invisível.
+  assert.match(auth, /Conta de manutenção anterior fechada/);
 });
 
 test("lets maintenance manage any account, and refuses the deletions that orphan data", async () => {

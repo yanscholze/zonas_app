@@ -311,30 +311,71 @@ export async function ensureDevAccount(
   if (!devLogin || !isValidDevLogin(devLogin)) return "not_configured";
   if (!devPassword || devPassword.length < MIN_PASSWORD_LENGTH) return "not_configured";
   const login = devLogin.trim().toLowerCase();
-  const existente = await db.prepare("SELECT id FROM user_accounts WHERE email = ? AND role = 'dev' LIMIT 1").bind(login).first();
+
+  const existente = await db.prepare("SELECT id FROM user_accounts WHERE email = ? AND role = 'dev' LIMIT 1").bind(login).first() as { id?: string } | null;
+  let idConfigurado = existente?.id ?? "";
+  let resultado: "ready" | "created" = "ready";
+
+  if (idConfigurado) {
+    /* A manutenção é o topo da cadeia — dev acima do treinador, treinador acima
+       do aluno — e por isso a conta apontada pelo ambiente se conserta sozinha.
+       Sem isso não sobra caminho de volta dentro do aplicativo: quem
+       destrancaria é justamente quem ficou trancado.
+
+       Só o bloqueio administrativo é desfeito. A trava por tentativas erradas
+       (`locked_until`) fica de pé e expira sozinha: limpá-la a cada requisição
+       deixaria a conta mais poderosa do sistema sem defesa contra tentativa e
+       erro de senha. */
+    await db.prepare(
+      "UPDATE user_accounts SET status = 'Ativo', updated_at = ? WHERE id = ? AND status <> 'Ativo'",
+    ).bind(Date.now(), idConfigurado).run();
+  } else {
+    const criada = await createAccount(db, {
+      email: login,
+      name: "Desenvolvimento",
+      role: "dev",
+      password: devPassword,
+      mustChangePassword: false,
+      status: "Ativo",
+    });
+    idConfigurado = criada.id;
+    resultado = "created";
+  }
 
   /* Trocar DEV_LOGIN deixava a conta anterior ativa, com a senha antiga ainda
      valendo: cada mudança de login somava mais uma porta de acesso irrestrito.
-     A conta configurada agora é a única de manutenção que continua de pé, e as
-     sessões da anterior caem junto. */
+     A anterior é fechada — mas só depois que a conta configurada existe e está
+     ativa, e nunca antes. A ordem importa: fechar primeiro e criar depois foi o
+     que bloqueou as duas contas de manutenção de uma vez e deixou o sistema
+     sem nenhum acesso. */
   const anteriores = await db.prepare(
-    "SELECT id FROM user_accounts WHERE role = 'dev' AND email <> ? AND status <> 'Bloqueado'",
-  ).bind(login).all();
-  for (const conta of (anteriores.results ?? []) as Array<{ id: string }>) {
+    "SELECT id, email FROM user_accounts WHERE role = 'dev' AND id <> ? AND status <> 'Bloqueado'",
+  ).bind(idConfigurado).all();
+  for (const conta of (anteriores.results ?? []) as Array<{ id: string; email: string }>) {
     await db.prepare("UPDATE user_accounts SET status = 'Bloqueado', updated_at = ? WHERE id = ?").bind(Date.now(), conta.id).run();
     await destroySessionsForUser(db, conta.id);
+    /* Bloqueio automático sem registro é invisível: quando isto aconteceu, não
+       havia no histórico de segurança nada que explicasse a porta fechada. */
+    await registraFechamentoDeManutencao(db, conta.email, login);
   }
 
-  if (existente) return "ready";
-  await createAccount(db, {
-    email: login,
-    name: "Desenvolvimento",
-    role: "dev",
-    password: devPassword,
-    mustChangePassword: false,
-    status: "Ativo",
-  });
-  return "created";
+  return resultado;
+}
+
+/**
+ * Deixa rastro do fechamento automático de uma conta de manutenção.
+ *
+ * Falhar aqui não pode impedir a autenticação de seguir: o registro é
+ * importante, mas menos do que conseguir entrar.
+ */
+async function registraFechamentoDeManutencao(db: AuthDatabase, fechada: string, atual: string): Promise<void> {
+  try {
+    await db.prepare(
+      "INSERT INTO security_events (id, actor_email, event_type, route, details, created_at) VALUES (?, 'sistema', 'Conta de manutenção anterior fechada', 'ensureDevAccount', ?, ?)",
+    ).bind(crypto.randomUUID(), `Conta ${fechada} · DEV_LOGIN passou a ser ${atual}`, Date.now()).run();
+  } catch {
+    // Tabela ainda não criada nesta instalação: seguir sem registro.
+  }
 }
 
 export async function createAccount(
