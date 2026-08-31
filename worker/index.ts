@@ -158,27 +158,55 @@ function validStructuredValue(value: unknown, depth = 0, longKeys?: Set<string>)
   });
 }
 
-async function validateApiEnvelope(request: Request, url: URL): Promise<Response | null> {
+/**
+ * Recusa no envelope, registrada.
+ *
+ * Estas checagens rodam antes do handler, e por isso a falha não passava por
+ * `applicationFailure`: a requisição era barrada na porta e não aparecia em
+ * lugar nenhum do diagnóstico. Foi o que escondeu um cadastro de aluno que
+ * vinha sendo recusado por campo desconhecido. Só rota, método e código são
+ * gravados — nunca o corpo.
+ */
+async function recusaNaPorta(
+  env: Env,
+  request: Request,
+  url: URL,
+  codigo: string,
+  status: number,
+  extra: Record<string, unknown> = {},
+): Promise<Response> {
+  try {
+    await ensureTables(env, schema.applicationErrors);
+    await env.DB.prepare(
+      "INSERT INTO application_errors (id, area, error_code, method, status_code, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).bind(crypto.randomUUID(), `envelope ${url.pathname}`, codigo, request.method, status, Date.now()).run();
+  } catch {
+    // Registrar é importante, responder é mais: seguir mesmo sem o registro.
+  }
+  return Response.json({ error: codigo, ...extra }, { status });
+}
+
+async function validateApiEnvelope(request: Request, env: Env, url: URL): Promise<Response | null> {
   if (["GET","HEAD","OPTIONS"].includes(request.method.toUpperCase())) return null;
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
-    return Response.json({ error: "json_content_type_required" }, { status: 415 });
+    return await recusaNaPorta(env, request, url, "json_content_type_required", 415);
   }
   const limit = url.pathname.includes("training-weeks") ? TRAINING_BODY_LIMIT
     : url.pathname === "/api/financial" ? FINANCIAL_BODY_LIMIT
     : JSON_BODY_LIMIT;
   const declaredLength = Number(request.headers.get("content-length") || 0);
-  if (declaredLength > limit) return Response.json({ error: "payload_too_large", maxBytes: limit }, { status: 413 });
+  if (declaredLength > limit) return await recusaNaPorta(env, request, url, "payload_too_large", 413, { maxBytes: limit });
   const raw = await request.clone().text();
-  if (new TextEncoder().encode(raw).byteLength > limit) return Response.json({ error: "payload_too_large", maxBytes: limit }, { status: 413 });
+  if (new TextEncoder().encode(raw).byteLength > limit) return await recusaNaPorta(env, request, url, "payload_too_large", 413, { maxBytes: limit });
   let input: unknown;
   try { input = JSON.parse(raw); }
-  catch { return Response.json({ error: "invalid_json" }, { status: 400 }); }
+  catch { return await recusaNaPorta(env, request, url, "invalid_json", 400); }
   if (!input || Array.isArray(input) || typeof input !== "object" || !validStructuredValue(input, 0, longBodyFields[url.pathname])) {
-    return Response.json({ error: "invalid_payload" }, { status: 400 });
+    return await recusaNaPorta(env, request, url, "invalid_payload", 400);
   }
   const allowed = allowedBodyKeys[url.pathname];
   if (allowed && Object.keys(input as Record<string, unknown>).some(key => !allowed.has(key))) {
-    return Response.json({ error: "unexpected_field" }, { status: 400 });
+    return await recusaNaPorta(env, request, url, "unexpected_field", 400);
   }
   return null;
 }
@@ -660,15 +688,53 @@ async function authPasswordApi(request: Request, env: Env): Promise<Response> {
 }
 
 /** Contas de aluno vistas e administradas pelo treinador. */
+/**
+ * Contas de acesso vistas pelo treinador.
+ *
+ * A consulta não tinha recorte nenhum: cada treinador via todas as contas do
+ * sistema — as de manutenção, as dos outros treinadores e os alunos de todas as
+ * carteiras. E `reset_password` não conferia o papel do alvo, então bastava
+ * pedir por outro e-mail para redefinir a senha de uma conta de manutenção.
+ *
+ * A cadeia é dev acima de treinador, treinador acima de aluno: aqui o
+ * treinador alcança apenas os alunos da própria carteira, nunca um par nem
+ * quem está acima dele.
+ */
+/**
+ * Recusa quando o alvo não é um aluno da carteira de quem está pedindo.
+ *
+ * Sem esta checagem bastava trocar o e-mail no corpo da requisição para agir
+ * sobre a conta de outro treinador ou sobre a manutenção — inclusive para
+ * redefinir a senha dela.
+ */
+async function foraDaCarteiraDoTreinador(
+  env: Env,
+  conta: { role?: string; athlete_name?: string | null },
+  carteira: string | null,
+): Promise<Response | null> {
+  if (conta.role !== "student") return Response.json({ error: "student_accounts_only" }, { status: 403 });
+  if (!carteira) return null;
+  const dono = await env.DB.prepare("SELECT coach_email FROM athletes WHERE name = ? LIMIT 1").bind(conta.athlete_name ?? "").first() as { coach_email?: string } | null;
+  if (dono?.coach_email !== carteira) return Response.json({ error: "athlete_not_in_portfolio" }, { status: 403 });
+  return null;
+}
+
 async function coachAccountsApi(request: Request, env: Env): Promise<Response> {
+  const carteira = carteiraDe(request);
+  const recorte = carteira
+    ? { clausula: " AND athletes.coach_email = ?", valores: [carteira] }
+    : { clausula: "", valores: [] as string[] };
+
   if (request.method === "GET") {
     const accounts = await env.DB.prepare(
       `SELECT user_accounts.id, user_accounts.email, user_accounts.name, user_accounts.role,
               user_accounts.athlete_name, user_accounts.status, user_accounts.must_change_password,
               user_accounts.last_login_at, user_accounts.created_at
          FROM user_accounts
-        ORDER BY user_accounts.role DESC, user_accounts.name`,
-    ).all();
+         JOIN athletes ON athletes.name = user_accounts.athlete_name
+        WHERE user_accounts.role = 'student'${recorte.clausula}
+        ORDER BY user_accounts.name`,
+    ).bind(...recorte.valores).all();
     return Response.json({ accounts: accounts.results });
   }
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
@@ -702,6 +768,8 @@ async function coachAccountsApi(request: Request, env: Env): Promise<Response> {
   if (action === "reset_password") {
     const account = await accountByEmail(env.DB, email);
     if (!account) return Response.json({ error: "account_not_found" }, { status: 404 });
+    const impedido = await foraDaCarteiraDoTreinador(env, account, carteira);
+    if (impedido) return impedido;
     const temporaryPassword = generateTemporaryPassword();
     await setPassword(env.DB, account.id, temporaryPassword, true);
     await destroySessionsForUser(env.DB, account.id);
@@ -711,7 +779,8 @@ async function coachAccountsApi(request: Request, env: Env): Promise<Response> {
   if (action === "block" || action === "unblock") {
     const account = await accountByEmail(env.DB, email);
     if (!account) return Response.json({ error: "account_not_found" }, { status: 404 });
-    if (account.role === "coach") return Response.json({ error: "cannot_block_coach" }, { status: 400 });
+    const impedido = await foraDaCarteiraDoTreinador(env, account, carteira);
+    if (impedido) return impedido;
     const status = action === "block" ? "Bloqueado" : "Ativo";
     await env.DB.prepare("UPDATE user_accounts SET status = ?, updated_at = ? WHERE id = ?")
       .bind(status, Date.now(), account.id).run();
@@ -2769,7 +2838,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
             message: "Defina COACH_EMAIL e COACH_INITIAL_PASSWORD no ambiente para criar a conta do treinador.",
           }, { status: 503 });
         }
-        const invalid = await validateApiEnvelope(request, url); if (invalid) return invalid;
+        const invalid = await validateApiEnvelope(request, env, url); if (invalid) return invalid;
         if (url.pathname === "/api/auth/login") {
           const limited = await enforceAuthThrottle(request, url, env); if (limited) return limited;
           return await authLoginApi(request, url, env);
@@ -2827,7 +2896,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
         if (!identity) return Response.json({ error: "authentication_required" }, { status: 401 });
         if (identity.role !== "student") return Response.json({ error: "student_access_required" }, { status: 403 });
         const limited = await enforceTrafficProtection(request, url, env, identity.email); if (limited) return limited;
-        const invalid = await validateApiEnvelope(request, url); if (invalid) return invalid;
+        const invalid = await validateApiEnvelope(request, env, url); if (invalid) return invalid;
         const duplicate = await preventDuplicateSubmission(request, url, env, identity.email); if (duplicate) return duplicate;
         if (url.pathname === "/api/student/dashboard") return await studentDashboardApi(request, env, identity.athleteName);
         if (url.pathname === "/api/student/profile") return await studentProfileApi(request, env, identity.athleteName);
@@ -2850,7 +2919,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
         const session = await identityFromRequest(env.DB, request);
         if (!session) return Response.json({ error:"authentication_required" }, { status:401 });
         const limited = await enforceTrafficProtection(request,url,env,session.email); if(limited)return limited;
-        const invalid = await validateApiEnvelope(request,url); if(invalid)return invalid;
+        const invalid = await validateApiEnvelope(request, env, url); if(invalid)return invalid;
         const duplicate = await preventDuplicateSubmission(request,url,env,session.email); if(duplicate)return duplicate;
         return await accessRequestApi(request,env,session.email,session.name);
       } catch { return await applicationFailure(env,request,"solicitação de cadastro","database_unavailable"); }
@@ -2862,7 +2931,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
       const actorEmail = normalizedAuthenticatedEmail(request) as string;
       const limited = await enforceTrafficProtection(request, url, env, actorEmail);
       if (limited) return limited;
-      const invalid = await validateApiEnvelope(request, url); if (invalid) return invalid;
+      const invalid = await validateApiEnvelope(request, env, url); if (invalid) return invalid;
       const duplicate = await preventDuplicateSubmission(request, url, env, actorEmail); if (duplicate) return duplicate;
     }
 
@@ -2877,7 +2946,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
       const negado = requireDevApiAccess(request);
       if (negado) return negado;
       try {
-        const invalido = await validateApiEnvelope(request, url); if (invalido) return invalido;
+        const invalido = await validateApiEnvelope(request, env, url); if (invalido) return invalido;
         return await devCoachesApi(request, env);
       } catch { return await applicationFailure(env, request, "treinadores", "dev_coaches_unavailable"); }
     }

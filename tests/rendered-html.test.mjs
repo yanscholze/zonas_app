@@ -1344,6 +1344,39 @@ test("keeps the payment receipt small enough to live in the database", async () 
   assert.match(worker, /if \(typeof value === "string"\) return value\.length <= 12_000;/);
 });
 
+test("shows the coach only the students of their own portfolio", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // A consulta não tinha recorte: cada treinador via todas as contas do sistema,
+  // as de manutenção e os alunos das outras carteiras.
+  assert.match(worker, /WHERE user_accounts\.role = 'student'\$\{recorte\.clausula\}/);
+  assert.match(worker, /JOIN athletes ON athletes\.name = user_accounts\.athlete_name/);
+  // E `reset_password` não conferia o papel do alvo: bastava trocar o e-mail no
+  // corpo para redefinir a senha de uma conta de manutenção.
+  assert.match(worker, /async function foraDaCarteiraDoTreinador/);
+  assert.match(worker, /student_accounts_only/);
+  assert.match(worker, /athlete_not_in_portfolio/);
+  const corpo = worker.slice(worker.indexOf("async function coachAccountsApi"), worker.indexOf("async function athletesApi"));
+  for (const acao of ['action === "reset_password"', 'action === "block" || action === "unblock"']) {
+    const trecho = corpo.slice(corpo.indexOf(acao));
+    assert.ok(trecho.indexOf("foraDaCarteiraDoTreinador") > -1 && trecho.indexOf("foraDaCarteiraDoTreinador") < trecho.indexOf("return Response.json({ reset") + 400, `${acao} precisa checar a carteira antes de agir`);
+  }
+});
+
+test("registers the requests refused at the door", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // O envelope recusa antes do handler, então nada passava por
+  // `applicationFailure`: um cadastro de aluno vinha sendo recusado por campo
+  // desconhecido e não aparecia em lugar nenhum do diagnóstico.
+  assert.match(worker, /async function recusaNaPorta/);
+  assert.match(worker, /INSERT INTO application_errors \(id, area, error_code, method, status_code, created_at\)/);
+  assert.doesNotMatch(worker, /return Response\.json\(\{ error: "unexpected_field" \}, \{ status: 400 \}\)/);
+  // E o cadastro manda só o que a rota aceita: `plan`, `next` e `flag` existem
+  // apenas na tela e faziam o envelope recusar o corpo inteiro.
+  assert.doesNotMatch(client, /body: JSON\.stringify\(\{ \.\.\.athlete, nextWorkout/);
+  assert.match(client, /body: JSON\.stringify\(\{ name: athlete\.name, initials: athlete\.initials/);
+});
+
 test("uses real coach dashboard counts and reviews every registered race", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
@@ -1633,8 +1666,12 @@ test("blocks a student account and drops its active sessions", async () => {
   workerUrl.searchParams.set("block-account", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
   const writes = [];
+  /* O aluno precisa pertencer à carteira de quem pede: bloquear a conta de um
+     aluno de outro treinador passou a ser recusado. */
   const prepare = (sql) => statement(() => (sql.includes("FROM user_accounts WHERE email")
     ? { id: "student-account", email: "everton.teste@example.com", role: "student", athlete_name: "Everton Barbosa", status: "Ativo" }
+    : sql.includes("SELECT coach_email FROM athletes")
+    ? { coach_email: "treinador@exemplo.com" }
     : null), (values) => writes.push({ sql, values }));
   const env = {
     ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
