@@ -93,7 +93,8 @@ const SECURITY_LOG_RETENTION_MS = SECURITY_LOG_RETENTION_DAYS * 86_400_000;
 
 const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/athletes": new Set(["name","initials","distance","phase","week","nextWorkout","status","phone","email","trainingDays","integration","action","reason"]),
-  "/api/athlete-profile": new Set(["athleteName","phone","birthDate","objective","integration","trainingDays"]),
+  "/api/plans": new Set(["action","planId","name","distance","weeks","frequency","level","goal","phases"]),
+  "/api/athlete-profile": new Set(["athleteName","phone","birthDate","objective","integration","trainingDays","noTargetRace"]),
   "/api/athlete-planning": new Set(["athleteName","plan","phase","weekNumber","totalWeeks"]),
   "/api/performance-tests": new Set(["athleteName","testDate","distanceKm","minutes","seconds","age","id","action","zones","tempoRuns"]),
   "/api/training-weeks": new Set(["athleteName","weekStart","plan","phase","weekLabel","trainingDays","sessions","status","auditDifferences","expectedUpdatedAt"]),
@@ -1118,8 +1119,14 @@ async function athleteProfileApi(request: Request, env: Env): Promise<Response> 
   if (request.method === "GET") {
     const athleteName = boundedText(url.searchParams.get("athlete"), 120);
     if (!athleteName) return Response.json({ error: "athlete_required" }, { status: 400 });
-    const profile = await env.DB.prepare("SELECT * FROM athlete_profiles WHERE athlete_name = ? LIMIT 1").bind(athleteName).first();
-    return Response.json({ profile: profile ?? null });
+    await ensureTables(env, schema.athletes);
+    const [profile, atleta] = await Promise.all([
+      env.DB.prepare("SELECT * FROM athlete_profiles WHERE athlete_name = ? LIMIT 1").bind(athleteName).first(),
+      /* A marca "sem prova" é decisão do treinador sobre o aluno, então mora em
+         `athletes` junto da classe de preço — e a ficha precisa dela aqui. */
+      env.DB.prepare("SELECT no_target_race FROM athletes WHERE name = ? LIMIT 1").bind(athleteName).first(),
+    ]);
+    return Response.json({ profile: profile ?? null, athlete: atleta ?? null });
   }
   if (request.method === "POST") {
     const input = await request.json() as Record<string, unknown>;
@@ -1129,6 +1136,18 @@ async function athleteProfileApi(request: Request, env: Env): Promise<Response> 
     if (!athleteName) return Response.json({ error: "athlete_required" }, { status: 400 });
     if (birthDate && !isIsoDate(birthDate)) return Response.json({ error: "invalid_birth_date" }, { status: 400 });
     const updatedAt = Date.now();
+    /* A marca fica em `athletes` porque é decisão do treinador sobre o aluno,
+       como a classe de preço, e não dado que o aluno preenche. */
+    if (input.noTargetRace !== undefined) {
+      await ensureTables(env, schema.athletes);
+      const marcado = input.noTargetRace ? 1 : 0;
+      await env.DB.prepare("UPDATE athletes SET no_target_race = ? WHERE name = ?").bind(marcado, athleteName).run();
+      /* Era a prova que mantinha o "cadastro incompleto". Assumida a ausência,
+         o aviso sai — e volta se o treinador desmarcar. */
+      if (marcado) {
+        await env.DB.prepare("UPDATE athletes SET status = NULL WHERE name = ? AND status = 'Cadastro incompleto'").bind(athleteName).run();
+      }
+    }
     await env.DB.prepare(`INSERT INTO athlete_profiles (athlete_name,phone,birth_date,objective,integration,training_days,updated_at)
       VALUES (?,?,?,?,?,?,?) ON CONFLICT(athlete_name) DO UPDATE SET phone=excluded.phone,birth_date=excluded.birth_date,objective=excluded.objective,integration=excluded.integration,training_days=excluded.training_days,updated_at=excluded.updated_at`)
       .bind(athleteName,boundedText(input.phone,30)||null,birthDate||null,boundedText(input.objective,120)||null,boundedText(input.integration,40)||null,JSON.stringify(trainingDays),updatedAt).run();
@@ -2763,6 +2782,66 @@ async function impedimentoParaExcluir(
   return null;
 }
 
+/**
+ * Planilhas-base criadas pelo treinador.
+ *
+ * As semanas de cada uma continuam em `plan_template_overrides`, o mesmo lugar
+ * que já guarda as edições das planilhas de fábrica: uma planilha própria é uma
+ * planilha sem versão original, não um mecanismo à parte.
+ */
+async function customPlansApi(request: Request, env: Env): Promise<Response> {
+  await ensureTables(env, schema.customPlans, schema.planTemplateOverrides);
+
+  if (request.method === "GET") {
+    const planos = await env.DB.prepare("SELECT id,name,distance,weeks,frequency,level,goal,phases,updated_at FROM custom_plans ORDER BY name").all();
+    return Response.json({ plans: planos.results });
+  }
+  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+
+  const input = await request.json() as Record<string, unknown>;
+  const acao = boundedText(input.action, 20) || "save";
+  const now = Date.now();
+
+  if (acao === "delete") {
+    const id = boundedText(input.planId, 40);
+    const plano = await env.DB.prepare("SELECT name FROM custom_plans WHERE id = ? LIMIT 1").bind(id).first() as { name?: string } | null;
+    if (!plano?.name) return Response.json({ error: "plan_not_found" }, { status: 404 });
+    /* Aluno apontando para uma planilha que sumiu ficaria sem base nenhuma. */
+    const emUso = await env.DB.prepare("SELECT COUNT(*) AS total FROM athlete_planning WHERE plan = ?").bind(plano.name).first() as { total?: number } | null;
+    if (Number(emUso?.total ?? 0) > 0) {
+      return Response.json({
+        error: "plan_in_use",
+        motivo: `${Number(emUso?.total)} aluno(s) usam esta planilha.`,
+        saida: "Mude a base desses alunos antes de excluir.",
+      }, { status: 409 });
+    }
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM plan_template_overrides WHERE plan_name = ?").bind(plano.name),
+      env.DB.prepare("DELETE FROM custom_plans WHERE id = ?").bind(id),
+    ]);
+    return Response.json({ deleted: true });
+  }
+
+  const id = boundedText(input.planId, 40) || crypto.randomUUID();
+  const name = boundedText(input.name, 60);
+  const weeks = Number(input.weeks);
+  if (name.length < 3) return Response.json({ error: "plan_name_too_short" }, { status: 400 });
+  if (!Number.isInteger(weeks) || weeks < 1 || weeks > 52) return Response.json({ error: "invalid_week_count" }, { status: 400 });
+  const conflito = await env.DB.prepare("SELECT id FROM custom_plans WHERE name = ? AND id <> ? LIMIT 1").bind(name, id).first();
+  if (conflito) return Response.json({ error: "plan_name_already_used" }, { status: 409 });
+  const fases = Array.isArray(input.phases) ? input.phases.map(fase => boundedText(fase, 30)).filter(Boolean).slice(0, 8) : [];
+
+  await env.DB.prepare(`INSERT INTO custom_plans (id,name,distance,weeks,frequency,level,goal,phases,created_by,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET name=excluded.name,distance=excluded.distance,weeks=excluded.weeks,frequency=excluded.frequency,level=excluded.level,goal=excluded.goal,phases=excluded.phases,updated_at=excluded.updated_at`)
+    .bind(id, name, boundedText(input.distance, 30) || "Livre", weeks, boundedText(input.frequency, 40) || `${weeks} semanas`,
+      boundedText(input.level, 30) || "Personalizada", boundedText(input.goal, 160) || "Planilha do treinador",
+      JSON.stringify(fases.length ? fases : ["Base", "Desenvolvimento", "Específica"]),
+      normalizedAuthenticatedEmail(request) ?? "treinador", now)
+    .run();
+  return Response.json({ saved: true, id, name });
+}
+
 async function racesRecordsApi(request: Request, env: Env): Promise<Response> {
   await ensureTables(env, schema.athleteRaces, schema.personalRecords);
   const url=new URL(request.url);
@@ -3000,6 +3079,11 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
     if (url.pathname === "/api/accounts") {
       try { return await coachAccountsApi(request, env); }
       catch { return await applicationFailure(env, request, "contas de acesso", "database_unavailable"); }
+    }
+
+    if (url.pathname === "/api/plans") {
+      try { return await customPlansApi(request, env); }
+      catch { return await applicationFailure(env, request, "planilhas-base", "plans_unavailable"); }
     }
 
     if (url.pathname === "/api/athletes") {

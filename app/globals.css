@@ -11846,6 +11846,154 @@ p, span, b, strong, small, em, li, td, th, label {
   font-size: var(--fs-xs);
 }
 
+/* --- Planilhas criadas pelo treinador -------------------------------------- */
+
+.plan-form {
+  display: grid;
+  grid-template-columns: minmax(0,2fr) minmax(0,1fr) minmax(0,.6fr);
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  padding: var(--space-5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+}
+
+.plan-form label {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--muted);
+  font-size: var(--fs-overline);
+  letter-spacing: var(--tracking-overline);
+}
+
+.plan-form .plan-form-goal {
+  grid-column: 1 / -1;
+}
+
+.plan-form input {
+  height: var(--control-md);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: var(--fs-base);
+}
+
+.plan-form>div {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: var(--space-2);
+}
+
+.plan-form>div button {
+  height: var(--control-md);
+  padding: 0 var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.plan-library .plan-proprio header i {
+  color: var(--gold2);
+}
+
+.plan-proprio-acoes {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.plan-proprio-acoes span {
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.plan-proprio-acoes span:hover {
+  border-color: var(--gold);
+  color: var(--gold2);
+}
+
+.plan-proprio-acoes .plan-proprio-excluir:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.plan-vazio {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+@media(max-width:760px) {
+  .plan-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Assumir que o aluno não tem prova-alvo. */
+.profile-section>.sem-prova {
+  display: grid;
+  grid-template-columns: auto minmax(0,1fr);
+  align-items: start;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-3);
+  cursor: pointer;
+}
+
+.profile-section>.sem-prova input {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  accent-color: var(--gold);
+}
+
+.profile-section>.sem-prova b {
+  display: block;
+  font-size: var(--fs-base);
+}
+
+.profile-section>.sem-prova small {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+}
+
+/* --- Arrastar o treino entre os dias --------------------------------------- */
+
+/* O botão "Mover" continua existindo: nem todo mundo arrasta, e em tela de
+   toque o arrasto é mais difícil de acertar. */
+.week .session[draggable="true"] {
+  cursor: grab;
+}
+
+.week .session[draggable="true"]:active {
+  cursor: grabbing;
+}
+
+.week>article.arrastando {
+  opacity: .5;
+}
+
+.week>article.alvo-do-arrasto {
+  border-color: var(--gold);
+  box-shadow: inset 0 0 0 2px var(--gold);
+}
+
 /* --- Classes de preço e geração de cobranças ------------------------------- */
 
 /* O valor raramente é igual para todos, e antes só existia um padrão único. */

@@ -10,6 +10,14 @@ export const athletes = sqliteTable("athletes", {
   nextWorkout: text("next_workout").notNull(),
   /** Classe de preço aplicada na geração das cobranças. Vazio usa o padrão. */
   priceClass: text("price_class"),
+  /**
+   * Aluno que treina sem prova-alvo no momento.
+   *
+   * Sem esta marca, quem não corre prova ficava para sempre como "cadastro
+   * incompleto" e o painel seguia cobrando um dado que não existe. A marca diz
+   * que a ausência é intencional, e não um cadastro pela metade.
+   */
+  noTargetRace: integer("no_target_race"),
   status: text("status"),
   phone: text("phone"),
   email: text("email"),
@@ -241,6 +249,23 @@ export const financialSettings = sqliteTable("financial_settings", {
  * único. A classe agrupa quem paga igual, para um reajuste alcançar o grupo de
  * uma vez; a negociação de um aluno continua sendo o valor da própria cobrança.
  */
+/**
+ * Planilhas-base criadas pelo treinador.
+ *
+ * As dez planilhas originais vivem no código. Quando o treinador muda o método
+ * ou quer uma progressão própria, precisa de um lugar para criá-la — e as
+ * semanas dela usam o mesmo `plan_template_overrides` que já edita as semanas
+ * das planilhas de fábrica, em vez de um segundo mecanismo.
+ */
+export const customPlans = sqliteTable("custom_plans", {
+  id: text("id").primaryKey(), name: text("name").notNull(),
+  distance: text("distance").notNull(), weeks: integer("weeks").notNull(),
+  frequency: text("frequency").notNull(), level: text("level").notNull(),
+  goal: text("goal").notNull(), phases: text("phases").notNull(),
+  createdBy: text("created_by").notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => ({ nameIdx: uniqueIndex("custom_plans_name_idx").on(table.name) }));
+
 export const priceClasses = sqliteTable("price_classes", {
   id: text("id").primaryKey(), name: text("name").notNull(),
   amountCents: integer("amount_cents").notNull(), dueDay: integer("due_day").notNull(),

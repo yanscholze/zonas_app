@@ -1394,6 +1394,49 @@ test("keeps one vocabulary for the training days", async () => {
   assert.match(worker, /INSERT INTO athlete_profiles \(athlete_name, phone, birth_date, objective, integration, training_days, updated_at\)/);
 });
 
+test("assumes an athlete may train without a target race", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  // Sem esta marca, quem não corre prova ficava para sempre como "cadastro
+  // incompleto" e o painel seguia cobrando um dado que não existe.
+  assert.match(schema, /noTargetRace: integer\("no_target_race"\)/);
+  assert.match(client, /Este aluno treina sem prova-alvo no momento/);
+  assert.match(worker, /UPDATE athletes SET no_target_race = \? WHERE name = \?/);
+  // Assumida a ausência, o aviso sai — e volta se o treinador desmarcar.
+  assert.match(worker, /UPDATE athletes SET status = NULL WHERE name = \? AND status = 'Cadastro incompleto'/);
+});
+
+test("moves a workout by dragging it to another day", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // Arrastar e o botão "Mover" chamam a mesma troca: duas regras de troca
+  // acabariam divergindo.
+  assert.match(client, /const trocarDias=\(origem:string,destino:string\)=>/);
+  assert.match(client, /trocarDias\(moveFrom,moveTo\)/);
+  // A origem vem do evento, não do estado: entre o início do arrasto e a
+  // soltura o React ainda não propagou o estado.
+  assert.match(client, /evento\.dataTransfer\.getData\("text\/plain"\)/);
+  assert.match(client, /draggable/);
+  assert.match(css, /\.week>article\.alvo-do-arrasto/);
+});
+
+test("lets the coach create and edit their own base plans", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  // As dez originais vivem no código; quando o treinador muda o método precisa
+  // criar a própria.
+  assert.match(schema, /export const customPlans = sqliteTable\("custom_plans"/);
+  assert.match(worker, /async function customPlansApi/);
+  assert.match(worker, /url\.pathname === "\/api\/plans"/);
+  assert.match(client, /\+ Nova planilha/);
+  // As semanas usam o mesmo caminho de edição das planilhas de fábrica.
+  assert.match(worker, /DELETE FROM plan_template_overrides WHERE plan_name = \?/);
+  // E excluir uma planilha em uso é recusado com o motivo.
+  assert.match(worker, /plan_in_use/);
+});
+
 test("uses real coach dashboard counts and reviews every registered race", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
