@@ -1481,7 +1481,13 @@ test("runs the performance test as a round trip", async () => {
   assert.match(worker, /UPDATE performance_tests SET total_seconds = \?, status = 'Aguardando revisão'/);
   assert.match(worker, /AND status = 'Solicitado' LIMIT 1/);
   assert.match(client, /className="student-test-request"/);
+  // No pedido o treinador informa só a distância: o tempo é medido pelo aluno.
   assert.match(client, /action:"request",athleteName,distanceKm:distanciaPedida/);
+  assert.doesNotMatch(client, /action:"request".*minutes/);
+  // E quando o teste volta, distância e tempo são leitura na calculadora.
+  assert.match(client, /zonasapp:test-returned/);
+  assert.match(client, /readOnly=\{Boolean\(devolvido\)\}/);
+  assert.match(client, /Distância e tempo vieram do aluno e não se editam aqui/);
 });
 
 test("marks the days the athlete can train but has no workout", async () => {

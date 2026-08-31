@@ -12025,6 +12025,23 @@ p, span, b, strong, small, em, li, td, th, label {
   cursor: pointer;
 }
 
+/* Quando o teste volta do aluno, distância e tempo são leitura: quem mediu foi
+   ele. O treinador confirma a idade e libera as zonas. */
+.test-from-student {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--green);
+  background: #17251d;
+  color: #8bd8aa;
+  font-size: var(--fs-xs);
+}
+
+.test-form input[readonly],
+.test-form .segmented button:disabled {
+  opacity: .7;
+  cursor: not-allowed;
+}
+
 /* Lado do aluno: o pedido chega como uma tarefa, não como um aviso. */
 .student-test-request {
   margin: var(--space-4) 0;
