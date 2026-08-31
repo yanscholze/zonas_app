@@ -8,6 +8,8 @@ export const athletes = sqliteTable("athletes", {
   phase: text("phase").notNull(),
   week: text("week").notNull(),
   nextWorkout: text("next_workout").notNull(),
+  /** Classe de preço aplicada na geração das cobranças. Vazio usa o padrão. */
+  priceClass: text("price_class"),
   status: text("status"),
   phone: text("phone"),
   email: text("email"),
@@ -232,10 +234,26 @@ export const financialSettings = sqliteTable("financial_settings", {
   defaultAmountCents: integer("default_amount_cents").notNull(), dueDay: integer("due_day").notNull(), updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });
 
+/**
+ * Faixas de preço da assessoria.
+ *
+ * O valor raramente é o mesmo para todo mundo, e antes só existia um padrão
+ * único. A classe agrupa quem paga igual, para um reajuste alcançar o grupo de
+ * uma vez; a negociação de um aluno continua sendo o valor da própria cobrança.
+ */
+export const priceClasses = sqliteTable("price_classes", {
+  id: text("id").primaryKey(), name: text("name").notNull(),
+  amountCents: integer("amount_cents").notNull(), dueDay: integer("due_day").notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => ({ nameIdx: uniqueIndex("price_classes_name_idx").on(table.name) }));
+
 export const studentPayments = sqliteTable("student_payments", {
   id: text("id").primaryKey(), athleteName: text("athlete_name").notNull(), referenceMonth: text("reference_month").notNull(),
   amountCents: integer("amount_cents").notNull(), dueDate: text("due_date").notNull(), status: text("status").notNull(),
   paidAt: integer("paid_at", { mode: "timestamp_ms" }), updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  /** Comprovante anexado pelo treinador: imagem reduzida no navegador. */
+  receiptImage: text("receipt_image"), receiptNote: text("receipt_note"),
+  receiptAddedAt: integer("receipt_added_at", { mode: "timestamp_ms" }),
 }, (table) => ({ athleteMonthIdx: uniqueIndex("student_payments_athlete_month_idx").on(table.athleteName, table.referenceMonth) }));
 
 export const athleteRaces = sqliteTable("athlete_races", {

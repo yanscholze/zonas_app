@@ -83,6 +83,11 @@ interface ExecutionContext {
 const coachEmailOf = (env: Env) => env.COACH_EMAIL?.trim().toLowerCase() || null;
 const JSON_BODY_LIMIT = 64 * 1024;
 const TRAINING_BODY_LIMIT = 256 * 1024;
+/* Comprovante de pagamento vai no corpo como imagem já reduzida no navegador.
+   Nos 64 KB gerais só caberia uma foto ilegível: a base64 infla um terço, e
+   sobrariam menos de 45 KB de JPEG. O teto do que é gravado continua menor que
+   este, em `save_receipt`, e bem abaixo do limite de uma linha do D1. */
+const FINANCIAL_BODY_LIMIT = 512 * 1024;
 const SECURITY_LOG_RETENTION_DAYS = 90;
 const SECURITY_LOG_RETENTION_MS = SECURITY_LOG_RETENTION_DAYS * 86_400_000;
 
@@ -102,7 +107,7 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/student/feedbacks": new Set(["feeling","note","weekStart","workoutDay"]),
   "/api/student/workout-executions": new Set(["weekStart","workoutDay","actualMinutes","actualKm","action","note"]),
   "/api/student/integration-preference": new Set(["integration"]),
-  "/api/financial": new Set(["action","pixKey","pixName","defaultAmount","dueDay","athleteName","referenceMonth","amount","status","dueDate"]),
+  "/api/financial": new Set(["action","pixKey","pixName","defaultAmount","dueDay","athleteName","referenceMonth","amount","status","dueDate","classId","name","scope","className","athletes","image","note"]),
   "/api/feedbacks": new Set(["id","status"]),
   "/api/student/races-records": new Set(["kind","name","raceDate","distance","city","goal","priority","resultTime","eventName"]),
   "/api/plan-template-overrides": new Set(["plan","weekNumber","sessions"]),
@@ -125,14 +130,32 @@ function isIsoDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(`${value}T00:00:00Z`));
 }
 
-function validStructuredValue(value: unknown, depth = 0): boolean {
+/**
+ * Campos que podem exceder o teto geral de texto, por rota.
+ *
+ * O limite de 12 mil caracteres protege todo campo de texto do produto, e vale
+ * a pena mantê-lo. O comprovante é a exceção legítima: chega como imagem em
+ * base64, já reduzida no navegador, e tem validação própria em `save_receipt`
+ * — precisa ser `data:image/` e caber em 420 mil caracteres.
+ */
+const longBodyFields: Record<string, Set<string>> = {
+  "/api/financial": new Set(["image"]),
+};
+
+const LONG_FIELD_LIMIT = 420_000;
+
+function validStructuredValue(value: unknown, depth = 0, longKeys?: Set<string>): boolean {
   if (depth > 8) return false;
   if (typeof value === "string") return value.length <= 12_000;
   if (value === null || typeof value === "number" || typeof value === "boolean") return true;
-  if (Array.isArray(value)) return value.length <= 200 && value.every(item => validStructuredValue(item, depth + 1));
+  if (Array.isArray(value)) return value.length <= 200 && value.every(item => validStructuredValue(item, depth + 1, longKeys));
   if (typeof value !== "object") return false;
   const entries = Object.entries(value as Record<string, unknown>);
-  return entries.length <= 200 && entries.every(([key, item]) => !["__proto__","prototype","constructor"].includes(key) && validStructuredValue(item, depth + 1));
+  return entries.length <= 200 && entries.every(([key, item]) => {
+    if (["__proto__","prototype","constructor"].includes(key)) return false;
+    if (depth === 0 && longKeys?.has(key) && typeof item === "string") return item.length <= LONG_FIELD_LIMIT;
+    return validStructuredValue(item, depth + 1, longKeys);
+  });
 }
 
 async function validateApiEnvelope(request: Request, url: URL): Promise<Response | null> {
@@ -140,7 +163,9 @@ async function validateApiEnvelope(request: Request, url: URL): Promise<Response
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
     return Response.json({ error: "json_content_type_required" }, { status: 415 });
   }
-  const limit = url.pathname.includes("training-weeks") ? TRAINING_BODY_LIMIT : JSON_BODY_LIMIT;
+  const limit = url.pathname.includes("training-weeks") ? TRAINING_BODY_LIMIT
+    : url.pathname === "/api/financial" ? FINANCIAL_BODY_LIMIT
+    : JSON_BODY_LIMIT;
   const declaredLength = Number(request.headers.get("content-length") || 0);
   if (declaredLength > limit) return Response.json({ error: "payload_too_large", maxBytes: limit }, { status: 413 });
   const raw = await request.clone().text();
@@ -148,7 +173,7 @@ async function validateApiEnvelope(request: Request, url: URL): Promise<Response
   let input: unknown;
   try { input = JSON.parse(raw); }
   catch { return Response.json({ error: "invalid_json" }, { status: 400 }); }
-  if (!input || Array.isArray(input) || typeof input !== "object" || !validStructuredValue(input)) {
+  if (!input || Array.isArray(input) || typeof input !== "object" || !validStructuredValue(input, 0, longBodyFields[url.pathname])) {
     return Response.json({ error: "invalid_payload" }, { status: 400 });
   }
   const allowed = allowedBodyKeys[url.pathname];
@@ -1534,14 +1559,25 @@ async function integrationReadinessApi(request:Request,env:Env):Promise<Response
 const currentReferenceMonth = () => new Date().toISOString().slice(0, 7);
 
 async function ensureFinancial(env: Env) {
-  await ensureTables(env, schema.financialSettings, schema.studentPayments);
+  await ensureTables(env, schema.financialSettings, schema.studentPayments, schema.priceClasses, schema.athletes);
 }
 
 async function financialApi(request:Request,env:Env):Promise<Response>{
   await ensureFinancial(env);const url=new URL(request.url);const month=boundedText(url.searchParams.get("month"),7)||currentReferenceMonth();
   if(request.method==="GET"){
-    const [settings,payments]=await Promise.all([env.DB.prepare("SELECT * FROM financial_settings WHERE id='default' LIMIT 1").first(),env.DB.prepare(`SELECT athletes.name AS athlete_name,athlete_access.status AS access_status,student_payments.id,student_payments.reference_month,student_payments.amount_cents,student_payments.due_date,student_payments.status,student_payments.paid_at FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name=athletes.name LEFT JOIN student_payments ON student_payments.athlete_name=athletes.name AND student_payments.reference_month=? WHERE COALESCE(athlete_access.status,'Ativo')<>'Bloqueado' ORDER BY athletes.name`).bind(month).all()]);
-    return Response.json({month,settings:settings??null,payments:payments.results});
+    const comprovante=boundedText(url.searchParams.get("receipt"),120);
+    if(comprovante){
+      const linha=await env.DB.prepare("SELECT receipt_image,receipt_note,receipt_added_at FROM student_payments WHERE athlete_name=? AND reference_month=? LIMIT 1").bind(comprovante,month).first();
+      return Response.json({receipt:linha??null});
+    }
+    const [settings,payments,classes]=await Promise.all([
+      env.DB.prepare("SELECT * FROM financial_settings WHERE id='default' LIMIT 1").first(),
+      /* `receipt_image` fica de fora da lista: são centenas de KB por linha e a
+         tela só precisa saber que existe. A imagem vem quando for aberta. */
+      env.DB.prepare(`SELECT athletes.name AS athlete_name,athletes.price_class,athlete_access.status AS access_status,student_payments.id,student_payments.reference_month,student_payments.amount_cents,student_payments.due_date,student_payments.status,student_payments.paid_at,student_payments.receipt_note,student_payments.receipt_added_at,(student_payments.receipt_image IS NOT NULL) AS has_receipt FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name=athletes.name LEFT JOIN student_payments ON student_payments.athlete_name=athletes.name AND student_payments.reference_month=? WHERE COALESCE(athlete_access.status,'Ativo')<>'Bloqueado' AND athletes.archived_at IS NULL ORDER BY athletes.name`).bind(month).all(),
+      env.DB.prepare("SELECT id,name,amount_cents,due_day FROM price_classes ORDER BY amount_cents DESC,name").all(),
+    ]);
+    return Response.json({month,settings:settings??null,payments:payments.results,classes:classes.results});
   }
   if(request.method!=="POST")return new Response("Method not allowed",{status:405});const input=await request.json() as Record<string,unknown>;const action=boundedText(input.action,30);const now=Date.now();
   if(action==="save_settings"){
@@ -1550,7 +1586,38 @@ async function financialApi(request:Request,env:Env):Promise<Response>{
     await env.DB.prepare("INSERT INTO financial_settings (id,pix_key,pix_name,default_amount_cents,due_day,updated_at) VALUES ('default',?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET pix_key=excluded.pix_key,pix_name=excluded.pix_name,default_amount_cents=excluded.default_amount_cents,due_day=excluded.due_day,updated_at=excluded.updated_at").bind(pixKey||null,pixName||null,Math.round(amount*100),dueDay,now).run();return Response.json({saved:true});
   }
   if(action==="generate_month"){
-    const settings=await env.DB.prepare("SELECT default_amount_cents,due_day FROM financial_settings WHERE id='default'").first() as {default_amount_cents?:number;due_day?:number}|null;if(!settings)return Response.json({error:"settings_required"},{status:409});const referenceMonth=boundedText(input.referenceMonth,7)||month;if(!/^\d{4}-\d{2}$/.test(referenceMonth))return Response.json({error:"invalid_month"},{status:400});const dueDate=`${referenceMonth}-${String(settings.due_day).padStart(2,"0")}`;const athletes=await env.DB.prepare("SELECT athletes.name FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name=athletes.name WHERE COALESCE(athlete_access.status,'Ativo')<>'Bloqueado'").all();await env.DB.batch((athletes.results as any[]).map(row=>env.DB.prepare("INSERT OR IGNORE INTO student_payments (id,athlete_name,reference_month,amount_cents,due_date,status,paid_at,updated_at) VALUES (?,?,?,?,?,'Pendente',NULL,?)").bind(crypto.randomUUID(),row.name,referenceMonth,settings.default_amount_cents,dueDate,now)));return Response.json({generated:athletes.results.length});
+    const settings=await env.DB.prepare("SELECT default_amount_cents,due_day FROM financial_settings WHERE id='default'").first() as {default_amount_cents?:number;due_day?:number}|null;
+    if(!settings)return Response.json({error:"settings_required"},{status:409});
+    const referenceMonth=boundedText(input.referenceMonth,7)||month;
+    if(!/^\d{4}-\d{2}$/.test(referenceMonth))return Response.json({error:"invalid_month"},{status:400});
+
+    /* Três alcances, uma geração só. O valor raramente é igual para todo mundo:
+       cada aluno recebe o da sua classe e, sem classe, o padrão. Cobrança que
+       já existe no mês nunca é tocada — é lá que mora a negociação individual. */
+    const alcance=boundedText(input.scope,20)||"all";
+    const classeAlvo=boundedText(input.className,60);
+    const escolhidos=Array.isArray(input.athletes)?input.athletes.map(nome=>boundedText(nome,120)).filter(Boolean):[];
+    if(alcance==="class"&&!classeAlvo)return Response.json({error:"class_required"},{status:400});
+    if(alcance==="athletes"&&!escolhidos.length)return Response.json({error:"athletes_required"},{status:400});
+
+    const filtros=["COALESCE(athlete_access.status,'Ativo')<>'Bloqueado'","athletes.archived_at IS NULL"];
+    const valores:string[]=[];
+    if(alcance==="class"){filtros.push("athletes.price_class = ?");valores.push(classeAlvo)}
+    if(alcance==="athletes"){filtros.push(`athletes.name IN (${escolhidos.map(()=>"?").join(",")})`);valores.push(...escolhidos)}
+    const alvos=await env.DB.prepare(`SELECT athletes.name, athletes.price_class FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name=athletes.name WHERE ${filtros.join(" AND ")}`).bind(...valores).all();
+
+    const classes=await env.DB.prepare("SELECT name, amount_cents, due_day FROM price_classes").all();
+    const porClasse=new Map((classes.results as Array<{name:string;amount_cents:number;due_day:number}>).map(item=>[item.name,item]));
+    const aGerar=(alvos.results as Array<{name:string;price_class?:string|null}>).map(aluno=>{
+      const classe=aluno.price_class?porClasse.get(aluno.price_class):undefined;
+      const valor=classe?classe.amount_cents:Number(settings.default_amount_cents);
+      const dia=classe?classe.due_day:Number(settings.due_day);
+      return {nome:aluno.name,valor,vencimento:`${referenceMonth}-${String(dia).padStart(2,"0")}`};
+    });
+    if(!aGerar.length)return Response.json({generated:0,scope:alcance});
+    await env.DB.batch(aGerar.map(linha=>env.DB.prepare("INSERT OR IGNORE INTO student_payments (id,athlete_name,reference_month,amount_cents,due_date,status,paid_at,updated_at) VALUES (?,?,?,?,?,'Pendente',NULL,?)")
+      .bind(crypto.randomUUID(),linha.nome,referenceMonth,linha.valor,linha.vencimento,now)));
+    return Response.json({generated:aGerar.length,scope:alcance});
   }
   if(action==="update_payment"){
     const athleteName=boundedText(input.athleteName,120);const referenceMonth=boundedText(input.referenceMonth,7);const status=boundedText(input.status,20);const amount=Number(input.amount);const dueDate=boundedText(input.dueDate,10);if(!athleteName||!/^\d{4}-\d{2}$/.test(referenceMonth)||!["Pendente","Pago"].includes(status)||!Number.isFinite(amount)||amount<=0||!isIsoDate(dueDate))return Response.json({error:"invalid_payment"},{status:400});await env.DB.prepare("INSERT INTO student_payments (id,athlete_name,reference_month,amount_cents,due_date,status,paid_at,updated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(athlete_name,reference_month) DO UPDATE SET amount_cents=excluded.amount_cents,due_date=excluded.due_date,status=excluded.status,paid_at=excluded.paid_at,updated_at=excluded.updated_at").bind(crypto.randomUUID(),athleteName,referenceMonth,Math.round(amount*100),dueDate,status,status==="Pago"?now:null,now).run();return Response.json({saved:true});
@@ -1560,6 +1627,60 @@ async function financialApi(request:Request,env:Env):Promise<Response>{
     if(!athleteName||!/^\d{4}-\d{2}$/.test(referenceMonth))return Response.json({error:"invalid_payment"},{status:400});
     await env.DB.prepare("DELETE FROM student_payments WHERE athlete_name=? AND reference_month=?").bind(athleteName,referenceMonth).run();
     return Response.json({deleted:true});
+  }
+  if(action==="save_class"){
+    const id=boundedText(input.classId,40)||crypto.randomUUID();
+    const name=boundedText(input.name,60);const amount=Number(input.amount);const dueDay=Number(input.dueDay);
+    if(name.length<2)return Response.json({error:"class_name_too_short"},{status:400});
+    if(!Number.isFinite(amount)||amount<=0||amount>10000||!Number.isInteger(dueDay)||dueDay<1||dueDay>28)return Response.json({error:"invalid_financial_settings"},{status:400});
+    const conflito=await env.DB.prepare("SELECT id FROM price_classes WHERE name=? AND id<>? LIMIT 1").bind(name,id).first();
+    if(conflito)return Response.json({error:"class_name_already_used"},{status:409});
+    await env.DB.prepare("INSERT INTO price_classes (id,name,amount_cents,due_day,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,amount_cents=excluded.amount_cents,due_day=excluded.due_day,updated_at=excluded.updated_at")
+      .bind(id,name,Math.round(amount*100),dueDay,now).run();
+    return Response.json({saved:true,id,name});
+  }
+  if(action==="delete_class"){
+    const id=boundedText(input.classId,40);
+    if(!id)return Response.json({error:"class_required"},{status:400});
+    const classe=await env.DB.prepare("SELECT name FROM price_classes WHERE id=? LIMIT 1").bind(id).first() as {name?:string}|null;
+    if(!classe?.name)return Response.json({error:"class_not_found"},{status:404});
+    /* Apagar a classe não pode deixar aluno apontando para o vazio: quem estava
+       nela volta ao valor padrão, e isso é dito na tela antes de confirmar. */
+    const usando=await env.DB.prepare("SELECT COUNT(*) AS total FROM athletes WHERE price_class=?").bind(classe.name).first() as {total?:number}|null;
+    await env.DB.batch([
+      env.DB.prepare("UPDATE athletes SET price_class=NULL WHERE price_class=?").bind(classe.name),
+      env.DB.prepare("DELETE FROM price_classes WHERE id=?").bind(id),
+    ]);
+    return Response.json({deleted:true,alunosAfetados:Number(usando?.total??0)});
+  }
+  if(action==="assign_class"){
+    const athleteName=boundedText(input.athleteName,120);const name=boundedText(input.name,60);
+    if(!athleteName)return Response.json({error:"athlete_required"},{status:400});
+    if(name){
+      const existe=await env.DB.prepare("SELECT id FROM price_classes WHERE name=? LIMIT 1").bind(name).first();
+      if(!existe)return Response.json({error:"class_not_found"},{status:404});
+    }
+    await env.DB.prepare("UPDATE athletes SET price_class=? WHERE name=?").bind(name||null,athleteName).run();
+    return Response.json({assigned:true,athleteName,name:name||null});
+  }
+  if(action==="save_receipt"||action==="remove_receipt"){
+    const athleteName=boundedText(input.athleteName,120);const referenceMonth=boundedText(input.referenceMonth,7);
+    if(!athleteName||!/^\d{4}-\d{2}$/.test(referenceMonth))return Response.json({error:"invalid_payment"},{status:400});
+    if(action==="remove_receipt"){
+      await env.DB.prepare("UPDATE student_payments SET receipt_image=NULL,receipt_note=NULL,receipt_added_at=NULL,updated_at=? WHERE athlete_name=? AND reference_month=?").bind(now,athleteName,referenceMonth).run();
+      return Response.json({removed:true});
+    }
+    /* A imagem chega já reduzida pelo navegador. O teto aqui é a última linha
+       de defesa: uma linha do D1 não comporta um arquivo grande, e sem limite
+       um comprovante mal comprimido derrubaria a gravação inteira. */
+    const imagem=typeof input.image==="string"?input.image:"";
+    if(!imagem.startsWith("data:image/")||imagem.length>420_000)return Response.json({error:"invalid_receipt"},{status:400});
+    const nota=boundedText(input.note,200);
+    const alvo=await env.DB.prepare("SELECT id FROM student_payments WHERE athlete_name=? AND reference_month=? LIMIT 1").bind(athleteName,referenceMonth).first();
+    if(!alvo)return Response.json({error:"payment_not_found"},{status:404});
+    await env.DB.prepare("UPDATE student_payments SET receipt_image=?,receipt_note=?,receipt_added_at=?,updated_at=? WHERE athlete_name=? AND reference_month=?")
+      .bind(imagem,nota||null,now,now,athleteName,referenceMonth).run();
+    return Response.json({saved:true});
   }
   return Response.json({error:"invalid_action"},{status:400});
 }

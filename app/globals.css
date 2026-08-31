@@ -11846,6 +11846,331 @@ p, span, b, strong, small, em, li, td, th, label {
   font-size: var(--fs-xs);
 }
 
+/* --- Classes de preço e geração de cobranças ------------------------------- */
+
+/* O valor raramente é igual para todos, e antes só existia um padrão único. */
+
+.price-classes,
+.financial-generate {
+  margin-bottom: var(--space-5);
+  padding: var(--space-6);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+}
+
+.price-classes>header,
+.financial-generate>header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.price-classes h2,
+.financial-generate h2 {
+  margin: var(--space-1) 0;
+  font-size: var(--fs-lg);
+}
+
+.price-classes header p,
+.financial-generate header p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  max-width: 62ch;
+}
+
+.price-classes>header>button {
+  flex: none;
+  height: var(--control-md);
+  padding: 0 var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--gold);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+}
+
+.price-class-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill,minmax(200px,1fr));
+  gap: var(--space-2);
+}
+
+.price-class-grid article {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-3);
+}
+
+.price-class-grid b {
+  font-size: var(--fs-base);
+}
+
+.price-class-grid strong {
+  font-size: var(--fs-lg);
+  color: var(--gold2);
+  font-variant-numeric: tabular-nums;
+}
+
+.price-class-grid small {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.price-class-grid article>div {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.price-class-grid article button {
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.price-class-grid article button:hover {
+  border-color: var(--gold);
+  color: var(--gold2);
+}
+
+.price-class-grid .price-class-delete:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.price-class-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.price-class-form {
+  display: grid;
+  grid-template-columns: minmax(0,2fr) minmax(0,1fr) minmax(0,1fr) auto;
+  align-items: end;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+
+.price-class-form label {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--muted);
+  font-size: var(--fs-overline);
+  letter-spacing: var(--tracking-overline);
+}
+
+.price-class-form input {
+  height: var(--control-md);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: var(--fs-base);
+}
+
+.price-class-form>div {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.price-class-form>div button {
+  height: var(--control-md);
+  padding: 0 var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+/* Um botão de gerar, com o alcance escolhido antes. */
+.financial-scope {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.financial-scope button,
+.financial-scope-athletes button {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.financial-scope button.selected,
+.financial-scope-athletes button.selected {
+  background: var(--gold);
+  border-color: var(--gold);
+  color: #111;
+  font-weight: var(--fw-bold);
+}
+
+.financial-scope-class {
+  display: grid;
+  gap: var(--space-1);
+  max-width: 320px;
+  margin-bottom: var(--space-3);
+  color: var(--muted);
+  font-size: var(--fs-overline);
+  letter-spacing: var(--tracking-overline);
+}
+
+.financial-scope-class select {
+  height: var(--control-md);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: var(--fs-base);
+}
+
+.financial-scope-athletes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.financial-generate>.gold {
+  height: var(--control-lg);
+  padding: 0 var(--space-5);
+}
+
+/* --- Comprovante ----------------------------------------------------------- */
+
+.payment-class {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--muted);
+  font-size: var(--fs-overline);
+  letter-spacing: var(--tracking-overline);
+}
+
+.payment-class select {
+  height: var(--control-md);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.payment-receipt {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.payment-receipt small {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.payment-receipt-open,
+.payment-receipt-add {
+  padding: 5px 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--gold);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.payment-receipt-add input {
+  display: none;
+}
+
+.comprovante-aberto {
+  width: min(560px, calc(100vw - var(--space-8)));
+  max-height: calc(100vh - var(--space-10));
+  overflow: auto;
+  padding: var(--space-6);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xl);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-lg);
+}
+
+.comprovante-aberto>header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.comprovante-aberto h2 {
+  margin: var(--space-1) 0;
+  font-size: var(--fs-lg);
+}
+
+.comprovante-aberto header p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.comprovante-aberto>header>button {
+  width: var(--control-md);
+  height: var(--control-md);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--muted);
+  font-size: var(--fs-lg);
+  cursor: pointer;
+}
+
+.comprovante-aberto img {
+  display: block;
+  width: 100%;
+  border-radius: var(--radius-md);
+  background: #fff;
+}
+
+.comprovante-nota {
+  margin-top: var(--space-3);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.comprovante-aberto>footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-4);
+}
+
+@media(max-width:760px) {
+  .price-class-form {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* Links legais: precisam ser alcançáveis antes de entrar e antes de cadastrar. */
 .auth-legal a,
 .registration-security a,

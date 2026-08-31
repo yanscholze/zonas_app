@@ -1307,6 +1307,43 @@ test("reads the exported activity file in the browser", async () => {
   assert.match(client, /accept="\.gpx,\.tcx/);
 });
 
+test("prices by class without rewriting what was already agreed", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  // O valor raramente é igual para todo mundo, e só existia um padrão único.
+  assert.match(schema, /export const priceClasses = sqliteTable\("price_classes"/);
+  assert.match(schema, /priceClass: text\("price_class"\)/);
+  assert.match(worker, /action==="save_class"/);
+  assert.match(worker, /action==="assign_class"/);
+  // Um botão de gerar, com o alcance escolhido antes.
+  assert.match(worker, /alcance==="class"/);
+  assert.match(worker, /alcance==="athletes"/);
+  assert.match(client, /\["all","Todos os alunos ativos"\],\["class","Uma classe"\],\["athletes","Alunos marcados"\]/);
+  // Cobrança já lançada é compromisso combinado: a geração não a reescreve.
+  assert.match(worker, /INSERT OR IGNORE INTO student_payments/);
+  // E apagar uma classe devolve os alunos ao padrão em vez de deixá-los órfãos.
+  assert.match(worker, /UPDATE athletes SET price_class=NULL WHERE price_class=\?/);
+});
+
+test("keeps the payment receipt small enough to live in the database", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const reducao = await readFile(new URL("../app/comprovante.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  // Não há bucket de arquivos no projeto: o comprovante fica no próprio banco,
+  // e por isso é reduzido no navegador antes de subir.
+  assert.match(schema, /receiptImage: text\("receipt_image"\)/);
+  assert.match(reducao, /A redução acontece no navegador/);
+  assert.match(reducao, /for \(const qualidade of \[0\.72, 0\.6, 0\.48, 0\.36\]\)/);
+  // O servidor confere de novo: tipo e tamanho, antes de gravar.
+  assert.match(worker, /imagem\.startsWith\("data:image\/"\)\|\|imagem\.length>420_000/);
+  // A lista não carrega as imagens: só se existem.
+  assert.match(worker, /\(student_payments\.receipt_image IS NOT NULL\) AS has_receipt/);
+  // O teto geral de 12 mil caracteres continua valendo para todo o resto.
+  assert.match(worker, /const longBodyFields: Record<string, Set<string>> = \{/);
+  assert.match(worker, /if \(typeof value === "string"\) return value\.length <= 12_000;/);
+});
+
 test("uses real coach dashboard counts and reviews every registered race", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");

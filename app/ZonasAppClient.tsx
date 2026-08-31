@@ -6,6 +6,7 @@ import { api, copyText, describeError } from "./api-client";
 import { NavIcon, IconMais, IconTrocarVisao, IconSair, IconAviso } from "./icons";
 import { avise, pergunte, CentralDeAvisos } from "./avisos";
 import { leArquivoDeAtividade, ArquivoInvalido } from "./atividade-arquivo";
+import { reduzComprovante, ComprovanteInvalido } from "./comprovante";
 
 type Athlete = { name: string; initials: string; distance: string; plan?: string; phase: string; week: string; next: string; flag?: string; archivedAt?: number | null; archivedReason?: string | null };
 type TrainingPlan = { name:string; distance:string; weeks:number; frequency:string; level:string; goal:string; phases:string[]; pending?:boolean; complete?:boolean };
@@ -455,17 +456,139 @@ function FinancialQuickSetup(){
 }
 
 function FinancialCenter(){
-  type Row={athlete_name:string;reference_month?:string;amount_cents?:number;due_date?:string;status?:string};type Draft={amount:string;dueDate:string};
+  type Row={athlete_name:string;reference_month?:string;amount_cents?:number;due_date?:string;status?:string;price_class?:string|null;has_receipt?:number;receipt_note?:string|null;receipt_added_at?:number|null};
+  type Classe={id:string;name:string;amount_cents:number;due_day:number};type Draft={amount:string;dueDate:string};
   const [month,setMonth]=useState(new Date().toISOString().slice(0,7));
   const [paymentFilter,setPaymentFilter]=useState<"Todos"|"Vencidos"|"Pendentes"|"Pagos"|"Sem cobrança">("Todos");
   const shiftMonth=(delta:number)=>{const [year,value]=month.split("-").map(Number);const date=new Date(year,value-1+delta,1);setMonth(`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}`)};
   const parseMoney=(value:string)=>{const clean=value.replace(/R\$|\s/g,"");const normalized=clean.includes(",")?clean.replace(/\./g,"").replace(",","."):clean;return Number(normalized)};
   const formatMoneyInput=(value:number)=>value.toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
-  const [data,setData]=useState<any>({settings:null,payments:[]});const [drafts,setDrafts]=useState<Record<string,Draft>>({});const [state,setState]=useState("");const [savingAthlete,setSavingAthlete]=useState("");const [deleteAthlete,setDeleteAthlete]=useState("");
+  const [data,setData]=useState<any>({settings:null,payments:[],classes:[]});
+  const [classeEditando,setClasseEditando]=useState<{id:string;name:string;amount:string;dueDay:number}|null>(null);
+  const [alcance,setAlcance]=useState<"all"|"class"|"athletes">("all");
+  const [classeAlvo,setClasseAlvo]=useState("");
+  const [escolhidos,setEscolhidos]=useState<string[]>([]);
+  const [gerando,setGerando]=useState(false);
+  const [comprovanteAberto,setComprovanteAberto]=useState<{athlete:string;imagem:string;nota:string;quando:number}|null>(null);
+  const [enviandoComprovante,setEnviandoComprovante]=useState("");
+  const [drafts,setDrafts]=useState<Record<string,Draft>>({});const [state,setState]=useState("");const [savingAthlete,setSavingAthlete]=useState("");const [deleteAthlete,setDeleteAthlete]=useState("");
   const load=()=>fetch(`/api/financial?month=${month}`).then(r=>r.ok?r.json():Promise.reject()).then(value=>{setData({...value,payments:(value.payments||[]).map((row:Row)=>({...row,amount_cents:(row.amount_cents||0)/100}))});setDrafts(Object.fromEntries((value.payments||[]).map((row:Row)=>[row.athlete_name,{amount:row.amount_cents?formatMoneyInput(row.amount_cents/100):"",dueDate:row.due_date||`${month}-${String(value.settings?.due_day||15).padStart(2,"0")}`}])));setState("")}).catch(()=>setState("error"));useEffect(()=>{load()},[month]);
   const savePayment=async(row:Row,status=row.status||"Pendente")=>{const draft=drafts[row.athlete_name];const amount=parseMoney(draft?.amount||"");if(!Number.isFinite(amount)||amount<=0||!draft?.dueDate){setState("invalid-money");return}setSavingAthlete(row.athlete_name);setState("");try{await api.post("/api/financial",{action:"update_payment",athleteName:row.athlete_name,referenceMonth:month,amount,dueDate:draft.dueDate,status});await load();setState("payment-saved")}catch{setState("error")}finally{setSavingAthlete("")}};
   const removePayment=async(row:Row)=>{setSavingAthlete(row.athlete_name);setState("");try{await api.post("/api/financial",{action:"delete_payment",athleteName:row.athlete_name,referenceMonth:month});setDeleteAthlete("");await load();setState("payment-deleted")}catch{setState("error")}finally{setSavingAthlete("")}};
-  const rows=data.payments as Row[];const todayKey=new Date().toISOString().slice(0,10);const paymentTiming=(row:Row)=>{if(row.status!=="Pendente"||!row.due_date)return row.status||"Sem cobrança";if(row.due_date<todayKey)return "Vencido";const days=Math.ceil((new Date(`${row.due_date}T12:00:00`).getTime()-new Date(`${todayKey}T12:00:00`).getTime())/86400000);return days<=5?"Vence em breve":"Pendente"};const pending=rows.filter(row=>row.status==="Pendente");const overdue=pending.filter(row=>paymentTiming(row)==="Vencido");const paid=rows.filter(row=>row.status==="Pago");const noCharge=rows.filter(row=>!row.status);const visibleRows=paymentFilter==="Vencidos"?overdue:paymentFilter==="Pendentes"?pending:paymentFilter==="Pagos"?paid:paymentFilter==="Sem cobrança"?noCharge:rows;const monthLabel=new Date(`${month}-01T12:00:00`).toLocaleDateString("pt-BR",{month:"long",year:"numeric"});const monthControls=<section className="financial-month-controls"><button onClick={()=>shiftMonth(-1)}>← Mês anterior</button><label>Mês das cobranças<input type="month" value={month} onChange={event=>setMonth(event.target.value)}/><b>{monthLabel}</b></label><button onClick={()=>shiftMonth(1)}>Próximo mês →</button><div>{(["Todos","Vencidos","Pendentes","Pagos","Sem cobrança"] as const).map(filter=><button key={filter} className={paymentFilter===filter?"selected":""} onClick={()=>setPaymentFilter(filter)}>{filter}</button>)}</div></section>;return <>{monthControls}<section className="financial-summary"><article className="urgent"><small>VENCIDOS</small><b>{overdue.length}</b><span>{overdue.reduce((sum,row)=>sum+(row.amount_cents||0),0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</span></article><article><small>PENDENTES</small><b>{pending.length}</b><span>{pending.reduce((sum,row)=>sum+(row.amount_cents||0),0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</span></article><article><small>PAGOS</small><b>{paid.length}</b><span>{paid.reduce((sum,row)=>sum+(row.amount_cents||0),0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</span></article><article><small>MÊS</small><b>{month.split("-").reverse().join("/")}</b><span>Valores individuais por aluno</span></article></section><section className="financial-list individual"><header><div><span className="overline">COBRANÇAS INDIVIDUAIS</span><h2>Valor e vencimento de cada aluno</h2><p>Edite em poucos passos. Vencidos e próximos do vencimento são destacados automaticamente, sem bloquear os treinos.</p></div></header>{!data.settings&&<p className="financial-warning">Salve a chave Pix antes de lançar a primeira pendência.</p>}<div>{visibleRows.map(row=>{const draft=drafts[row.athlete_name]||{amount:"",dueDate:`${month}-15`};return <article key={row.athlete_name}><b>{row.athlete_name}</b><label>Valor (R$)<input type="text" inputMode="decimal" value={draft.amount} onChange={event=>setDrafts(current=>({...current,[row.athlete_name]:{...draft,amount:event.target.value.replace(/[^0-9.,]/g,"")}}))} onBlur={()=>{const parsed=parseMoney(draft.amount);if(Number.isFinite(parsed)&&parsed>0)setDrafts(current=>({...current,[row.athlete_name]:{...draft,amount:formatMoneyInput(parsed)}}))}} placeholder="Ex.: 95,00"/></label><label>Vencimento<input type="date" value={draft.dueDate} onChange={event=>setDrafts(current=>({...current,[row.athlete_name]:{...draft,dueDate:event.target.value}}))}/></label><em className={paymentTiming(row)==="Pago"?"paid":paymentTiming(row)==="Vencido"?"overdue":paymentTiming(row)==="Vence em breve"?"due-soon":paymentTiming(row)==="Pendente"?"pending":"empty"}>{paymentTiming(row)}</em><div><button disabled={!data.settings||!draft.amount||!draft.dueDate||savingAthlete===row.athlete_name} onClick={()=>savePayment(row,row.status||"Pendente")}>{savingAthlete===row.athlete_name?"Salvando…":row.status?"Atualizar cobrança":"Lançar pendência"}</button>{row.status&&<button className="payment-status-button" onClick={()=>savePayment(row,row.status==="Pago"?"Pendente":"Pago")}>{row.status==="Pago"?"Marcar pendente":"Marcar pago"}</button>}{row.status&&<button className="payment-delete-button" onClick={()=>setDeleteAthlete(row.athlete_name)}>Remover</button>}</div>{deleteAthlete===row.athlete_name&&<aside className="payment-delete-confirm"><span>Remover a cobrança de {row.athlete_name} em {month.split("-").reverse().join("/")}?</span><button onClick={()=>setDeleteAthlete("")}>Cancelar</button><button className="danger-confirm" disabled={savingAthlete===row.athlete_name} onClick={()=>removePayment(row)}>{savingAthlete===row.athlete_name?"Removendo…":"Sim, remover"}</button></aside>}</article>})}</div>{state==="payment-saved"&&<p className="request-success">Cobrança individual atualizada ✓</p>}{state==="payment-deleted"&&<p className="request-success">Cobrança removida. O aluno não verá mais essa pendência ✓</p>}{state==="invalid-money"&&<p className="registration-error">Digite o valor em reais. Exemplo: 95,00.</p>}{state==="error"&&<p className="registration-error">Não foi possível atualizar o financeiro.</p>}</section></>;
+  /* Classes de preço. Alterar o valor de uma classe vale da próxima geração em
+     diante: cobrança já lançada é compromisso combinado e não se reescreve. */
+  const salvarClasse=async()=>{
+    if(!classeEditando)return;
+    const valor=parseMoney(classeEditando.amount);
+    if(!Number.isFinite(valor)||valor<=0){avise("atencao","Valor inválido","Digite o valor em reais, por exemplo 150,00.");return}
+    try{
+      await api.post("/api/financial",{action:"save_class",classId:classeEditando.id||undefined,name:classeEditando.name,amount:valor,dueDay:classeEditando.dueDay});
+      setClasseEditando(null);await load();
+      avise("ok","Classe salva","Ela vale para as próximas gerações; cobranças já lançadas não mudam.");
+    }catch(erro){avise("erro","Não foi possível salvar a classe",describeError(erro,"Confira o nome e o valor."))}
+  };
+  const excluirClasse=async(classe:{id:string;name:string})=>{
+    const quantos=(data.payments||[]).filter((linha:Row)=>linha.price_class===classe.name).length;
+    if(!await pergunte({titulo:`Excluir a classe ${classe.name}?`,descricao:quantos?`${plural(quantos,"aluno volta","alunos voltam")} para o valor padrão.`:"Nenhum aluno está nesta classe.",confirmar:"Excluir classe",perigo:true}))return;
+    try{
+      const r=await api.post<{alunosAfetados?:number}>("/api/financial",{action:"delete_class",classId:classe.id});
+      await load();
+      avise("ok","Classe excluída",r.alunosAfetados?`${plural(r.alunosAfetados,"aluno voltou","alunos voltaram")} para o valor padrão.`:"Nenhum aluno estava nela.");
+    }catch(erro){avise("erro","Não foi possível excluir a classe",describeError(erro))}
+  };
+  const definirClasseDoAluno=async(athleteName:string,name:string)=>{
+    try{await api.post("/api/financial",{action:"assign_class",athleteName,name});await load()}
+    catch(erro){avise("erro","Não foi possível mudar a classe do aluno",describeError(erro))}
+  };
+
+  /* Comprovante: a imagem é reduzida no navegador e sobe já pequena. */
+  const anexarComprovante=async(row:Row,arquivo?:File)=>{
+    if(!arquivo)return;
+    setEnviandoComprovante(row.athlete_name);
+    try{
+      const {imagem,kb}=await reduzComprovante(arquivo);
+      await api.post("/api/financial",{action:"save_receipt",athleteName:row.athlete_name,referenceMonth:month,image:imagem});
+      await load();
+      avise("ok","Comprovante anexado",`Guardado com ${kb} KB, reduzido no seu aparelho antes de subir.`);
+    }catch(erro){
+      avise("erro","Não foi possível anexar o comprovante",erro instanceof ComprovanteInvalido?erro.message:describeError(erro));
+    }finally{setEnviandoComprovante("")}
+  };
+  const abrirComprovante=async(row:Row)=>{
+    try{
+      const r=await fetch(`/api/financial?month=${month}&receipt=${encodeURIComponent(row.athlete_name)}`).then(resposta=>resposta.json());
+      if(!r.receipt?.receipt_image){avise("atencao","Comprovante não encontrado","Ele pode ter sido removido em outra aba.");return}
+      setComprovanteAberto({athlete:row.athlete_name,imagem:r.receipt.receipt_image,nota:r.receipt.receipt_note||"",quando:Number(r.receipt.receipt_added_at)||0});
+    }catch(erro){avise("erro","Não foi possível abrir o comprovante",describeError(erro))}
+  };
+  const removerComprovante=async(row:Row)=>{
+    if(!await pergunte({titulo:`Remover o comprovante de ${row.athlete_name}?`,descricao:"A imagem é apagada e não há como desfazer. A cobrança continua como está.",confirmar:"Remover comprovante",perigo:true}))return;
+    try{await api.post("/api/financial",{action:"remove_receipt",athleteName:row.athlete_name,referenceMonth:month});setComprovanteAberto(null);await load();avise("ok","Comprovante removido")}
+    catch(erro){avise("erro","Não foi possível remover",describeError(erro))}
+  };
+
+  /* Um botão de gerar, com o alcance escolhido antes: todos, uma classe ou
+     alunos marcados. Três caminhos paralelos fariam quase a mesma coisa. */
+  const gerarCobrancas=async()=>{
+    const rotulo=alcance==="all"?"todos os alunos ativos":alcance==="class"?`a classe ${classeAlvo}`:plural(escolhidos.length,"aluno marcado","alunos marcados");
+    if(!await pergunte({titulo:`Gerar cobranças de ${month.split("-").reverse().join("/")}?`,descricao:`Alcance: ${rotulo}. Quem já tem cobrança neste mês não é tocado — é lá que fica a negociação individual.`,confirmar:"Gerar cobranças"}))return;
+    setGerando(true);
+    try{
+      const r=await api.post<{generated?:number}>("/api/financial",{action:"generate_month",referenceMonth:month,scope:alcance,className:alcance==="class"?classeAlvo:undefined,athletes:alcance==="athletes"?escolhidos:undefined});
+      await load();
+      avise("ok","Cobranças geradas",`${plural(Number(r.generated??0),"aluno alcançado","alunos alcançados")}. Quem já tinha cobrança continuou como estava.`);
+    }catch(erro){avise("erro","Não foi possível gerar as cobranças",describeError(erro))}
+    finally{setGerando(false)}
+  };
+
+  const rows=data.payments as Row[];const todayKey=new Date().toISOString().slice(0,10);const paymentTiming=(row:Row)=>{if(row.status!=="Pendente"||!row.due_date)return row.status||"Sem cobrança";if(row.due_date<todayKey)return "Vencido";const days=Math.ceil((new Date(`${row.due_date}T12:00:00`).getTime()-new Date(`${todayKey}T12:00:00`).getTime())/86400000);return days<=5?"Vence em breve":"Pendente"};const pending=rows.filter(row=>row.status==="Pendente");const overdue=pending.filter(row=>paymentTiming(row)==="Vencido");const paid=rows.filter(row=>row.status==="Pago");const noCharge=rows.filter(row=>!row.status);const visibleRows=paymentFilter==="Vencidos"?overdue:paymentFilter==="Pendentes"?pending:paymentFilter==="Pagos"?paid:paymentFilter==="Sem cobrança"?noCharge:rows;const monthLabel=new Date(`${month}-01T12:00:00`).toLocaleDateString("pt-BR",{month:"long",year:"numeric"});const monthControls=<section className="financial-month-controls"><button onClick={()=>shiftMonth(-1)}>← Mês anterior</button><label>Mês das cobranças<input type="month" value={month} onChange={event=>setMonth(event.target.value)}/><b>{monthLabel}</b></label><button onClick={()=>shiftMonth(1)}>Próximo mês →</button><div>{(["Todos","Vencidos","Pendentes","Pagos","Sem cobrança"] as const).map(filter=><button key={filter} className={paymentFilter===filter?"selected":""} onClick={()=>setPaymentFilter(filter)}>{filter}</button>)}</div></section>;return <>{monthControls}<section className="financial-summary"><article className="urgent"><small>VENCIDOS</small><b>{overdue.length}</b><span>{overdue.reduce((sum,row)=>sum+(row.amount_cents||0),0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</span></article><article><small>PENDENTES</small><b>{pending.length}</b><span>{pending.reduce((sum,row)=>sum+(row.amount_cents||0),0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</span></article><article><small>PAGOS</small><b>{paid.length}</b><span>{paid.reduce((sum,row)=>sum+(row.amount_cents||0),0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</span></article><article><small>MÊS</small><b>{month.split("-").reverse().join("/")}</b><span>Valores individuais por aluno</span></article></section><section className="price-classes">
+    <header><div><span className="overline">CLASSES DE PREÇO</span><h2>Quem paga quanto</h2><p>Agrupe quem paga igual. Um reajuste alcança o grupo inteiro; a negociação de um aluno continua no valor da cobrança dele.</p></div><button onClick={()=>setClasseEditando({id:"",name:"",amount:"",dueDay:Number(data.settings?.due_day)||10})}>+ Nova classe</button></header>
+    <div className="price-class-grid">
+      {((data.classes||[]) as Classe[]).map(classe=>{
+        const quantos=rows.filter(linha=>linha.price_class===classe.name).length;
+        return <article key={classe.id}>
+          <b>{classe.name}</b>
+          <strong>{(classe.amount_cents/100).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</strong>
+          <small>vence dia {classe.due_day} · {plural(quantos,"aluno")}</small>
+          <div>
+            <button onClick={()=>setClasseEditando({id:classe.id,name:classe.name,amount:formatMoneyInput(classe.amount_cents/100),dueDay:classe.due_day})}>Editar</button>
+            <button className="price-class-delete" onClick={()=>void excluirClasse(classe)}>Excluir</button>
+          </div>
+        </article>})}
+      {!(data.classes||[]).length&&!classeEditando&&<p className="price-class-empty">Nenhuma classe criada. Sem classe, todo aluno usa o valor padrão do passo a passo acima.</p>}
+    </div>
+    {classeEditando&&<div className="price-class-form">
+      <label>Nome<input value={classeEditando.name} onChange={event=>setClasseEditando({...classeEditando,name:event.target.value})} placeholder="Ex.: Presencial, Online, Bolsista"/></label>
+      <label>Valor (R$)<input inputMode="decimal" value={classeEditando.amount} onChange={event=>setClasseEditando({...classeEditando,amount:event.target.value.replace(/[^0-9.,]/g,"")})} placeholder="150,00"/></label>
+      <label>Vencimento<input type="number" min="1" max="28" value={classeEditando.dueDay} onChange={event=>setClasseEditando({...classeEditando,dueDay:Math.min(28,Math.max(1,Number(event.target.value)||1))})}/></label>
+      <div><button className="gold" onClick={()=>void salvarClasse()}>Salvar classe</button><button onClick={()=>setClasseEditando(null)}>Cancelar</button></div>
+    </div>}
+  </section>
+
+  <section className="financial-generate">
+    <header><div><span className="overline">GERAR COBRANÇAS</span><h2>De {month.split("-").reverse().join("/")}</h2><p>Cada aluno recebe o valor da classe dele; sem classe, o padrão. Quem já tem cobrança no mês não é tocado.</p></div></header>
+    <div className="financial-scope">
+      {([["all","Todos os alunos ativos"],["class","Uma classe"],["athletes","Alunos marcados"]] as const).map(([chave,rotulo])=>
+        <button key={chave} className={alcance===chave?"selected":""} onClick={()=>setAlcance(chave)}>{rotulo}</button>)}
+    </div>
+    {alcance==="class"&&<label className="financial-scope-class">Classe<select value={classeAlvo} onChange={event=>setClasseAlvo(event.target.value)}><option value="">Escolha uma classe</option>{((data.classes||[]) as Classe[]).map(classe=><option key={classe.id}>{classe.name}</option>)}</select></label>}
+    {alcance==="athletes"&&<div className="financial-scope-athletes">{rows.map(linha=>
+      <button key={linha.athlete_name} className={escolhidos.includes(linha.athlete_name)?"selected":""} onClick={()=>setEscolhidos(atual=>atual.includes(linha.athlete_name)?atual.filter(nome=>nome!==linha.athlete_name):[...atual,linha.athlete_name])}>{linha.athlete_name}</button>)}</div>}
+    <button className="gold" disabled={gerando||!data.settings||(alcance==="class"&&!classeAlvo)||(alcance==="athletes"&&!escolhidos.length)} onClick={()=>void gerarCobrancas()}>{gerando?"Gerando…":"Gerar cobranças do mês"}</button>
+    {!data.settings&&<p className="financial-warning">Salve o padrão no passo a passo acima antes de gerar.</p>}
+  </section>
+
+  <section className="financial-list individual"><header><div><span className="overline">COBRANÇAS INDIVIDUAIS</span><h2>Valor e vencimento de cada aluno</h2><p>Edite em poucos passos. Vencidos e próximos do vencimento são destacados automaticamente, sem bloquear os treinos.</p></div></header>{!data.settings&&<p className="financial-warning">Salve a chave Pix antes de lançar a primeira pendência.</p>}<div>{visibleRows.map(row=>{const draft=drafts[row.athlete_name]||{amount:"",dueDate:`${month}-15`};return <article key={row.athlete_name}><b>{row.athlete_name}</b><label>Valor (R$)<input type="text" inputMode="decimal" value={draft.amount} onChange={event=>setDrafts(current=>({...current,[row.athlete_name]:{...draft,amount:event.target.value.replace(/[^0-9.,]/g,"")}}))} onBlur={()=>{const parsed=parseMoney(draft.amount);if(Number.isFinite(parsed)&&parsed>0)setDrafts(current=>({...current,[row.athlete_name]:{...draft,amount:formatMoneyInput(parsed)}}))}} placeholder="Ex.: 95,00"/></label><label>Vencimento<input type="date" value={draft.dueDate} onChange={event=>setDrafts(current=>({...current,[row.athlete_name]:{...draft,dueDate:event.target.value}}))}/></label><label className="payment-class">Classe<select value={row.price_class||""} onChange={event=>void definirClasseDoAluno(row.athlete_name,event.target.value)}><option value="">Padrão</option>{((data.classes||[]) as Classe[]).map(classe=><option key={classe.id}>{classe.name}</option>)}</select></label><em className={paymentTiming(row)==="Pago"?"paid":paymentTiming(row)==="Vencido"?"overdue":paymentTiming(row)==="Vence em breve"?"due-soon":paymentTiming(row)==="Pendente"?"pending":"empty"}>{paymentTiming(row)}</em><div><button disabled={!data.settings||!draft.amount||!draft.dueDate||savingAthlete===row.athlete_name} onClick={()=>savePayment(row,row.status||"Pendente")}>{savingAthlete===row.athlete_name?"Salvando…":row.status?"Atualizar cobrança":"Lançar pendência"}</button>{row.status&&<button className="payment-status-button" onClick={()=>savePayment(row,row.status==="Pago"?"Pendente":"Pago")}>{row.status==="Pago"?"Marcar pendente":"Marcar pago"}</button>}{row.status&&<button className="payment-delete-button" onClick={()=>setDeleteAthlete(row.athlete_name)}>Remover</button>}</div>{row.status&&<div className="payment-receipt">{row.has_receipt
+  ?<><button className="payment-receipt-open" onClick={()=>void abrirComprovante(row)}>Ver comprovante</button><small>anexado em {row.receipt_added_at?new Date(Number(row.receipt_added_at)).toLocaleDateString("pt-BR"):"—"}</small></>
+  :<label className="payment-receipt-add">{enviandoComprovante===row.athlete_name?"Enviando…":"Anexar comprovante"}<input type="file" accept="image/*" disabled={enviandoComprovante===row.athlete_name} onChange={event=>void anexarComprovante(row,event.target.files?.[0])}/></label>}</div>}{deleteAthlete===row.athlete_name&&<aside className="payment-delete-confirm"><span>Remover a cobrança de {row.athlete_name} em {month.split("-").reverse().join("/")}?</span><button onClick={()=>setDeleteAthlete("")}>Cancelar</button><button className="danger-confirm" disabled={savingAthlete===row.athlete_name} onClick={()=>removePayment(row)}>{savingAthlete===row.athlete_name?"Removendo…":"Sim, remover"}</button></aside>}</article>})}</div>{state==="payment-saved"&&<p className="request-success">Cobrança individual atualizada ✓</p>}{state==="payment-deleted"&&<p className="request-success">Cobrança removida. O aluno não verá mais essa pendência ✓</p>}{state==="invalid-money"&&<p className="registration-error">Digite o valor em reais. Exemplo: 95,00.</p>}{state==="error"&&<p className="registration-error">Não foi possível atualizar o financeiro.</p>}</section>
+  {comprovanteAberto&&<div className="overlay overlay-centro" onMouseDown={evento=>evento.target===evento.currentTarget&&setComprovanteAberto(null)}>
+    <section className="comprovante-aberto" role="dialog" aria-modal="true" aria-label={`Comprovante de ${comprovanteAberto.athlete}`}>
+      <header><div><span className="overline">COMPROVANTE</span><h2>{comprovanteAberto.athlete}</h2><p>{comprovanteAberto.quando?`Anexado em ${new Date(comprovanteAberto.quando).toLocaleString("pt-BR")}`:"Sem data registrada"}</p></div><button onClick={()=>setComprovanteAberto(null)} aria-label="Fechar">×</button></header>
+      <img src={comprovanteAberto.imagem} alt={`Comprovante de pagamento de ${comprovanteAberto.athlete}`}/>
+      {comprovanteAberto.nota&&<p className="comprovante-nota">{comprovanteAberto.nota}</p>}
+      <footer><button className="danger-confirm" onClick={()=>void removerComprovante({athlete_name:comprovanteAberto.athlete})}>Remover comprovante</button></footer>
+    </section>
+  </div>}</>;
 }
 
 
