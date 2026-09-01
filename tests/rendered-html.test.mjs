@@ -187,6 +187,30 @@ test("uses a computer-first workspace for weekly programming and workout buildin
   assert.match(css, /width:min\(1120px,calc\(100vw - 260px\)\)/);
 });
 
+test("tells the student a test was requested, separately from one under review", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+
+  /* Dois defeitos no mesmo aviso. O primeiro: "não aprovado" juntava o teste que
+     o treinador acabou de pedir — que espera uma corrida do ALUNO — com o que já
+     foi devolvido, que espera a análise do TREINADOR. O pedido novo aparecia com
+     o texto do outro, "o professor recebeu o resultado", antes de o aluno correr.
+     O segundo: `waitingTest && !approvedTest` escondia o aviso inteiro sempre que
+     houvesse qualquer teste aprovado no histórico — e é o caso de todo aluno que
+     já tem zonas liberadas, ou seja, exatamente quem recebe um teste novo. */
+  assert.match(client, /const testePedido=studentTests\?\.tests\?\.find\(\(test:TesteDoAluno\)=>test\.status==="Solicitado"\)/);
+  assert.match(client, /const testeEmAnalise=studentTests\?\.tests\?\.find\(\(test:TesteDoAluno\)=>test\.status==="Aguardando revisão"\)/);
+  assert.doesNotMatch(client, /waitingTest&&!approvedTest/);
+
+  // O aviso do pedido diz a distância e leva ao lugar de informar o tempo.
+  assert.match(client, /Seu treinador pediu um teste de \$\{testePedido\.distance_km\} km/);
+  assert.match(client, /action:"Informar o tempo do teste"/);
+
+  /* É pendência, não notícia: sai quando for cumprido, não quando for lido.
+     Dispensável, o aluno esconderia para sempre uma obrigação em aberto. */
+  assert.match(client, /action:"Informar o tempo do teste",exigeAcao:true/);
+  assert.match(client, /\{!alert\.exigeAcao&&<button aria-label="Marcar aviso como lido"/);
+});
+
 test("every coach-facing endpoint scopes athlete data to the coach's portfolio", async () => {
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
 
