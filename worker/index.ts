@@ -39,7 +39,8 @@ import {
   type ProviderId,
 } from "./integrations";
 import * as schema from "../db/schema";
-import { tableColumns, tableSql } from "../db/sql";
+import { trainingPlans, planWeekTemplates } from "../db/planilhas-de-fabrica";
+import { createIndexesSql, createTableSql, tableColumns, tableSql } from "../db/sql";
 
 interface Env {
   ASSETS: Fetcher;
@@ -120,7 +121,8 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/integrations": new Set(["action","provider","athleteName","payload","weekStart","workoutDay"]),
   "/api/integrations/strava/subscription": new Set(["action","id"]),
   "/api/dev/coaches": new Set(["action","email","name","password"]),
-  "/api/dev/accounts": new Set(["action","email"]),
+  "/api/equipe": new Set(["action","email","name","password"]),
+  "/api/dev/accounts": new Set(["action","email","role"]),
   "/api/student/integrations": new Set(["action","provider"]),
 };
 
@@ -262,13 +264,19 @@ function requireCoachApiAccess(request: Request): Response | null {
 /**
  * De quem é a carteira que esta requisição enxerga.
  *
- * Um treinador vê os próprios alunos. A conta de manutenção vê a carteira do
- * treinador que estiver visitando e, sem visita nenhuma, vê tudo — é o modo de
- * diagnóstico. `null` significa "sem recorte".
+ * Um treinador vê os próprios alunos. O proprietário também, porque é um
+ * treinador — e vê a carteira de quem estiver visitando. A conta de manutenção
+ * vê a carteira do treinador que estiver visitando e, sem visita nenhuma, vê
+ * tudo: é o modo de diagnóstico. `null` significa "sem recorte".
  */
 function carteiraDe(request: Request): string | null {
   const identity = resolvedIdentities.get(request) ?? null;
   if (identity?.role === "coach") return identity.email;
+  /* O proprietário é treinador antes de ser proprietário: sem visita ele vê a
+     própria carteira, não a de todo mundo. Ver tudo somado seria misturar os
+     alunos da equipe com os dele, e não é isso que supervisão quer dizer —
+     para olhar a carteira de alguém ele entra na área daquela pessoa. */
+  if (identity?.role === "owner") return identity.visitandoEmail ?? identity.email;
   if (identity?.role === "dev") return identity.visitandoEmail ?? null;
   return null;
 }
@@ -285,6 +293,85 @@ function carteiraDe(request: Request): string | null {
 function recorteDeAlunos(carteira: string | null, coluna = "athletes.coach_email"): { clausula: string; valores: string[] } {
   if (!carteira) return { clausula: "", valores: [] };
   return { clausula: `${coluna} = ?`, valores: [carteira] };
+}
+
+let bibliotecasSeparadas = false;
+
+/**
+ * Dá dono às planilhas e semeia a biblioteca do treinador principal.
+ *
+ * As planilhas nasceram globais: `custom_plans` e `plan_template_overrides` não
+ * tinham dono, e as dez de fábrica eram constantes do cliente. Com a equipe,
+ * cada treinador tem a própria biblioteca e um treinador novo começa sem
+ * nenhuma — o que obriga a três coisas nesta ordem:
+ *
+ * 1. As planilhas e semanas que já existem passam a ser do treinador principal,
+ *    porque foi ele quem as criou.
+ * 2. Os índices únicos deixam de ser por nome e passam a ser por dono + nome.
+ *    Sem isso, o segundo treinador a criar uma "Base Inverno" tomaria 409, e
+ *    dois treinadores editando a semana 3 de planilhas homônimas gravariam na
+ *    mesma linha — um apagando o treino do outro em silêncio.
+ * 3. As dez de fábrica viram linhas do treinador principal. Elas eram o que ele
+ *    já usava; virar dado é o que permite ao treinador novo não recebê-las.
+ *
+ * Roda uma vez por instância e é idempotente: só toca em linha sem dono e só
+ * semeia planilha que ainda não existe.
+ */
+async function separaBibliotecasDePlanilhas(env: Env): Promise<void> {
+  if (bibliotecasSeparadas) return;
+  await ensureTables(env, schema.customPlans, schema.planTemplateOverrides);
+  await ensureColumns(env, "custom_plans", { coach_email: "TEXT" });
+  await ensureColumns(env, "plan_template_overrides", { coach_email: "TEXT" });
+
+  const principal = coachEmailOf(env);
+  if (!principal) return;
+
+  await env.DB.batch([
+    env.DB.prepare("UPDATE custom_plans SET coach_email = ? WHERE coach_email IS NULL").bind(principal),
+    env.DB.prepare("UPDATE plan_template_overrides SET coach_email = ? WHERE coach_email IS NULL").bind(principal),
+    env.DB.prepare("DROP INDEX IF EXISTS custom_plans_name_idx"),
+    env.DB.prepare("DROP INDEX IF EXISTS plan_template_overrides_plan_week_idx"),
+    env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS custom_plans_coach_name_idx ON custom_plans (coach_email, name)"),
+    env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS plan_template_overrides_coach_plan_week_idx ON plan_template_overrides (coach_email, plan_name, week_number)"),
+  ]);
+
+  /* A pergunta certa é "já foi semeado?", não "tem alguma planilha?". A primeira
+     versão perguntava a segunda, e como o passo acima acabara de dar dono às
+     planilhas que o treinador já tinha criado, a contagem nunca era zero e as
+     dez nunca chegavam. Perguntar pelas dez pelo nome também respeita quem
+     apagar alguma depois: com pelo menos uma presente, não se semeia de novo e
+     nada ressuscita. */
+  const nomesDeFabrica = trainingPlans.map(plano => plano.name);
+  const marcadores = nomesDeFabrica.map(() => "?").join(",");
+  const jaSemeado = await env.DB.prepare(
+    `SELECT COUNT(*) AS total FROM custom_plans WHERE coach_email = ? AND name IN (${marcadores})`,
+  ).bind(principal, ...nomesDeFabrica).first() as { total?: number } | null;
+  if (!Number(jaSemeado?.total ?? 0)) await semeiaPlanilhasDeFabrica(env, principal);
+  bibliotecasSeparadas = true;
+}
+
+/**
+ * Escreve as dez planilhas de fábrica na biblioteca de um treinador.
+ *
+ * Usada só na migração do treinador principal. Um treinador criado depois não
+ * passa por aqui: ele começa com a biblioteca vazia, que foi o combinado.
+ */
+async function semeiaPlanilhasDeFabrica(env: Env, dono: string): Promise<void> {
+  const agora = Date.now();
+  const comandos = [];
+  for (const plano of trainingPlans) {
+    comandos.push(env.DB.prepare(
+      `INSERT INTO custom_plans (id,name,distance,weeks,frequency,level,goal,phases,created_by,coach_email,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`,
+    ).bind(crypto.randomUUID(), plano.name, plano.distance, plano.weeks, plano.frequency, plano.level, plano.goal, JSON.stringify(plano.phases), dono, dono, agora));
+    for (const [semana, sessoes] of Object.entries(planWeekTemplates[plano.name] ?? {})) {
+      comandos.push(env.DB.prepare(
+        `INSERT INTO plan_template_overrides (id,plan_name,week_number,sessions_json,updated_by,coach_email,updated_at)
+         VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`,
+      ).bind(crypto.randomUUID(), plano.name, Number(semana), JSON.stringify(sessoes), dono, dono, agora));
+    }
+  }
+  await env.DB.batch(comandos);
 }
 
 let alunosAtribuidos = false;
@@ -311,14 +398,43 @@ function requireDevApiAccess(request: Request): Response | null {
   return null;
 }
 
+/**
+ * Anota um ato no log de segurança.
+ *
+ * A mesma inserção estava repetida em cada lugar que precisava deixar rastro,
+ * cada uma com a rota escrita à mão — e uma delas ficou apontando para o
+ * caminho antigo depois de um renome. Aqui é um lugar só.
+ */
+async function registraNaSeguranca(env: Env, request: Request, evento: string, detalhe: string, rota: string) {
+  await ensureTables(env, schema.securityEvents);
+  await env.DB.prepare(
+    "INSERT INTO security_events (id, actor_email, event_type, route, details, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+  ).bind(crypto.randomUUID(), normalizedAuthenticatedEmail(request) ?? "desconhecido", evento, rota, detalhe, Date.now()).run();
+}
+
+/**
+ * A equipe é assunto do proprietário para cima.
+ *
+ * O proprietário cria e confere os treinadores dele; a manutenção alcança o
+ * mesmo porque alcança tudo. Um treinador comum não passa daqui — quem pode
+ * criar conta pode criar acesso, e isso não desce na hierarquia.
+ */
+function requireOwnerApiAccess(request: Request): Response | null {
+  const identity = resolvedIdentities.get(request) ?? null;
+  if (!identity) return Response.json({ error: "authentication_required" }, { status: 401 });
+  if (identity.role !== "dev" && identity.role !== "owner") return Response.json({ error: "owner_access_required" }, { status: 403 });
+  return null;
+}
+
 type ApiIdentity =
   | { role: "dev"; email: string; visitandoEmail?: string }
+  | { role: "owner"; email: string; visitandoEmail?: string }
   | { role: "coach"; email: string }
   | { role: "student"; email: string; athleteName: string };
 
-/** A conta de manutenção alcança tudo o que o treinador alcança, e mais. */
+/** Manutenção e proprietário alcançam tudo o que o treinador alcança, e mais. */
 function isCoachLevel(identity: ApiIdentity | null): boolean {
-  return identity?.role === "coach" || identity?.role === "dev";
+  return identity?.role === "coach" || identity?.role === "dev" || identity?.role === "owner";
 }
 
 
@@ -347,8 +463,12 @@ async function ensureTables(env: Env, ...tabelas: Array<Parameters<typeof tableS
   const pendentes = tabelas.filter(tabela => !tabelasConferidas.has(nomeDaTabela(tabela)));
   if (!pendentes.length) return;
 
-  const instrucoes = pendentes.flatMap(tabela => tableSql(tabela));
-  await env.DB.batch(instrucoes.map(sql => env.DB.prepare(sql)));
+  /* A ordem aqui importa e custou um 503 para ficar clara: criar tabela,
+     completar as colunas e só então criar os índices. Antes o `tableSql` vinha
+     inteiro num batch só, então um índice novo sobre uma coluna nova era criado
+     antes de a coluna existir — e o batch inteiro falhava num banco que já vinha
+     de uma versão anterior. */
+  await env.DB.batch(pendentes.map(tabela => env.DB.prepare(createTableSql(tabela))));
 
   // Um banco criado por uma versão anterior não ganha colunas novas com
   // `CREATE TABLE IF NOT EXISTS`; este passo completa o que falta sem tocar
@@ -357,6 +477,9 @@ async function ensureTables(env: Env, ...tabelas: Array<Parameters<typeof tableS
     await ensureColumns(env, nomeDaTabela(tabela), tableColumns(tabela));
     tabelasConferidas.add(nomeDaTabela(tabela));
   }
+
+  const indices = pendentes.flatMap(tabela => createIndexesSql(tabela));
+  if (indices.length) await env.DB.batch(indices.map(sql => env.DB.prepare(sql)));
 }
 
 function nomeDaTabela(tabela: Parameters<typeof tableSql>[0]): string {
@@ -572,6 +695,7 @@ async function resolveApiIdentity(request: Request, env: Env): Promise<ApiIdenti
   const session = await identityFromRequest(env.DB, request);
   if (!session) return null;
   if (session.role === "dev") return { role: "dev", email: session.email, visitandoEmail: session.visitando?.email };
+  if (session.role === "owner") return { role: "owner", email: session.email, visitandoEmail: session.visitando?.email };
   if (session.role === "coach") return { role: "coach", email: session.email };
   await ensureAthleteAccess(env);
   const row = await env.DB.prepare(
@@ -1190,7 +1314,15 @@ async function athletePlanningApi(request:Request,env:Env):Promise<Response>{
   if(request.method==="POST"){
     const input=await request.json() as Record<string,unknown>;
     const athleteName=boundedText(input.athleteName,120);const plan=boundedText(input.plan,80);const phase=boundedText(input.phase,40);const weekNumber=Number(input.weekNumber);const totalWeeks=Number(input.totalWeeks);
-    const allowedPhases=["Adaptação","Base","Desenvolvimento","Específica","Pré-prova"];const allowedPlans=["Iniciantes","5 km Bronze","5 km Prata","5 km Ouro","5 km Elite","10 km Lion","Meia Start","Meia Finish","One Marathon","Full Marathon"];
+    const allowedPhases=["Adaptação","Base","Desenvolvimento","Específica","Pré-prova"];
+    /* A base do aluno tem de existir na biblioteca de quem o treina. A lista
+       aqui era as dez de fábrica cravadas, então uma planilha própria nunca
+       podia ser atribuída — e, agora que cada treinador tem a sua, cravar a
+       lista deixaria de fazer sentido de todo jeito. */
+    await separaBibliotecasDePlanilhas(env);
+    const dono=carteiraDe(request);
+    const biblioteca=await env.DB.prepare("SELECT name FROM custom_plans WHERE coach_email=?").bind(dono??"").all();
+    const allowedPlans=(biblioteca.results as Array<{name:string}>).map(linha=>linha.name);
     if(!athleteName||!allowedPlans.includes(plan)||!allowedPhases.includes(phase)||!Number.isInteger(totalWeeks)||totalWeeks<1||totalWeeks>60||!Number.isInteger(weekNumber)||weekNumber<1||weekNumber>totalWeeks)return Response.json({error:"invalid_planning"},{status:400});
     const updatedAt=Date.now();
     await env.DB.prepare("INSERT INTO athlete_planning (athlete_name,plan,phase,week_number,total_weeks,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(athlete_name) DO UPDATE SET plan=excluded.plan,phase=excluded.phase,week_number=excluded.week_number,total_weeks=excluded.total_weeks,updated_at=excluded.updated_at").bind(athleteName,plan,phase,weekNumber,totalWeeks,updatedAt).run();
@@ -1200,19 +1332,19 @@ async function athletePlanningApi(request:Request,env:Env):Promise<Response>{
 }
 
 async function planTemplateOverridesApi(request:Request,env:Env):Promise<Response>{
-  await ensureTables(env, schema.planTemplateOverrides);
-  await ensureTables(env, schema.customPlans);
-  /* As dez de fábrica mais as que o treinador criou. Só a lista fixa estava
-     aceita aqui, e por isso uma planilha própria não conseguia receber treino
-     nenhum: nascia vazia e continuava vazia. */
-  const proprias=await env.DB.prepare("SELECT name FROM custom_plans").all();
-  const allowedPlans=["Iniciantes","5 km Bronze","5 km Prata","5 km Ouro","5 km Elite","10 km Lion","Meia Start","Meia Finish","One Marathon","Full Marathon",
-    ...(proprias.results as Array<{name:string}>).map(linha=>linha.name)];
+  await separaBibliotecasDePlanilhas(env);
+  /* A biblioteca é de quem pede. Antes a lista aceita eram as dez de fábrica
+     mais todas as planilhas do banco, sem dono — então um treinador podia ler e
+     gravar a semana da planilha de outro só sabendo o nome dela. */
+  const dono=carteiraDe(request);
+  if(!dono)return Response.json({error:"coach_scope_required"},{status:403});
+  const proprias=await env.DB.prepare("SELECT name FROM custom_plans WHERE coach_email=?").bind(dono).all();
+  const allowedPlans=(proprias.results as Array<{name:string}>).map(linha=>linha.name);
   const url=new URL(request.url);
   if(request.method==="GET"){
     const plan=boundedText(url.searchParams.get("plan"),80);const weekNumber=Number(url.searchParams.get("week"));
     if(!allowedPlans.includes(plan)||!Number.isInteger(weekNumber)||weekNumber<1||weekNumber>60)return Response.json({error:"invalid_plan_week"},{status:400});
-    const row=await env.DB.prepare("SELECT sessions_json,updated_by,updated_at FROM plan_template_overrides WHERE plan_name=? AND week_number=? LIMIT 1").bind(plan,weekNumber).first<Record<string,unknown>>();
+    const row=await env.DB.prepare("SELECT sessions_json,updated_by,updated_at FROM plan_template_overrides WHERE coach_email=? AND plan_name=? AND week_number=? LIMIT 1").bind(dono,plan,weekNumber).first<Record<string,unknown>>();
     if(!row)return Response.json({override:null});
     try{return Response.json({override:{sessions:JSON.parse(String(row.sessions_json)),updatedBy:row.updated_by,updatedAt:row.updated_at}})}catch{return Response.json({error:"invalid_saved_template"},{status:500})}
   }
@@ -1222,7 +1354,7 @@ async function planTemplateOverridesApi(request:Request,env:Env):Promise<Respons
     if(!allowedPlans.includes(plan)||!Number.isInteger(weekNumber)||weekNumber<1||weekNumber>60||!Array.isArray(sessions)||sessions.length>10||!validStructuredValue(sessions))return Response.json({error:"invalid_template"},{status:400});
     const sessionsJson=JSON.stringify(sessions);if(sessionsJson.length>200_000)return Response.json({error:"template_too_large"},{status:413});
     const updatedAt=Date.now();const updatedBy=normalizedAuthenticatedEmail(request) ?? "sistema";const id=crypto.randomUUID();
-    await env.DB.prepare("INSERT INTO plan_template_overrides (id,plan_name,week_number,sessions_json,updated_by,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(plan_name,week_number) DO UPDATE SET sessions_json=excluded.sessions_json,updated_by=excluded.updated_by,updated_at=excluded.updated_at").bind(id,plan,weekNumber,sessionsJson,updatedBy,updatedAt).run();
+    await env.DB.prepare("INSERT INTO plan_template_overrides (id,plan_name,week_number,sessions_json,updated_by,coach_email,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(coach_email,plan_name,week_number) DO UPDATE SET sessions_json=excluded.sessions_json,updated_by=excluded.updated_by,updated_at=excluded.updated_at").bind(id,plan,weekNumber,sessionsJson,updatedBy,dono,updatedAt).run();
     return Response.json({saved:true,updatedAt});
   }
   return new Response("Method not allowed",{status:405});
@@ -2696,21 +2828,29 @@ async function devOverviewApi(request: Request, env: Env): Promise<Response> {
  * servidor que decide o recorte dos dados, e não a interface. Quem age continua
  * sendo a conta de manutenção, e é o e-mail dela que vai para a auditoria.
  */
-async function devCoachesApi(request: Request, env: Env): Promise<Response> {
+async function equipeApi(request: Request, env: Env): Promise<Response> {
   await ensureTables(env, schema.userAccounts, schema.userSessions, schema.athletes);
   await atribuiAlunosSemDono(env);
 
+  const quemPede = resolvedIdentities.get(request) ?? null;
+  /* A manutenção enxerga a equipe inteira, proprietário incluído, porque ela
+     responde pelo sistema. O proprietário enxerga só os treinadores: listar os
+     pares dele — ou a manutenção — não é supervisão, é vazamento de estrutura. */
+  const papeisVisiveis = quemPede?.role === "dev" ? ["coach", "owner"] : ["coach"];
+  const marcadores = papeisVisiveis.map(() => "?").join(",");
+
   if (request.method === "GET") {
     const treinadores = await env.DB.prepare(
-      `SELECT user_accounts.id, user_accounts.email, user_accounts.name, user_accounts.status, user_accounts.last_login_at,
-              (SELECT COUNT(*) FROM athletes WHERE athletes.coach_email = user_accounts.email AND athletes.archived_at IS NULL) AS alunos_ativos
-         FROM user_accounts WHERE role = 'coach' ORDER BY name`,
-    ).all();
+      `SELECT user_accounts.id, user_accounts.email, user_accounts.name, user_accounts.role, user_accounts.status, user_accounts.last_login_at,
+              (SELECT COUNT(*) FROM athletes WHERE athletes.coach_email = user_accounts.email AND athletes.archived_at IS NULL) AS alunos_ativos,
+              (SELECT COUNT(*) FROM custom_plans WHERE custom_plans.coach_email = user_accounts.email) AS planilhas
+         FROM user_accounts WHERE role IN (${marcadores}) ORDER BY name`,
+    ).bind(...papeisVisiveis).all();
     const semDono = await env.DB.prepare("SELECT COUNT(*) AS total FROM athletes WHERE coach_email IS NULL").first() as { total?: number } | null;
     const sessao = await identityFromRequest(env.DB, request);
     return Response.json({
       coaches: treinadores.results,
-      visitando: sessao?.role === "dev" ? sessao.visitando ?? null : null,
+      visitando: sessao && (sessao.role === "dev" || sessao.role === "owner") ? sessao.visitando ?? null : null,
       alunosSemDono: Number(semDono?.total ?? 0),
     });
   }
@@ -2736,19 +2876,28 @@ async function devCoachesApi(request: Request, env: Env): Promise<Response> {
     const senhaFinal = senha || `${generateTemporaryPassword()}a1`;
     if (senha && problema) return Response.json({ error: problema, minLength: MIN_PASSWORD_LENGTH }, { status: 400 });
     if (await accountByEmail(env.DB, email)) return Response.json({ error: "email_already_registered" }, { status: 409 });
+    /* Sempre "coach": nem o proprietário nem a manutenção criam um par por esta
+       porta. Promover alguém é outro ato, e deve ser deliberado. O treinador
+       nasce sem aluno e sem planilha — a carteira e a biblioteca dele são dele,
+       e começam vazias. */
     await createAccount(env.DB, { email, name, role: "coach", password: senhaFinal, mustChangePassword: true, status: "Ativo" });
+    await registraNaSeguranca(env, request, "Nova conta de treinador", `Criada por quem tinha permissão: ${email}`, "/api/equipe");
     return Response.json({ created: true, email, name, temporaryPassword: senhaFinal }, { status: 201 });
   }
 
   if (acao === "visit") {
     const email = boundedText(input.email, 254).toLowerCase();
-    const alvo = await env.DB.prepare("SELECT id, email, name FROM user_accounts WHERE email = ? AND role = 'coach' LIMIT 1").bind(email).first() as { id?: string; email?: string; name?: string } | null;
+    /* O alvo tem de estar entre os papéis que quem pede pode ver. Sem isto, o
+       proprietário poderia entrar na área de outro proprietário informando o
+       e-mail direto, sem passar pela lista — subir na hierarquia por um campo
+       de formulário. */
+    const alvo = await env.DB.prepare(`SELECT id, email, name FROM user_accounts WHERE email = ? AND role IN (${marcadores}) LIMIT 1`)
+      .bind(email, ...papeisVisiveis).first() as { id?: string; email?: string; name?: string } | null;
     if (!alvo?.id) return Response.json({ error: "coach_not_found" }, { status: 404 });
+    if (alvo.email === quemPede?.email) return Response.json({ error: "cannot_visit_self" }, { status: 400 });
     await setImpersonation(env.DB, token, alvo.id);
     // Visitar a área de outra pessoa é um ato que precisa deixar rastro.
-    await ensureTables(env, schema.securityEvents);
-    await env.DB.prepare("INSERT INTO security_events (id, actor_email, event_type, route, details, created_at) VALUES (?, ?, 'Manutenção visitou um treinador', '/api/dev/coaches', ?, ?)")
-      .bind(crypto.randomUUID(), normalizedAuthenticatedEmail(request) ?? "manutenção", `Área de ${alvo.email}`, Date.now()).run();
+    await registraNaSeguranca(env, request, quemPede?.role === "owner" ? "Proprietário conferiu um treinador" : "Manutenção visitou um treinador", `Área de ${alvo.email}`, "/api/equipe");
     return Response.json({ visitando: { email: alvo.email, name: alvo.name, userId: alvo.id } });
   }
 
@@ -2782,6 +2931,23 @@ async function devAccountsApi(request: Request, env: Env): Promise<Response> {
   const registra = (evento: string, detalhe: string) => env.DB.prepare(
     "INSERT INTO security_events (id, actor_email, event_type, route, details, created_at) VALUES (?, ?, ?, '/api/dev/accounts', ?, ?)",
   ).bind(crypto.randomUUID(), autor, evento, detalhe, Date.now()).run();
+
+  if (acao === "set_role") {
+    /* Promover é ato do dev, e só dele: quem promove define quem manda. O papel
+       aceito é curto de propósito — "owner" e "coach" e mais nada. Criar outra
+       manutenção por aqui daria a qualquer proprietário promovido o caminho
+       para virar dev, que é exatamente o que a hierarquia existe para impedir. */
+    const papel = boundedText(input.role, 10);
+    if (papel !== "owner" && papel !== "coach") return Response.json({ error: "invalid_role" }, { status: 400 });
+    if (conta.role === "dev") return Response.json({ error: "cannot_change_dev_role" }, { status: 403 });
+    if (conta.role === papel) return Response.json({ changed: false, email: conta.email, role: papel });
+    await env.DB.prepare("UPDATE user_accounts SET role = ? WHERE id = ?").bind(papel, conta.id).run();
+    /* A sessão aberta carrega o papel antigo. Derrubá-la é o que faz a mudança
+       valer agora, em vez de na próxima vez que a pessoa entrar. */
+    await destroySessionsForUser(env.DB, conta.id);
+    await registra(papel === "owner" ? "Conta promovida a proprietário" : "Proprietário voltou a treinador", `Conta ${conta.email}`);
+    return Response.json({ changed: true, email: conta.email, role: papel });
+  }
 
   if (acao === "reset_password") {
     const senhaTemporaria = generateTemporaryPassword();
@@ -2874,10 +3040,14 @@ async function impedimentoParaExcluir(
  * planilha sem versão original, não um mecanismo à parte.
  */
 async function customPlansApi(request: Request, env: Env): Promise<Response> {
-  await ensureTables(env, schema.customPlans, schema.planTemplateOverrides);
+  await separaBibliotecasDePlanilhas(env);
+  /* Toda consulta daqui é recortada pelo dono. Um treinador criado agora vê
+     zero planilhas, e é assim que tem de ser: a biblioteca dele é dele. */
+  const dono = carteiraDe(request);
+  if (!dono) return Response.json({ error: "coach_scope_required" }, { status: 403 });
 
   if (request.method === "GET") {
-    const planos = await env.DB.prepare("SELECT id,name,distance,weeks,frequency,level,goal,phases,updated_at FROM custom_plans ORDER BY name").all();
+    const planos = await env.DB.prepare("SELECT id,name,distance,weeks,frequency,level,goal,phases,updated_at FROM custom_plans WHERE coach_email = ? ORDER BY name").bind(dono).all();
     return Response.json({ plans: planos.results });
   }
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
@@ -2888,10 +3058,12 @@ async function customPlansApi(request: Request, env: Env): Promise<Response> {
 
   if (acao === "delete") {
     const id = boundedText(input.planId, 40);
-    const plano = await env.DB.prepare("SELECT name FROM custom_plans WHERE id = ? LIMIT 1").bind(id).first() as { name?: string } | null;
+    const plano = await env.DB.prepare("SELECT name FROM custom_plans WHERE id = ? AND coach_email = ? LIMIT 1").bind(id, dono).first() as { name?: string } | null;
     if (!plano?.name) return Response.json({ error: "plan_not_found" }, { status: 404 });
     /* Aluno apontando para uma planilha que sumiu ficaria sem base nenhuma. */
-    const emUso = await env.DB.prepare("SELECT COUNT(*) AS total FROM athlete_planning WHERE plan = ?").bind(plano.name).first() as { total?: number } | null;
+    const emUso = await env.DB.prepare(
+      "SELECT COUNT(*) AS total FROM athlete_planning JOIN athletes ON athletes.name = athlete_planning.athlete_name WHERE athlete_planning.plan = ? AND athletes.coach_email = ?",
+    ).bind(plano.name, dono).first() as { total?: number } | null;
     if (Number(emUso?.total ?? 0) > 0) {
       return Response.json({
         error: "plan_in_use",
@@ -2900,7 +3072,7 @@ async function customPlansApi(request: Request, env: Env): Promise<Response> {
       }, { status: 409 });
     }
     await env.DB.batch([
-      env.DB.prepare("DELETE FROM plan_template_overrides WHERE plan_name = ?").bind(plano.name),
+      env.DB.prepare("DELETE FROM plan_template_overrides WHERE plan_name = ? AND coach_email = ?").bind(plano.name, dono),
       env.DB.prepare("DELETE FROM custom_plans WHERE id = ?").bind(id),
     ]);
     return Response.json({ deleted: true });
@@ -2911,17 +3083,20 @@ async function customPlansApi(request: Request, env: Env): Promise<Response> {
   const weeks = Number(input.weeks);
   if (name.length < 3) return Response.json({ error: "plan_name_too_short" }, { status: 400 });
   if (!Number.isInteger(weeks) || weeks < 1 || weeks > 52) return Response.json({ error: "invalid_week_count" }, { status: 400 });
-  const conflito = await env.DB.prepare("SELECT id FROM custom_plans WHERE name = ? AND id <> ? LIMIT 1").bind(name, id).first();
+  const conflito = await env.DB.prepare("SELECT id FROM custom_plans WHERE name = ? AND coach_email = ? AND id <> ? LIMIT 1").bind(name, dono, id).first();
   if (conflito) return Response.json({ error: "plan_name_already_used" }, { status: 409 });
   const fases = Array.isArray(input.phases) ? input.phases.map(fase => boundedText(fase, 30)).filter(Boolean).slice(0, 8) : [];
 
-  await env.DB.prepare(`INSERT INTO custom_plans (id,name,distance,weeks,frequency,level,goal,phases,created_by,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(id) DO UPDATE SET name=excluded.name,distance=excluded.distance,weeks=excluded.weeks,frequency=excluded.frequency,level=excluded.level,goal=excluded.goal,phases=excluded.phases,updated_at=excluded.updated_at`)
+  /* O WHERE no ON CONFLICT é o que impede tomar a planilha de outro treinador
+     mandando o id dela: sem ele, o UPDATE gravaria por cima de uma linha alheia. */
+  await env.DB.prepare(`INSERT INTO custom_plans (id,name,distance,weeks,frequency,level,goal,phases,created_by,coach_email,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET name=excluded.name,distance=excluded.distance,weeks=excluded.weeks,frequency=excluded.frequency,level=excluded.level,goal=excluded.goal,phases=excluded.phases,updated_at=excluded.updated_at
+    WHERE custom_plans.coach_email = excluded.coach_email`)
     .bind(id, name, boundedText(input.distance, 30) || "Livre", weeks, boundedText(input.frequency, 40) || `${weeks} semanas`,
       boundedText(input.level, 30) || "Personalizada", boundedText(input.goal, 160) || "Planilha do treinador",
       JSON.stringify(fases.length ? fases : ["Base", "Desenvolvimento", "Específica"]),
-      normalizedAuthenticatedEmail(request) ?? "treinador", now)
+      normalizedAuthenticatedEmail(request) ?? "treinador", dono, now)
     .run();
   return Response.json({ saved: true, id, name });
 }
@@ -3134,13 +3309,16 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
       catch { return await applicationFailure(env, request, "contas de manutenção", "dev_accounts_unavailable"); }
     }
 
-    if (url.pathname === "/api/dev/coaches") {
-      const negado = requireDevApiAccess(request);
+    /* Dois caminhos, um handler. A manutenção chega por /api/dev/coaches, que já
+       existia; o proprietário chega por /api/equipe, que é o nome do que ele vê.
+       Quem separa o que cada um enxerga é o papel, não a rota. */
+    if (url.pathname === "/api/dev/coaches" || url.pathname === "/api/equipe") {
+      const negado = requireOwnerApiAccess(request);
       if (negado) return negado;
       try {
         const invalido = await validateApiEnvelope(request, env, url); if (invalido) return invalido;
-        return await devCoachesApi(request, env);
-      } catch { return await applicationFailure(env, request, "treinadores", "dev_coaches_unavailable"); }
+        return await equipeApi(request, env);
+      } catch { return await applicationFailure(env, request, "equipe", "team_unavailable"); }
     }
 
     if (url.pathname === "/api/dev/overview") {

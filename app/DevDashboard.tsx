@@ -97,8 +97,10 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
    * dona de alguma coisa. A recusa vem com motivo e saída, e é isso que a tela
    * mostra — "não foi possível" sozinho obrigaria a adivinhar.
    */
-  const acaoNaConta = async (conta: Conta, acao: "reset_password" | "block" | "unblock" | "delete") => {
+  const acaoNaConta = async (conta: Conta, acao: "reset_password" | "block" | "unblock" | "delete" | "promote" | "demote") => {
     const rotulos = {
+      promote: { titulo: `Tornar ${conta.email} proprietário?`, descricao: "Ele passa a criar treinadores e conferir a área deles, sem alcançar este diagnóstico. As sessões abertas caem para o novo papel valer agora.", confirmar: "Promover", perigo: false },
+      demote: { titulo: `${conta.email} volta a ser treinador comum?`, descricao: "Ele perde a aba Equipe e deixa de criar treinadores. Os alunos e as planilhas dele continuam onde estão.", confirmar: "Rebaixar", perigo: true },
       reset_password: { titulo: `Gerar nova senha temporária para ${conta.email}?`, descricao: "A senha atual deixa de valer na hora e as sessões abertas caem. A nova aparece uma única vez.", confirmar: "Gerar senha", perigo: false },
       block: { titulo: `Bloquear ${conta.email}?`, descricao: "A conta perde o acesso imediatamente e as sessões abertas caem. Pode ser liberada depois.", confirmar: "Bloquear conta", perigo: true },
       unblock: { titulo: `Liberar ${conta.email}?`, descricao: "A conta volta a entrar com a senha que já tinha.", confirmar: "Liberar conta", perigo: false },
@@ -106,7 +108,9 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
     }[acao];
     if (!await pergunte(rotulos)) return;
     try {
-      const r = await api.post<{ temporaryPassword?: string; status?: string; deleted?: boolean }>("/api/dev/accounts", { action: acao, email: conta.email });
+      const promocao = acao === "promote" || acao === "demote";
+      const r = await api.post<{ temporaryPassword?: string; status?: string; deleted?: boolean }>("/api/dev/accounts",
+        promocao ? { action: "set_role", email: conta.email, role: acao === "promote" ? "owner" : "coach" } : { action: acao, email: conta.email });
       if (r.temporaryPassword) setSenhaNova({ email: conta.email, senha: r.temporaryPassword });
       else avise("ok", acao === "delete" ? "Conta excluída" : "Conta atualizada", `${conta.email}${r.status ? ` · ${r.status}` : ""}`);
       await carregar();
@@ -307,6 +311,8 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
                   <td>{c.failed_attempts || 0}{c.locked_until ? " · travada" : ""}</td>
                   <td className="dev-acoes">
                     <button onClick={() => void acaoNaConta(c, "reset_password")}>Nova senha</button>
+                    {c.role === "coach" && <button onClick={() => void acaoNaConta(c, "promote")}>Tornar proprietário</button>}
+                    {c.role === "owner" && <button onClick={() => void acaoNaConta(c, "demote")}>Rebaixar a treinador</button>}
                     {c.status === "Bloqueado"
                       ? <button onClick={() => void acaoNaConta(c, "unblock")}>Liberar</button>
                       : <button onClick={() => void acaoNaConta(c, "block")}>Bloquear</button>}

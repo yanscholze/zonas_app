@@ -180,6 +180,7 @@ export function NavIcon({ item, size = 18 }: { item: string; size?: number }) {
     case "Integrações": return <IconIntegracoes size={size} />;
     case "Contas": return <IconContas size={size} />;
     case "Segurança": return <IconSeguranca size={size} />;
+    case "Equipe": return <IconAlunos size={size} />;
     default: return <IconMais size={size} />;
   }
 }

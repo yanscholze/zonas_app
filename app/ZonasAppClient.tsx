@@ -9,8 +9,7 @@ import { leArquivoDeAtividade, ArquivoInvalido } from "./atividade-arquivo";
 import { reduzComprovante, ComprovanteInvalido } from "./comprovante";
 
 type Athlete = { name: string; initials: string; distance: string; plan?: string; phase: string; week: string; next: string; flag?: string; archivedAt?: number | null; archivedReason?: string | null };
-type TrainingPlan = { name:string; distance:string; weeks:number; frequency:string; level:string; goal:string; phases:string[]; pending?:boolean; complete?:boolean };
-type StructuredSession = { type:string; description:string; title?:string; tempoRun?:string; durationMinutes?:number; estimatedKm?:number; steps?:Array<any>; removed?:boolean };
+import type { TrainingPlan, StructuredSession } from "@/db/planilhas-de-fabrica";
 type ParsedWorkoutBlock = { kind:"simple"; amount:number; unit:"s"|"min"|"m"; zone:string; label:string } | { kind:"repeat"; repetitions:number; effort:number; effortUnit:"s"|"min"|"m"; effortZone:string; recovery:number; recoveryUnit:"s"|"min"; recoveryZone:string };
 function parseWrittenWorkout(value:string):{blocks:ParsedWorkoutBlock[];error?:string}{
   const clean=value.replace(/\u00d7/g,"x").replace(/,/g,".").replace(/\s+/g," ").trim();
@@ -26,213 +25,33 @@ function parseWrittenWorkout(value:string):{blocks:ParsedWorkoutBlock[];error?:s
   if(!blocks.length)return{blocks:[],error:"Não reconheci as etapas. Use exemplos como: 15 min Z1 + 6 x 1 min Z4 / 1 min Z1 + 10 min Z1."};
   return{blocks};
 }
-const trainingPlans: TrainingPlan[] = [
-  {name:"Iniciantes",distance:"Começar",weeks:10,frequency:"3x por semana",level:"Entrada",goal:"Correr 5 km com segurança",phases:["Adaptação","Base","Evolução","Desafio 5 km"],complete:true},
-  {name:"5 km Bronze",distance:"5 km",weeks:10,frequency:"3x por semana",level:"Bronze",goal:"Concluir e evoluir nos 5 km",phases:["Base","Desenvolvimento","Específica","Pré-prova"],complete:true},
-  {name:"5 km Prata",distance:"5 km",weeks:13,frequency:"até 6x por semana",level:"Prata",goal:"Evolução de ritmo e resistência",phases:["Base","Limiar e VO₂","Específica","Polimento"],complete:true},
-  {name:"5 km Ouro",distance:"5 km",weeks:14,frequency:"até 6x por semana",level:"Ouro",goal:"Performance avançada nos 5 km",phases:["Base","Desenvolvimento","Específica","Polimento"],complete:true},
-  {name:"5 km Elite",distance:"5 km",weeks:15,frequency:"até 6x por semana",level:"Elite",goal:"Alto rendimento nos 5 km",phases:["Base","Carga 3:1","Específica","Polimento"],complete:true},
-  {name:"10 km Lion",distance:"10 km",weeks:16,frequency:"4x por semana",level:"Lion",goal:"Evoluir dos 5 km para os 10 km",phases:["Base","Desenvolvimento","Específica","Pré-prova"],complete:true},
-  {name:"Meia Start",distance:"21,1 km",weeks:14,frequency:"3–4x por semana",level:"Start",goal:"Primeira meia maratona",phases:["Base Z2","Evolução","Específica","Pré-prova"],complete:true},
-  {name:"Meia Finish",distance:"21,1 km",weeks:18,frequency:"4–6x por semana",level:"Finish",goal:"Performance na meia maratona",phases:["Base","VO₂ e limiar","Ritmo específico","Pré-prova"],complete:true},
-  {name:"One Marathon",distance:"42,2 km",weeks:20,frequency:"4–5x por semana",level:"One",goal:"Construção para a primeira maratona",phases:["Base","Desenvolvimento","Específica","Pré-prova"],complete:true},
-  {name:"Full Marathon",distance:"42,2 km",weeks:25,frequency:"5–6x por semana",level:"Full",goal:"Evolução e performance na maratona",phases:["Base","Desenvolvimento","Específica","Pré-prova"],complete:true},
-];
-const simpleSession=(title:string,minutes:number,steps:Array<any>):StructuredSession=>({type:"Treino estruturado",title,description:`Treino contínuo · ${minutes} min`,durationMinutes:minutes,steps});
-const walkRun=(title:string,repetitions:number,runMinutes:number,walkMinutes:number,warmup=5,cooldown=5):StructuredSession=>({type:"Treino estruturado",title,description:`${repetitions} repetições · corrida e caminhada`,durationMinutes:warmup+cooldown+repetitions*(runMinutes+walkMinutes),steps:[{kind:"simple",label:"Aquecimento",minutes:warmup,zone:"Z1"},{kind:"repeat",label:"Série principal",repetitions,effortMinutes:runMinutes,effortZone:"Z2",recoveryMinutes:walkMinutes,recoveryZone:"Z1"},{kind:"simple",label:"Desaquecimento",minutes:cooldown,zone:"Z1"}]});
-const beginnerPlanWeeks:Record<number,StructuredSession[]>={
-  1:[walkRun("Primeiros passos",8,0.5,1.5),walkRun("Adaptação à corrida",10,0.5,1.5),walkRun("Caminhada e corrida longa",10,1,2)],
-  2:[walkRun("Corrida leve fracionada",8,1,1.5),walkRun("Construindo constância",10,1,1),walkRun("Treino contínuo alternado",10,1.5,1.5)],
-  3:[walkRun("Blocos de 2 minutos",8,2,1.5),walkRun("Corrida controlada",7,3,1.5),walkRun("Resistência inicial",6,4,2)],
-  4:[walkRun("Corrida de 4 minutos",6,4,1.5),walkRun("Blocos progressivos",5,5,2),walkRun("Primeiro bloco longo",4,7,2)],
-  5:[walkRun("Corrida de 6 minutos",5,6,1.5),walkRun("Controle da respiração",4,8,2),walkRun("Resistência de 10 minutos",3,10,2)],
-  6:[walkRun("Blocos de 10 minutos",3,10,1.5),walkRun("Corrida de 12 minutos",3,12,2),simpleSession("Corrida contínua leve",30,[{kind:"simple",label:"Aquecimento",minutes:5,zone:"Z1"},{kind:"simple",label:"Corrida contínua",minutes:20,zone:"Z2"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}])],
-  7:[simpleSession("Corrida contínua 25 minutos",35,[{kind:"simple",label:"Aquecimento",minutes:5,zone:"Z1"},{kind:"simple",label:"Corrida contínua",minutes:25,zone:"Z2"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]),walkRun("Variações leves",6,3,1),simpleSession("Corrida contínua 30 minutos",40,[{kind:"simple",label:"Aquecimento",minutes:5,zone:"Z1"},{kind:"simple",label:"Corrida contínua",minutes:30,zone:"Z2"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}])],
-  8:[simpleSession("Corrida leve com acelerações",35,[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"repeat",label:"Acelerações controladas",repetitions:6,effortMinutes:1,effortZone:"Z3",recoveryMinutes:2,recoveryZone:"Z1"},{kind:"simple",label:"Desaquecimento",minutes:7,zone:"Z1"}]),simpleSession("Corrida contínua 35 minutos",45,[{kind:"simple",label:"Aquecimento",minutes:5,zone:"Z1"},{kind:"simple",label:"Corrida contínua",minutes:35,zone:"Z2"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]),simpleSession("Resistência para os 5 km",45,[{kind:"simple",label:"Aquecimento",minutes:5,zone:"Z1"},{kind:"simple",label:"Corrida contínua",minutes:35,zone:"Z2"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}])],
-  9:[simpleSession("Corrida leve",35,[{kind:"simple",label:"Aquecimento",minutes:5,zone:"Z1"},{kind:"simple",label:"Corrida contínua",minutes:25,zone:"Z2"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]),simpleSession("Ritmo controlado",38,[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"repeat",label:"Ritmo controlado",repetitions:4,effortMinutes:3,effortZone:"Z3",recoveryMinutes:2,recoveryZone:"Z1"},{kind:"simple",label:"Desaquecimento",minutes:8,zone:"Z1"}]),simpleSession("Simulado leve de 5 km",45,[{kind:"simple",label:"Aquecimento",minutes:5,zone:"Z1"},{kind:"simple",label:"Corrida contínua",minutes:35,zone:"Z2"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}])],
-  10:[simpleSession("Corrida leve pré-desafio",25,[{kind:"simple",label:"Aquecimento",minutes:5,zone:"Z1"},{kind:"simple",label:"Corrida leve",minutes:15,zone:"Z2"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]),simpleSession("Ativação para os 5 km",24,[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"repeat",label:"Acelerações",repetitions:4,effortMinutes:0.5,effortZone:"Z3",recoveryMinutes:1.5,recoveryZone:"Z1"},{kind:"simple",label:"Desaquecimento",minutes:6,zone:"Z1"}]),{type:"Desafio",title:"Desafio 5 km",description:"Correr 5 km de forma confortável e controlada",estimatedKm:5,steps:[{kind:"simple",label:"Desafio",distanceMeters:5000,zone:"Z2"}]}],
-};
-const repeatSession=(title:string,repetitions:number,effortMinutes:number,effortZone:string,recoveryMinutes:number,warmup=8,cooldown=8):StructuredSession=>({type:"Treino estruturado",title,description:`${repetitions} repetições · ${warmup+cooldown+repetitions*(effortMinutes+recoveryMinutes)} min`,durationMinutes:warmup+cooldown+repetitions*(effortMinutes+recoveryMinutes),steps:[{kind:"simple",label:"Aquecimento",minutes:warmup,zone:"Z1"},{kind:"repeat",label:"Série principal",repetitions,effortMinutes,effortZone,recoveryMinutes,recoveryZone:"Z1"},{kind:"simple",label:"Desaquecimento",minutes:cooldown,zone:"Z1"}]});
-const steady=(title:string,total:number,mainZone="Z2"):StructuredSession=>simpleSession(title,total,[{kind:"simple",label:"Aquecimento",minutes:5,zone:"Z1"},{kind:"simple",label:"Corrida contínua",minutes:total-10,zone:mainZone},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]);
-const bronzePlanWeeks:Record<number,StructuredSession[]>={
-  1:[steady("Rodagem leve",30),repeatSession("Fartlek de 1 minuto",8,1,"Z3",2),steady("Resistência leve",35)],
-  2:[steady("Rodagem leve",35),repeatSession("Fartlek de 2 minutos",6,2,"Z3",2),steady("Corrida contínua",40)],
-  3:[steady("Regenerativo",30,"Z1"),repeatSession("Blocos de 3 minutos",5,3,"Z3",2,8,7),simpleSession("Progressivo controlado",40,[{kind:"simple",label:"Início leve",minutes:10,zone:"Z1"},{kind:"simple",label:"Parte principal",minutes:20,zone:"Z2"},{kind:"simple",label:"Final controlado",minutes:10,zone:"Z3"}])],
-  4:[steady("Semana leve",30),repeatSession("Acelerações curtas",8,1,"Z4",2),steady("Rodagem confortável",35)],
-  5:[steady("Rodagem leve com técnica",35),repeatSession("Tempo fracionado",3,5,"Z3",2),steady("Resistência aeróbia",40)],
-  6:[steady("Regenerativo",30,"Z1"),repeatSession("Intervalado de 2 minutos",6,2,"Z4",2),simpleSession("Progressivo de 40 minutos",40,[{kind:"simple",label:"Início",minutes:10,zone:"Z1"},{kind:"simple",label:"Meio",minutes:20,zone:"Z2"},{kind:"simple",label:"Final",minutes:10,zone:"Z3"}])],
-  7:[steady("Rodagem leve",35),repeatSession("Intervalado de 3 minutos",5,3,"Z4",2,8,7),repeatSession("Ritmo controlado",4,4,"Z3",2)],
-  8:[steady("Semana de recuperação",30,"Z1"),repeatSession("Velocidade controlada",10,1,"Z4",1),steady("Rodagem confortável",35)],
-  9:[steady("Rodagem leve",30),repeatSession("Blocos específicos",4,4,"Z4",2),simpleSession("Ritmo sustentável",35,[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"simple",label:"Ritmo controlado",minutes:15,zone:"Z3"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  10:[steady("Corrida leve pré-desafio",25),repeatSession("Ativação curta",6,0.5,"Z4",1.5),{type:"Desafio",title:"Desafio ou prova de 5 km",description:"Correr 5 km com controle e evolução de ritmo",estimatedKm:5,steps:[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"simple",label:"Prova ou desafio",distanceMeters:5000,zone:"Tempo Run 5 km"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}],tempoRun:"5 km"}],
-};
-const meterSession=(title:string,repetitions:number,effortMeters:number,effortZone:string,recoveryMinutes:number,warmup=10,cooldown=8):StructuredSession=>({type:"Treino estruturado",title,description:`${repetitions} × ${effortMeters} m · recuperação entre cada série`,durationMinutes:Math.round(warmup+cooldown+repetitions*(effortMeters/200+recoveryMinutes)),estimatedKm:Number(((warmup+cooldown)/6+repetitions*(effortMeters/1000+recoveryMinutes/6)).toFixed(1)),steps:[{kind:"simple",label:"Aquecimento",minutes:warmup,zone:"Z1"},{kind:"repeat",label:"Série principal",repetitions,effortMeters,effortZone,recoveryMinutes,recoveryZone:"Z1"},{kind:"simple",label:"Desaquecimento",minutes:cooldown,zone:"Z1"}]});
-const tempoBlock=(title:string,minutes:number,zone="Z3"):StructuredSession=>simpleSession(title,minutes+20,[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"simple",label:"Ritmo sustentado",minutes,zone},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}]);
-const prataPlanWeeks:Record<number,StructuredSession[]>={
-  1:[steady("Rodagem leve",30),repeatSession("Fartlek 8 × 1 minuto",8,1,"Z3",1.5),steady("Corrida leve",25),repeatSession("Limiar fracionado",2,8,"Z3",3),steady("Regenerativo",20,"Z1"),steady("Longão leve",45)],
-  2:[steady("Rodagem leve",35),meterSession("Velocidade 10 × 200 m",10,200,"Z4",1.5),steady("Corrida leve",25),tempoBlock("Tempo Run controlado",20),steady("Regenerativo",20,"Z1"),steady("Longão leve",50)],
-  3:[steady("Rodagem leve",35),meterSession("Intervalado 8 × 300 m",8,300,"Z4",1.5),steady("Corrida leve",30),repeatSession("Limiar 3 × 8 minutos",3,8,"Z3",2),steady("Regenerativo",20,"Z1"),steady("Longão progressivo",55)],
-  4:[steady("Rodagem leve de recuperação",30),meterSession("Técnica e velocidade 6 × 200 m",6,200,"Z4",1.5),steady("Corrida muito leve",20,"Z1"),tempoBlock("Ritmo contínuo curto",15),steady("Regenerativo",20,"Z1"),steady("Longão reduzido",45)],
-  5:[steady("Rodagem leve",35),meterSession("Intervalado 6 × 400 m",6,400,"Z4",2),steady("Corrida leve",25),repeatSession("Limiar 2 × 10 minutos",2,10,"Z3",3),steady("Regenerativo",20,"Z1"),steady("Longão leve",55)],
-  6:[steady("Rodagem aeróbia",40),meterSession("Intervalado 5 × 600 m",5,600,"Z4",2),steady("Corrida leve",25),repeatSession("Limiar 3 × 8 minutos",3,8,"Z3",2),steady("Regenerativo",20,"Z1"),steady("Longão progressivo",60)],
-  7:[steady("Rodagem leve de recuperação",30),meterSession("Velocidade 8 × 200 m",8,200,"Z5",1.5),steady("Corrida muito leve",20,"Z1"),repeatSession("Fartlek 6 × 2 minutos",6,2,"Z3",2),steady("Regenerativo",20,"Z1"),steady("Longão reduzido",50)],
-  8:[steady("Rodagem leve",35),meterSession("Intervalado 5 × 800 m",5,800,"Z4",2.5),steady("Corrida leve",25),tempoBlock("Tempo Run contínuo",20),steady("Regenerativo",20,"Z1"),steady("Longão aeróbio",60)],
-  9:[steady("Rodagem aeróbia",40),meterSession("Intervalado 4 × 1000 m",4,1000,"Z4",3),steady("Corrida leve",25),repeatSession("Limiar 2 × 12 minutos",2,12,"Z3",3),steady("Regenerativo",20,"Z1"),steady("Longão progressivo",55)],
-  10:[steady("Rodagem leve",35),meterSession("Intervalado específico 3 × 1000 m",3,1000,"Z4",3),steady("Corrida leve",25),simpleSession("Fartlek pirâmide",40,[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"repeat",label:"Pirâmide 1–2–3–2–1 min",repetitions:1,effortMinutes:9,effortZone:"Z3",recoveryMinutes:3,recoveryZone:"Z1"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}]),steady("Regenerativo",20,"Z1"),steady("Longão leve",50)],
-  11:[steady("Rodagem leve",30),meterSession("Ritmo 6 × 400 m",6,400,"Z4",2),steady("Corrida muito leve",20,"Z1"),tempoBlock("Ritmo específico curto",12,"Tempo Run 5 km"),steady("Regenerativo",20,"Z1"),steady("Longão reduzido",45)],
-  12:[steady("Rodagem leve",25),meterSession("Ativação 4 × 400 m",4,400,"Z4",2),steady("Corrida muito leve",20,"Z1"),meterSession("Velocidade 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Regenerativo",20,"Z1"),steady("Corrida contínua leve",35)],
-  13:[steady("Corrida leve",25),meterSession("Ativação 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Regenerativo",20,"Z1"),steady("Corrida leve curta",20),simpleSession("Soltura pré-prova",15,[{kind:"simple",label:"Corrida muito leve",minutes:15,zone:"Z1"}]),{type:"Prova",title:"Prova-alvo de 5 km",description:"Executar a estratégia definida pelo treinador",estimatedKm:5,tempoRun:"5 km",steps:[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"simple",label:"Prova",distanceMeters:5000,zone:"Tempo Run 5 km"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]}],
-};
-const ouroPlanWeeks:Record<number,StructuredSession[]>={
-  1:[steady("Rodagem aeróbia",40),meterSession("Velocidade 12 × 200 m",12,200,"Z4",1.25),steady("Corrida leve",30),repeatSession("Limiar 3 × 8 minutos",3,8,"Z3",2),steady("Regenerativo",25,"Z1"),steady("Longão progressivo",60)],
-  2:[steady("Rodagem leve",45),meterSession("Intervalado 10 × 300 m",10,300,"Z4",1.5),steady("Corrida leve",30),repeatSession("Limiar 2 × 12 minutos",2,12,"Z3",3),steady("Regenerativo",25,"Z1"),steady("Longão aeróbio",65)],
-  3:[steady("Rodagem aeróbia",45),meterSession("Intervalado 8 × 400 m",8,400,"Z4",1.5),steady("Corrida leve",30),tempoBlock("Tempo Run contínuo",25),steady("Regenerativo",25,"Z1"),steady("Longão progressivo",70)],
-  4:[steady("Rodagem leve de recuperação",35),meterSession("Técnica 8 × 200 m",8,200,"Z4",1.5),steady("Corrida muito leve",25,"Z1"),tempoBlock("Limiar curto",15),steady("Regenerativo",20,"Z1"),steady("Longão reduzido",55)],
-  5:[steady("Rodagem aeróbia",45),meterSession("VO₂ 6 × 500 m",6,500,"Z5",2),steady("Corrida leve",30),repeatSession("Limiar 3 × 10 minutos",3,10,"Z3",2),steady("Regenerativo",25,"Z1"),steady("Longão progressivo",70)],
-  6:[steady("Rodagem leve",45),meterSession("Intervalado 6 × 600 m",6,600,"Z4",2),steady("Corrida leve",30),tempoBlock("Tempo Run de 30 minutos",30),steady("Regenerativo",25,"Z1"),steady("Longão aeróbio",75)],
-  7:[steady("Rodagem aeróbia",45),meterSession("VO₂ 5 × 800 m",5,800,"Z5",2.5),steady("Corrida leve",30),repeatSession("Limiar 2 × 15 minutos",2,15,"Z3",3),steady("Regenerativo",25,"Z1"),steady("Longão progressivo",70)],
-  8:[steady("Rodagem leve de recuperação",35),meterSession("Velocidade 10 × 200 m",10,200,"Z5",1.5),steady("Corrida muito leve",25,"Z1"),repeatSession("Fartlek 6 × 2 minutos",6,2,"Z3",2),steady("Regenerativo",20,"Z1"),steady("Longão reduzido",55)],
-  9:[steady("Rodagem aeróbia",45),meterSession("Específico 5 × 1000 m",5,1000,"Z4",2.5),steady("Corrida leve",30),repeatSession("Ritmo de prova fracionado",3,8,"Tempo Run 5 km",3),steady("Regenerativo",25,"Z1"),simpleSession("Longão com final em Z3",70,[{kind:"simple",label:"Início leve",minutes:15,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:45,zone:"Z2"},{kind:"simple",label:"Final controlado",minutes:10,zone:"Z3"}])],
-  10:[steady("Rodagem leve",40),meterSession("VO₂ 12 × 400 m",12,400,"Z5",1.5),steady("Corrida leve",30),repeatSession("Limiar longo",2,15,"Z3",3),steady("Regenerativo",25,"Z1"),steady("Longão aeróbio",65)],
-  11:[steady("Rodagem aeróbia",40),meterSession("Específico 4 × 1200 m",4,1200,"Tempo Run 5 km",3),steady("Corrida leve",25),simpleSession("Pirâmide de velocidade",45,[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"repeat",label:"Pirâmide 200–400–600–400–200 m",repetitions:1,effortMinutes:12,effortZone:"Z5",recoveryMinutes:5,recoveryZone:"Z1"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}]),steady("Regenerativo",20,"Z1"),steady("Longão progressivo",60)],
-  12:[steady("Rodagem leve",35),meterSession("Ritmo 6 × 600 m",6,600,"Z4",2),steady("Corrida muito leve",25,"Z1"),tempoBlock("Ritmo específico curto",15,"Tempo Run 5 km"),steady("Regenerativo",20,"Z1"),steady("Longão reduzido",50)],
-  13:[steady("Rodagem leve",30),meterSession("Ativação 5 × 400 m",5,400,"Z4",2),steady("Corrida muito leve",20,"Z1"),meterSession("Velocidade 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Regenerativo",20,"Z1"),steady("Corrida contínua curta",40)],
-  14:[steady("Corrida leve",25),meterSession("Ativação 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Regenerativo",20,"Z1"),steady("Corrida leve curta",20),simpleSession("Soltura pré-prova",15,[{kind:"simple",label:"Corrida muito leve",minutes:15,zone:"Z1"}]),{type:"Prova",title:"Prova-alvo de 5 km Ouro",description:"Executar ritmo individual e estratégia aprovada",estimatedKm:5,tempoRun:"5 km",steps:[{kind:"simple",label:"Aquecimento",minutes:12,zone:"Z1"},{kind:"simple",label:"Prova",distanceMeters:5000,zone:"Tempo Run 5 km"},{kind:"simple",label:"Desaquecimento",minutes:8,zone:"Z1"}]}],
-};
-const elitePlanWeeks:Record<number,StructuredSession[]>={
-  1:[steady("Rodagem aeróbia",45),meterSession("Velocidade 15 × 200 m",15,200,"Z5",1),steady("Corrida leve",35),repeatSession("Limiar 3 × 10 minutos",3,10,"Z3",2),steady("Regenerativo",25,"Z1"),steady("Longão progressivo",70)],
-  2:[steady("Rodagem aeróbia",50),meterSession("Intervalado 12 × 300 m",12,300,"Z5",1.25),steady("Corrida leve",35),repeatSession("Limiar 2 × 15 minutos",2,15,"Z3",3),steady("Regenerativo",25,"Z1"),steady("Longão aeróbio",75)],
-  3:[steady("Rodagem leve",45),meterSession("VO₂ 10 × 400 m",10,400,"Z5",1.5),steady("Corrida leve",35),tempoBlock("Tempo Run forte",30),steady("Regenerativo",25,"Z1"),steady("Longão progressivo",80)],
-  4:[steady("Rodagem leve de recuperação",35),meterSession("Técnica 10 × 200 m",10,200,"Z4",1.25),steady("Corrida muito leve",25,"Z1"),tempoBlock("Limiar curto",18),steady("Regenerativo",20,"Z1"),steady("Longão reduzido",60)],
-  5:[steady("Rodagem aeróbia",50),meterSession("VO₂ 8 × 500 m",8,500,"Z5",1.75),steady("Corrida leve",35),repeatSession("Limiar 4 × 8 minutos",4,8,"Z3",2),steady("Regenerativo",25,"Z1"),steady("Longão progressivo",80)],
-  6:[steady("Rodagem leve",45),meterSession("Intervalado 7 × 600 m",7,600,"Z5",2),steady("Corrida leve",35),tempoBlock("Tempo Run de 35 minutos",35),steady("Regenerativo",25,"Z1"),steady("Longão aeróbio",85)],
-  7:[steady("Rodagem aeróbia",50),meterSession("VO₂ 6 × 800 m",6,800,"Z5",2.25),steady("Corrida leve",30),repeatSession("Subidas fortes 10 × 1 minuto",10,1,"Z4",1.5),steady("Regenerativo",25,"Z1"),steady("Longão progressivo",80)],
-  8:[steady("Rodagem leve de recuperação",35),meterSession("Velocidade 12 × 200 m",12,200,"Z5",1.25),steady("Corrida muito leve",25,"Z1"),repeatSession("Fartlek 8 × 2 minutos",8,2,"Z3",1.5),steady("Regenerativo",20,"Z1"),steady("Longão reduzido",60)],
-  9:[steady("Rodagem aeróbia",50),meterSession("Específico 6 × 1000 m",6,1000,"Z4",2.5),steady("Corrida leve",35),repeatSession("Ritmo de prova 4 × 6 minutos",4,6,"Tempo Run 5 km",3),steady("Regenerativo",25,"Z1"),simpleSession("Longão com final controlado",75,[{kind:"simple",label:"Início",minutes:15,zone:"Z1"},{kind:"simple",label:"Aeróbio",minutes:45,zone:"Z2"},{kind:"simple",label:"Final",minutes:15,zone:"Z3"}])],
-  10:[steady("Rodagem leve",45),meterSession("VO₂ 15 × 400 m",15,400,"Z5",1.25),steady("Corrida leve",30),repeatSession("Limiar 3 × 12 minutos",3,12,"Z3",2.5),steady("Regenerativo",25,"Z1"),steady("Longão aeróbio",70)],
-  11:[steady("Rodagem aeróbia",45),meterSession("Específico 5 × 1200 m",5,1200,"Tempo Run 5 km",3),steady("Corrida leve",30),meterSession("Velocidade 8 × 300 m",8,300,"Z5",1.5),steady("Regenerativo",25,"Z1"),steady("Longão progressivo",70)],
-  12:[steady("Rodagem leve de recuperação",35),meterSession("Intervalado 6 × 400 m",6,400,"Z4",1.75),steady("Corrida muito leve",25,"Z1"),tempoBlock("Ritmo específico curto",18,"Tempo Run 5 km"),steady("Regenerativo",20,"Z1"),steady("Longão reduzido",55)],
-  13:[steady("Rodagem leve",35),meterSession("Específico 4 × 1000 m",4,1000,"Tempo Run 5 km",3),steady("Corrida muito leve",25,"Z1"),meterSession("VO₂ 8 × 400 m",8,400,"Z5",1.5),steady("Regenerativo",20,"Z1"),steady("Corrida contínua",50)],
-  14:[steady("Rodagem leve",30),meterSession("Ativação 5 × 400 m",5,400,"Z4",2),steady("Corrida muito leve",20,"Z1"),meterSession("Velocidade 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Regenerativo",20,"Z1"),steady("Corrida contínua curta",40)],
-  15:[steady("Corrida leve",25),meterSession("Ativação 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Regenerativo",20,"Z1"),steady("Corrida leve curta",20),simpleSession("Soltura pré-prova",15,[{kind:"simple",label:"Corrida muito leve",minutes:15,zone:"Z1"}]),{type:"Prova",title:"Prova-alvo de 5 km Elite",description:"Executar estratégia de alto rendimento aprovada pelo treinador",estimatedKm:5,tempoRun:"5 km",steps:[{kind:"simple",label:"Aquecimento",minutes:15,zone:"Z1"},{kind:"simple",label:"Prova",distanceMeters:5000,zone:"Tempo Run 5 km"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}]}],
-};
-const lion10kPlanWeeks:Record<number,StructuredSession[]>={
-  1:[steady("Rodagem leve",40),repeatSession("Fartlek 8 × 1 minuto",8,1,"Z3",2),tempoBlock("Ritmo contínuo",15),steady("Longão leve",60)],
-  2:[steady("Rodagem aeróbia",45),meterSession("Intervalado 10 × 300 m",10,300,"Z4",1.5),repeatSession("Limiar 2 × 10 minutos",2,10,"Z3",3),steady("Longão progressivo",65)],
-  3:[steady("Rodagem leve",45),meterSession("Intervalado 8 × 400 m",8,400,"Z4",1.5),tempoBlock("Tempo Run controlado",22),steady("Longão aeróbio",70)],
-  4:[steady("Rodagem leve de recuperação",35),meterSession("Técnica 8 × 200 m",8,200,"Z4",1.5),steady("Regenerativo",30,"Z1"),steady("Longão reduzido",55)],
-  5:[steady("Rodagem aeróbia",45),meterSession("Intervalado 6 × 600 m",6,600,"Z4",2),repeatSession("Limiar 3 × 8 minutos",3,8,"Z3",2),steady("Longão progressivo",70)],
-  6:[steady("Rodagem leve",50),meterSession("Intervalado 5 × 800 m",5,800,"Z4",2.5),tempoBlock("Tempo Run de 25 minutos",25),steady("Longão aeróbio",75)],
-  7:[steady("Rodagem aeróbia",50),meterSession("VO₂ 4 × 1000 m",4,1000,"Z5",3),repeatSession("Limiar 2 × 15 minutos",2,15,"Z3",3),steady("Longão progressivo",80)],
-  8:[steady("Rodagem leve de recuperação",35),meterSession("Velocidade 10 × 200 m",10,200,"Z5",1.5),steady("Regenerativo",30,"Z1"),steady("Longão reduzido",60)],
-  9:[steady("Rodagem aeróbia",50),meterSession("Específico 5 × 1000 m",5,1000,"Z4",2.5),repeatSession("Ritmo de 10 km fracionado",3,8,"Tempo Run 10 km",3),steady("Longão progressivo",80)],
-  10:[steady("Rodagem leve",45),meterSession("Intervalado 4 × 1200 m",4,1200,"Z4",3),tempoBlock("Tempo Run de 30 minutos",30),simpleSession("Longão com final em Z3",80,[{kind:"simple",label:"Início",minutes:15,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:50,zone:"Z2"},{kind:"simple",label:"Final",minutes:15,zone:"Z3"}])],
-  11:[steady("Rodagem aeróbia",50),meterSession("Específico 3 × 1600 m",3,1600,"Tempo Run 10 km",3),repeatSession("Limiar 3 × 10 minutos",3,10,"Z3",2),steady("Longão aeróbio",75)],
-  12:[steady("Rodagem leve de recuperação",35),meterSession("Intervalado 6 × 400 m",6,400,"Z4",2),steady("Regenerativo",30,"Z1"),steady("Longão reduzido",60)],
-  13:[steady("Rodagem leve",45),meterSession("Específico 4 × 1200 m",4,1200,"Tempo Run 10 km",3),tempoBlock("Ritmo específico contínuo",20,"Tempo Run 10 km"),steady("Longão progressivo",70)],
-  14:[steady("Rodagem leve",40),meterSession("Ritmo 5 × 800 m",5,800,"Z4",2.5),steady("Regenerativo",30,"Z1"),steady("Longão reduzido",55)],
-  15:[steady("Rodagem leve",35),meterSession("Ativação 5 × 400 m",5,400,"Z4",2),steady("Corrida muito leve",25,"Z1"),steady("Corrida contínua curta",45)],
-  16:[steady("Corrida leve",30),meterSession("Ativação 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Soltura pré-prova",20,"Z1"),{type:"Prova",title:"Prova-alvo de 10 km",description:"Executar a estratégia e o ritmo individual de 10 km",estimatedKm:10,tempoRun:"10 km",steps:[{kind:"simple",label:"Aquecimento",minutes:12,zone:"Z1"},{kind:"simple",label:"Prova",distanceMeters:10000,zone:"Tempo Run 10 km"},{kind:"simple",label:"Desaquecimento",minutes:8,zone:"Z1"}]}],
-};
-const meiaStartPlanWeeks:Record<number,StructuredSession[]>={
-  1:[steady("Rodagem leve",40),repeatSession("Fartlek 6 × 2 minutos",6,2,"Z3",2),steady("Corrida complementar",30,"Z1"),steady("Longão leve",70)],
-  2:[steady("Rodagem aeróbia",45),meterSession("Intervalado 6 × 400 m",6,400,"Z4",2),steady("Corrida complementar",30),steady("Longão progressivo",75)],
-  3:[steady("Rodagem leve",45),repeatSession("Limiar 3 × 8 minutos",3,8,"Z3",2),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",80)],
-  4:[steady("Rodagem leve de recuperação",35),meterSession("Técnica 6 × 200 m",6,200,"Z4",1.5),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",65)],
-  5:[steady("Rodagem aeróbia",45),meterSession("Intervalado 5 × 600 m",5,600,"Z4",2),tempoBlock("Ritmo contínuo",20),steady("Longão progressivo",85)],
-  6:[steady("Rodagem leve",50),repeatSession("Limiar 2 × 12 minutos",2,12,"Z3",3),steady("Corrida complementar",30),steady("Longão aeróbio",90)],
-  7:[steady("Rodagem aeróbia",50),meterSession("Intervalado 4 × 800 m",4,800,"Z4",2.5),tempoBlock("Tempo Run controlado",25),steady("Longão progressivo",100)],
-  8:[steady("Rodagem leve de recuperação",40),repeatSession("Fartlek 6 × 2 minutos",6,2,"Z3",2),steady("Regenerativo",30,"Z1"),steady("Longão reduzido",80)],
-  9:[steady("Rodagem aeróbia",50),meterSession("Intervalado 4 × 1000 m",4,1000,"Z4",3),repeatSession("Limiar 3 × 10 minutos",3,10,"Z3",2),steady("Longão aeróbio",105)],
-  10:[steady("Rodagem leve",50),repeatSession("Ritmo de meia fracionado",3,8,"Tempo Run Meia maratona",3),steady("Corrida complementar",35),simpleSession("Longão com final em Z3",110,[{kind:"simple",label:"Início",minutes:20,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:70,zone:"Z2"},{kind:"simple",label:"Final",minutes:20,zone:"Z3"}])],
-  11:[steady("Rodagem aeróbia",50),meterSession("Intervalado 3 × 1600 m",3,1600,"Z4",3),tempoBlock("Ritmo específico",25,"Tempo Run Meia maratona"),steady("Longão progressivo",120)],
-  12:[steady("Rodagem leve de recuperação",40),meterSession("Ritmo 5 × 600 m",5,600,"Z4",2),steady("Regenerativo",30,"Z1"),steady("Longão reduzido",90)],
-  13:[steady("Rodagem leve",40),meterSession("Ativação 5 × 400 m",5,400,"Z4",2),tempoBlock("Ritmo de meia curto",15,"Tempo Run Meia maratona"),steady("Longão leve",70)],
-  14:[steady("Corrida leve",30),meterSession("Ativação 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Soltura pré-prova",20,"Z1"),{type:"Prova",title:"Primeira meia maratona",description:"Completar 21,1 km com estratégia e ritmo individual aprovados",estimatedKm:21.1,tempoRun:"Meia maratona",steps:[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"simple",label:"Prova",distanceMeters:21100,zone:"Tempo Run Meia maratona"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]}],
-};
-const meiaFinishPlanWeeks:Record<number,StructuredSession[]>={
-  1:[steady("Rodagem aeróbia",45),meterSession("Velocidade 12 × 200 m",12,200,"Z5",1),steady("Corrida leve",35),repeatSession("Limiar 3 × 10 minutos",3,10,"Z3",2),steady("Regenerativo",30,"Z1"),steady("Longão progressivo",90)],
-  2:[steady("Rodagem leve",50),meterSession("Intervalado 10 × 400 m",10,400,"Z4",1.5),steady("Corrida complementar",35),tempoBlock("Tempo Run contínuo",30,"Z3"),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",100)],
-  3:[steady("Rodagem aeróbia",50),meterSession("VO₂ 8 × 600 m",8,600,"Z5",2),steady("Corrida leve",35),repeatSession("Limiar 2 × 15 minutos",2,15,"Z3",3),steady("Regenerativo",30,"Z1"),simpleSession("Longão com final em Z3",105,[{kind:"simple",label:"Início leve",minutes:20,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:70,zone:"Z2"},{kind:"simple",label:"Final controlado",minutes:15,zone:"Z3"}])],
-  4:[steady("Rodagem de recuperação",40),meterSession("Técnica 10 × 200 m",10,200,"Z4",1.25),steady("Corrida muito leve",30,"Z1"),repeatSession("Fartlek 8 × 2 minutos",8,2,"Z3",1.5),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",80)],
-  5:[steady("Rodagem aeróbia",50),meterSession("VO₂ 6 × 800 m",6,800,"Z5",2.5),steady("Corrida leve",35),repeatSession("Limiar 3 × 12 minutos",3,12,"Z3",2.5),steady("Regenerativo",30,"Z1"),steady("Longão progressivo",110)],
-  6:[steady("Rodagem leve",55),meterSession("Intervalado 5 × 1000 m",5,1000,"Z4",2.5),steady("Corrida complementar",35),tempoBlock("Tempo Run de 35 minutos",35,"Z3"),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",115)],
-  7:[steady("Rodagem aeróbia",55),meterSession("VO₂ 12 × 400 m",12,400,"Z5",1.5),steady("Corrida leve",35),repeatSession("Limiar 2 × 18 minutos",2,18,"Z3",3),steady("Regenerativo",30,"Z1"),simpleSession("Longão progressivo com ritmo",120,[{kind:"simple",label:"Início leve",minutes:20,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:80,zone:"Z2"},{kind:"simple",label:"Final progressivo",minutes:20,zone:"Z3"}])],
-  8:[steady("Rodagem de recuperação",40),meterSession("Velocidade 12 × 200 m",12,200,"Z5",1.25),steady("Corrida muito leve",30,"Z1"),repeatSession("Fartlek 10 × 1 minuto",10,1,"Z4",1.5),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",90)],
-  9:[steady("Rodagem aeróbia",55),meterSession("Específico 4 × 1600 m",4,1600,"Z4",3),steady("Corrida leve",35),repeatSession("Ritmo de meia 3 × 12 minutos",3,12,"Tempo Run Meia maratona",3),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",125)],
-  10:[steady("Rodagem leve",50),meterSession("VO₂ 8 × 600 m",8,600,"Z5",2),steady("Corrida complementar",35),simpleSession("Tempo Run combinado 5 km e meia",45,[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"simple",label:"Tempo Run 5 km",minutes:10,zone:"Tempo Run 5 km"},{kind:"simple",label:"Recuperação",minutes:3,zone:"Z1"},{kind:"simple",label:"Tempo Run meia maratona",minutes:5,zone:"Tempo Run Meia maratona"},{kind:"simple",label:"Desaquecimento",minutes:17,zone:"Z1"}]),steady("Regenerativo",30,"Z1"),simpleSession("Longão com final em ritmo de meia",130,[{kind:"simple",label:"Início leve",minutes:20,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:85,zone:"Z2"},{kind:"simple",label:"Ritmo de meia",minutes:15,zone:"Tempo Run Meia maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  11:[steady("Rodagem aeróbia",55),meterSession("Específico 3 × 2000 m",3,2000,"Tempo Run 10 km",3),steady("Corrida leve",35),repeatSession("Limiar 3 × 15 minutos",3,15,"Z3",2.5),steady("Regenerativo",30,"Z1"),steady("Longão progressivo",135)],
-  12:[steady("Rodagem de recuperação",40),meterSession("Técnica 8 × 300 m",8,300,"Z4",1.5),steady("Corrida muito leve",30,"Z1"),tempoBlock("Ritmo específico curto",20,"Tempo Run Meia maratona"),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",100)],
-  13:[steady("Rodagem aeróbia",55),meterSession("VO₂ 10 × 500 m",10,500,"Z5",1.75),steady("Corrida leve",35),repeatSession("Ritmo de meia 4 × 10 minutos",4,10,"Tempo Run Meia maratona",3),steady("Regenerativo",30,"Z1"),simpleSession("Longão específico",140,[{kind:"simple",label:"Início leve",minutes:20,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:85,zone:"Z2"},{kind:"repeat",label:"Blocos em ritmo de meia",repetitions:3,effortMinutes:8,effortZone:"Tempo Run Meia maratona",recoveryMinutes:3,recoveryZone:"Z1"},{kind:"simple",label:"Desaquecimento",minutes:2,zone:"Z1"}])],
-  14:[steady("Rodagem leve",50),meterSession("Específico 4 × 2000 m",4,2000,"Tempo Run 10 km",3),steady("Corrida complementar",35),tempoBlock("Tempo Run meia maratona",35,"Tempo Run Meia maratona"),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",130)],
-  15:[steady("Rodagem aeróbia",50),meterSession("VO₂ 6 × 800 m",6,800,"Z5",2.5),steady("Corrida leve",30),repeatSession("Limiar 2 × 15 minutos",2,15,"Z3",3),steady("Regenerativo",25,"Z1"),simpleSession("Último longão com ritmo",120,[{kind:"simple",label:"Início leve",minutes:20,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:75,zone:"Z2"},{kind:"simple",label:"Ritmo de meia",minutes:15,zone:"Tempo Run Meia maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  16:[steady("Rodagem de recuperação",40),meterSession("Ritmo 6 × 600 m",6,600,"Z4",2),steady("Corrida muito leve",25,"Z1"),tempoBlock("Ritmo de meia curto",20,"Tempo Run Meia maratona"),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",90)],
-  17:[steady("Rodagem leve",40),meterSession("Específico 4 × 1000 m",4,1000,"Tempo Run 10 km",2.5),steady("Corrida muito leve",25,"Z1"),tempoBlock("Ritmo de meia controlado",15,"Tempo Run Meia maratona"),steady("Regenerativo",20,"Z1"),steady("Longão leve pré-prova",65)],
-  18:[steady("Corrida leve",25),meterSession("Ativação 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Regenerativo",20,"Z1"),steady("Corrida leve curta",20,"Z1"),simpleSession("Soltura pré-prova",15,[{kind:"simple",label:"Corrida muito leve",minutes:15,zone:"Z1"}]),{type:"Prova",title:"Prova-alvo de meia maratona",description:"Executar a estratégia de performance aprovada pelo treinador",estimatedKm:21.1,tempoRun:"Meia maratona",steps:[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"simple",label:"Prova",distanceMeters:21100,zone:"Tempo Run Meia maratona"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]}],
-};
-const oneMarathonPlanWeeks:Record<number,StructuredSession[]>={
-  1:[steady("Rodagem leve",45),repeatSession("Fartlek 8 × 2 minutos",8,2,"Z3",2),steady("Corrida complementar",35),tempoBlock("Ritmo contínuo",20,"Z3"),steady("Longão leve",100)],
-  2:[steady("Rodagem aeróbia",50),meterSession("Intervalado 8 × 400 m",8,400,"Z4",2),steady("Regenerativo",35,"Z1"),repeatSession("Limiar 2 × 12 minutos",2,12,"Z3",3),steady("Longão progressivo",110)],
-  3:[steady("Rodagem leve",50),meterSession("Intervalado 6 × 600 m",6,600,"Z4",2),steady("Corrida complementar",35),tempoBlock("Tempo Run controlado",25,"Z3"),steady("Longão aeróbio",120)],
-  4:[steady("Rodagem de recuperação",40),meterSession("Técnica 8 × 200 m",8,200,"Z4",1.5),steady("Regenerativo",30,"Z1"),repeatSession("Fartlek leve 6 × 2 minutos",6,2,"Z3",2),steady("Longão reduzido",90)],
-  5:[steady("Rodagem aeróbia",55),meterSession("Intervalado 5 × 800 m",5,800,"Z4",2.5),steady("Corrida complementar",40),repeatSession("Limiar 3 × 10 minutos",3,10,"Z3",2),steady("Longão progressivo",130)],
-  6:[steady("Rodagem leve",55),meterSession("Intervalado 4 × 1000 m",4,1000,"Z4",3),steady("Regenerativo",35,"Z1"),tempoBlock("Tempo Run de 30 minutos",30,"Z3"),steady("Longão aeróbio",140)],
-  7:[steady("Rodagem aeróbia",55),repeatSession("Subidas 10 × 2 minutos",10,2,"Z4",2),steady("Corrida complementar",40),repeatSession("Limiar 2 × 15 minutos",2,15,"Z3",3),simpleSession("Longão com final em Z3",150,[{kind:"simple",label:"Início leve",minutes:25,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:105,zone:"Z2"},{kind:"simple",label:"Final controlado",minutes:20,zone:"Z3"}])],
-  8:[steady("Rodagem de recuperação",40),meterSession("Velocidade 10 × 200 m",10,200,"Z4",1.5),steady("Regenerativo",30,"Z1"),tempoBlock("Ritmo contínuo curto",20,"Z3"),steady("Longão reduzido",110)],
-  9:[steady("Rodagem aeróbia",60),meterSession("Intervalado 5 × 1000 m",5,1000,"Z4",3),steady("Corrida complementar",40),repeatSession("Limiar 3 × 12 minutos",3,12,"Z3",2.5),steady("Longão progressivo",160)],
-  10:[steady("Rodagem leve",55),meterSession("Intervalado 3 × 1600 m",3,1600,"Z4",3),steady("Regenerativo",35,"Z1"),tempoBlock("Ritmo de maratona",30,"Tempo Run Maratona"),simpleSession("Longão com ritmo de maratona",170,[{kind:"simple",label:"Início leve",minutes:25,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:110,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:25,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  11:[steady("Rodagem aeróbia",60),meterSession("Intervalado 6 × 800 m",6,800,"Z4",2.5),steady("Corrida complementar",40),repeatSession("Ritmo de maratona 3 × 15 minutos",3,15,"Tempo Run Maratona",3),steady("Longão aeróbio",180)],
-  12:[steady("Rodagem de recuperação",45),meterSession("Técnica 8 × 300 m",8,300,"Z4",1.5),steady("Regenerativo",30,"Z1"),tempoBlock("Ritmo de maratona curto",20,"Tempo Run Maratona"),steady("Longão reduzido",130)],
-  13:[steady("Rodagem aeróbia",60),meterSession("Intervalado 4 × 1200 m",4,1200,"Z4",3),steady("Corrida complementar",40),repeatSession("Limiar 2 × 18 minutos",2,18,"Z3",3),simpleSession("Longão específico",185,[{kind:"simple",label:"Início leve",minutes:25,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:125,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:25,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  14:[steady("Rodagem leve",60),meterSession("Intervalado 3 × 2000 m",3,2000,"Tempo Run Meia maratona",3),steady("Regenerativo",35,"Z1"),tempoBlock("Tempo Run maratona",40,"Tempo Run Maratona"),steady("Longão aeróbio",190)],
-  15:[steady("Rodagem aeróbia",60),meterSession("VO₂ 8 × 600 m",8,600,"Z5",2),steady("Corrida complementar",40),repeatSession("Ritmo de maratona 4 × 12 minutos",4,12,"Tempo Run Maratona",3),simpleSession("Longão principal com ritmo",200,[{kind:"simple",label:"Início leve",minutes:30,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:125,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:35,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  16:[steady("Rodagem de recuperação",45),meterSession("Ritmo 6 × 600 m",6,600,"Z4",2),steady("Regenerativo",30,"Z1"),tempoBlock("Ritmo de maratona curto",25,"Tempo Run Maratona"),steady("Longão reduzido",145)],
-  17:[steady("Rodagem aeróbia",55),meterSession("Específico 4 × 1600 m",4,1600,"Tempo Run Meia maratona",3),steady("Corrida complementar",35),repeatSession("Ritmo de maratona 3 × 15 minutos",3,15,"Tempo Run Maratona",3),simpleSession("Último longão específico",180,[{kind:"simple",label:"Início leve",minutes:25,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:115,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:30,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  18:[steady("Rodagem leve",50),meterSession("Intervalado 5 × 800 m",5,800,"Z4",2.5),steady("Regenerativo",30,"Z1"),tempoBlock("Ritmo de maratona",25,"Tempo Run Maratona"),steady("Longão reduzido",120)],
-  19:[steady("Rodagem leve",40),meterSession("Ativação 5 × 400 m",5,400,"Z4",2),steady("Regenerativo",25,"Z1"),tempoBlock("Ritmo de maratona curto",15,"Tempo Run Maratona"),steady("Longão leve pré-prova",70)],
-  20:[steady("Corrida leve",25),meterSession("Ativação 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Regenerativo",20,"Z1"),simpleSession("Soltura pré-prova",15,[{kind:"simple",label:"Corrida muito leve",minutes:15,zone:"Z1"}]),{type:"Prova",title:"Primeira maratona",description:"Completar 42,2 km com estratégia, hidratação e ritmo aprovados pelo treinador",estimatedKm:42.2,tempoRun:"Maratona",steps:[{kind:"simple",label:"Aquecimento",minutes:8,zone:"Z1"},{kind:"simple",label:"Prova",distanceMeters:42195,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]}],
-};
-const fullMarathonPlanWeeks:Record<number,StructuredSession[]>={
-  1:[steady("Rodagem aeróbia",55),meterSession("Velocidade 12 × 200 m",12,200,"Z5",1),steady("Corrida leve",40),repeatSession("Limiar 3 × 10 minutos",3,10,"Z3",2),steady("Regenerativo",30,"Z1"),steady("Longão progressivo",120)],
-  2:[steady("Rodagem leve",60),meterSession("Intervalado 10 × 400 m",10,400,"Z4",1.5),steady("Corrida complementar",40),tempoBlock("Tempo Run contínuo",30,"Z3"),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",130)],
-  3:[steady("Rodagem aeróbia",60),meterSession("VO₂ 8 × 600 m",8,600,"Z5",2),steady("Corrida leve",40),repeatSession("Limiar 2 × 18 minutos",2,18,"Z3",3),steady("Regenerativo",30,"Z1"),simpleSession("Longão com final em Z3",140,[{kind:"simple",label:"Início leve",minutes:25,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:95,zone:"Z2"},{kind:"simple",label:"Final controlado",minutes:20,zone:"Z3"}])],
-  4:[steady("Rodagem de recuperação",45),meterSession("Técnica 10 × 200 m",10,200,"Z4",1.25),steady("Corrida muito leve",30,"Z1"),repeatSession("Fartlek 8 × 2 minutos",8,2,"Z3",1.5),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",105)],
-  5:[steady("Rodagem aeróbia",60),meterSession("VO₂ 6 × 800 m",6,800,"Z5",2.5),steady("Corrida leve",40),repeatSession("Limiar 3 × 12 minutos",3,12,"Z3",2.5),steady("Regenerativo",30,"Z1"),steady("Longão progressivo",150)],
-  6:[steady("Rodagem leve",60),meterSession("Intervalado 5 × 1000 m",5,1000,"Z4",2.5),steady("Corrida complementar",40),tempoBlock("Tempo Run de 35 minutos",35,"Z3"),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",160)],
-  7:[steady("Rodagem aeróbia",65),repeatSession("Subidas 12 × 2 minutos",12,2,"Z4",2),steady("Corrida leve",40),repeatSession("Limiar 2 × 20 minutos",2,20,"Z3",3),steady("Regenerativo",30,"Z1"),simpleSession("Longão progressivo",170,[{kind:"simple",label:"Início leve",minutes:25,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:120,zone:"Z2"},{kind:"simple",label:"Final controlado",minutes:25,zone:"Z3"}])],
-  8:[steady("Rodagem de recuperação",45),meterSession("Velocidade 12 × 200 m",12,200,"Z5",1.25),steady("Corrida muito leve",30,"Z1"),repeatSession("Fartlek 10 × 1 minuto",10,1,"Z4",1.5),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",120)],
-  9:[steady("Rodagem aeróbia",65),meterSession("Específico 5 × 1200 m",5,1200,"Z4",3),steady("Corrida leve",40),repeatSession("Limiar 3 × 15 minutos",3,15,"Z3",2.5),steady("Regenerativo",30,"Z1"),steady("Longão progressivo",180)],
-  10:[steady("Rodagem leve",60),meterSession("Intervalado 4 × 1600 m",4,1600,"Z4",3),steady("Corrida complementar",40),tempoBlock("Ritmo de maratona",35,"Tempo Run Maratona"),steady("Regenerativo",30,"Z1"),simpleSession("Longão com ritmo de maratona",185,[{kind:"simple",label:"Início leve",minutes:25,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:120,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:30,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  11:[steady("Rodagem aeróbia",65),meterSession("VO₂ 10 × 600 m",10,600,"Z5",2),steady("Corrida leve",40),repeatSession("Ritmo de maratona 3 × 18 minutos",3,18,"Tempo Run Maratona",3),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",190)],
-  12:[steady("Rodagem de recuperação",45),meterSession("Técnica 8 × 300 m",8,300,"Z4",1.5),steady("Corrida muito leve",30,"Z1"),tempoBlock("Ritmo de maratona curto",25,"Tempo Run Maratona"),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",135)],
-  13:[steady("Rodagem aeróbia",65),meterSession("Específico 4 × 2000 m",4,2000,"Tempo Run Meia maratona",3),steady("Corrida leve",40),repeatSession("Limiar 2 × 20 minutos",2,20,"Z3",3),steady("Regenerativo",30,"Z1"),simpleSession("Longão específico",195,[{kind:"simple",label:"Início leve",minutes:25,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:125,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:35,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  14:[steady("Rodagem leve",65),meterSession("VO₂ 8 × 800 m",8,800,"Z5",2.5),steady("Corrida complementar",40),tempoBlock("Tempo Run maratona",45,"Tempo Run Maratona"),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",200)],
-  15:[steady("Rodagem aeróbia",65),meterSession("Específico 3 × 3000 m",3,3000,"Tempo Run Meia maratona",4),steady("Corrida leve",40),repeatSession("Ritmo de maratona 4 × 15 minutos",4,15,"Tempo Run Maratona",3),steady("Regenerativo",30,"Z1"),simpleSession("Longão principal com ritmo",210,[{kind:"simple",label:"Início leve",minutes:30,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:125,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:45,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  16:[steady("Rodagem de recuperação",50),meterSession("Ritmo 8 × 600 m",8,600,"Z4",2),steady("Corrida muito leve",30,"Z1"),tempoBlock("Ritmo de maratona curto",30,"Tempo Run Maratona"),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",150)],
-  17:[steady("Rodagem aeróbia",65),meterSession("VO₂ 12 × 500 m",12,500,"Z5",1.75),steady("Corrida leve",40),repeatSession("Limiar 3 × 15 minutos",3,15,"Z3",2.5),steady("Regenerativo",30,"Z1"),simpleSession("Longão específico progressivo",215,[{kind:"simple",label:"Início leve",minutes:30,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:130,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:45,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  18:[steady("Rodagem leve",65),meterSession("Específico 5 × 2000 m",5,2000,"Tempo Run Meia maratona",3),steady("Corrida complementar",40),tempoBlock("Tempo Run maratona",50,"Tempo Run Maratona"),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",205)],
-  19:[steady("Rodagem aeróbia",65),meterSession("VO₂ 6 × 1000 m",6,1000,"Z5",3),steady("Corrida leve",40),repeatSession("Ritmo de maratona 3 × 20 minutos",3,20,"Tempo Run Maratona",4),steady("Regenerativo",30,"Z1"),simpleSession("Maior longão específico",220,[{kind:"simple",label:"Início leve",minutes:30,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:130,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:50,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  20:[steady("Rodagem de recuperação",50),meterSession("Técnica 10 × 300 m",10,300,"Z4",1.5),steady("Corrida muito leve",30,"Z1"),tempoBlock("Ritmo de maratona controlado",30,"Tempo Run Maratona"),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",155)],
-  21:[steady("Rodagem aeróbia",60),meterSession("Específico 4 × 2000 m",4,2000,"Tempo Run Meia maratona",3),steady("Corrida leve",35),repeatSession("Ritmo de maratona 3 × 18 minutos",3,18,"Tempo Run Maratona",3),steady("Regenerativo",30,"Z1"),simpleSession("Último longão específico",190,[{kind:"simple",label:"Início leve",minutes:25,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:120,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:35,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  22:[steady("Rodagem leve",55),meterSession("VO₂ 6 × 800 m",6,800,"Z5",2.5),steady("Corrida complementar",35),tempoBlock("Tempo Run maratona",35,"Tempo Run Maratona"),steady("Regenerativo",25,"Z1"),steady("Longão aeróbio",145)],
-  23:[steady("Rodagem leve",50),meterSession("Ritmo 5 × 1000 m",5,1000,"Z4",3),steady("Corrida muito leve",30,"Z1"),tempoBlock("Ritmo de maratona curto",25,"Tempo Run Maratona"),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",105)],
-  24:[steady("Rodagem leve",40),meterSession("Ativação 5 × 400 m",5,400,"Z4",2),steady("Regenerativo",25,"Z1"),tempoBlock("Ritmo de maratona leve",15,"Tempo Run Maratona"),steady("Corrida muito leve",20,"Z1"),steady("Soltura pré-prova",45)],
-  25:[steady("Corrida leve",25),meterSession("Ativação 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Regenerativo",20,"Z1"),steady("Corrida leve curta",20,"Z1"),simpleSession("Soltura pré-prova",15,[{kind:"simple",label:"Corrida muito leve",minutes:15,zone:"Z1"}]),{type:"Prova",title:"Maratona-alvo Full",description:"Executar a estratégia de performance, hidratação e ritmo aprovada pelo treinador",estimatedKm:42.2,tempoRun:"Maratona",steps:[{kind:"simple",label:"Aquecimento",minutes:8,zone:"Z1"},{kind:"simple",label:"Prova",distanceMeters:42195,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]}],
-};
-const planWeekTemplates:Record<string,Record<number,StructuredSession[]>>={"Iniciantes":beginnerPlanWeeks,"5 km Bronze":bronzePlanWeeks,"5 km Prata":prataPlanWeeks,"5 km Ouro":ouroPlanWeeks,"5 km Elite":elitePlanWeeks,"10 km Lion":lion10kPlanWeeks,"Meia Start":meiaStartPlanWeeks,"Meia Finish":meiaFinishPlanWeeks,"One Marathon":oneMarathonPlanWeeks,"Full Marathon":fullMarathonPlanWeeks};
-const sessionPriority=(session:StructuredSession)=>{const text=`${session.type} ${session.title||""}`.toLowerCase();if(/prova|desafio|longão/.test(text))return 100;if(/tempo|limiar|específico|intervalado|fartlek|vo₂|ritmo|ativação/.test(text))return 80;if(/rodagem|aeróbia|contínua/.test(text))return 40;return 20};
-const sessionsForPlanWeek=(planName:string,weekNumber:number,days:string[])=>{const template=planWeekTemplates[planName]?.[weekNumber]||[];if(!template.length)return{};const chosen=template.map((session,index)=>({session,index})).sort((a,b)=>sessionPriority(b.session)-sessionPriority(a.session)).slice(0,days.length).sort((a,b)=>a.index-b.index).map(item=>item.session);return Object.fromEntries(days.slice(0,chosen.length).map((day,index)=>[day,chosen[index]]))};
-const sessionsForSavedPlanWeek=async(planName:string,weekNumber:number,days:string[])=>{let template=planWeekTemplates[planName]?.[weekNumber]||[];try{const response=await fetch(`/api/plan-template-overrides?plan=${encodeURIComponent(planName)}&week=${weekNumber}`);if(response.ok){const data=await response.json();if(Array.isArray(data.override?.sessions)&&data.override.sessions.length)template=data.override.sessions}}catch{}if(!template.length)return{};const chosen=template.map((session,index)=>({session,index})).sort((a,b)=>sessionPriority(b.session)-sessionPriority(a.session)).slice(0,days.length).sort((a,b)=>a.index-b.index).map(item=>item.session);return Object.fromEntries(days.slice(0,chosen.length).map((day,index)=>[day,chosen[index]]))};
+/* As dez planilhas de fábrica moraram aqui até a equipe existir. Agora são
+   dados do treinador principal, e o worker precisa lê-las para semear — por
+   isso vivem num módulo que os dois lados importam. */
+import { trainingPlans, sessionPriority } from "@/db/planilhas-de-fabrica";
+/* As semanas vêm do servidor, e só de lá. Havia um retorno para o conteúdo de
+   fábrica guardado no cliente: depois que cada treinador passou a ter a própria
+   biblioteca, esse retorno vazaria os treinos das dez planilhas originais para
+   quem apenas usasse o mesmo nome numa planilha dele. */
+const sessionsForSavedPlanWeek=async(planName:string,weekNumber:number,days:string[])=>{let template:StructuredSession[]=[];try{const response=await fetch(`/api/plan-template-overrides?plan=${encodeURIComponent(planName)}&week=${weekNumber}`);if(response.ok){const data=await response.json();if(Array.isArray(data.override?.sessions)&&data.override.sessions.length)template=data.override.sessions}}catch{}if(!template.length)return{};const chosen=template.map((session,index)=>({session,index})).sort((a,b)=>sessionPriority(b.session)-sessionPriority(a.session)).slice(0,days.length).sort((a,b)=>a.index-b.index).map(item=>item.session);return Object.fromEntries(days.slice(0,chosen.length).map((day,index)=>[day,chosen[index]]))};
 const phaseForPlanWeek=(planName:string,weekNumber:number)=>{const plan=trainingPlans.find(item=>item.name===planName);if(!plan)return"Base";const value=plan.phases[Math.min(plan.phases.length-1,Math.floor((weekNumber-1)/(plan.weeks/plan.phases.length)))];if(value.includes("Adaptação"))return"Adaptação";if(value.includes("Base"))return"Base";if(value.includes("Pré")||value.includes("Polimento")||value.includes("Desafio"))return"Pré-prova";if(value.includes("Específica")||value.includes("Ritmo específico"))return"Específica";return"Desenvolvimento"};
 /** A lista de alunos vem sempre do banco. Não há dados de demonstração. */
 const athletes: Athlete[] = [];
 
 const distances = ["Todos", "Iniciantes", "5 km", "10 km", "Meia", "Maratona"];
 const phases = ["Todas", "Adaptação", "Base", "Desenvolvimento", "Específica", "Pré-prova"];
-const planNames = ["Todas","Iniciantes","5 km Bronze","5 km Prata","5 km Ouro","5 km Elite","10 km Lion","Meia Start","Meia Finish","One Marathon","Full Marathon"];
+/* O filtro de planilha era uma lista fixa com as dez de fábrica. Como cada
+   treinador tem a própria biblioteca, a lista passa a sair dos alunos que ele
+   realmente tem: filtrar por uma planilha sem aluno nenhum não filtra nada, e
+   ver o nome da planilha de outro treinador não deveria acontecer. */
+const planNamesDe = (atletas: Athlete[]) => ["Todas", ...Array.from(new Set(atletas.map(athletePlan))).filter(Boolean).sort()];
 const defaultPlanForDistance = (distance:string) => distance === "Iniciantes" ? "Iniciantes" : distance === "5 km" ? "5 km Bronze" : distance === "10 km" ? "10 km Lion" : distance === "Meia" ? "Meia Start" : distance === "Maratona" ? "One Marathon" : "Sem base";
 const athletePlan = (athlete:Athlete) => athlete.plan || defaultPlanForDistance(athlete.distance);
 const nav = ["Painel", "Cadastros", "Alunos", "Calendário", "Planilhas", "Testes e zonas", "Provas", "Financeiro", "Integrações", "Contas", "Segurança"];
+/* "Equipe" só existe para o proprietário. É a única diferença de navegação
+   entre ele e um treinador comum — o resto do painel é o mesmo, porque ele
+   também treina alunos. */
+const navDoProprietario = [...nav, "Equipe"];
 
 /** Um provedor de integração como a área do aluno o exibe. */
 type ProviderCard = {
@@ -304,6 +123,8 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
   const [active, setActive] = useState("Painel");
   const [mobileMenu, setMobileMenu] = useState(false);
   const coachInitials = initialsOf(session.name);
+  const ehProprietario = session.role === "owner";
+  const itensDeNavegacao = ehProprietario ? navDoProprietario : nav;
   const [distanceFilter, setDistanceFilter] = useState("Todos");
   const [phaseFilter, setPhaseFilter] = useState("Todas");
   const [planFilter, setPlanFilter] = useState("Todas");
@@ -397,7 +218,7 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
     <div className={`shell${visitando ? " com-visita" : ""}`}>
       <aside className="sidebar">
         <div className="brand"><span>Z</span><div><strong>ZONASAPP</strong><small>PLATAFORMA DE TREINO</small></div></div>
-        <nav>{nav.map(item => <button key={item} className={active === item ? "active" : ""} onClick={() => setActive(item)}><i><NavIcon item={item} /></i>{item}</button>)}
+        <nav>{itensDeNavegacao.map(item => <button key={item} className={active === item ? "active" : ""} onClick={() => setActive(item)}><i><NavIcon item={item} /></i>{item}</button>)}
           {/* No celular a barra inferior só comporta quatro atalhos; este botão
               abre as demais seções, que de outro modo ficariam inalcançáveis. */}
           <button className="coach-nav-more" aria-expanded={mobileMenu} onClick={() => setMobileMenu(value => !value)}><i><IconMais /></i>Mais</button>
@@ -413,7 +234,7 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
       {mobileMenu && <div className="coach-more-sheet" onClick={() => setMobileMenu(false)}>
         <section onClick={event => event.stopPropagation()}>
           <header><b>Outras seções</b><button aria-label="Fechar" onClick={() => setMobileMenu(false)}>×</button></header>
-          {nav.slice(MOBILE_VISIBLE_NAV).map(item =>
+          {itensDeNavegacao.slice(MOBILE_VISIBLE_NAV).map(item =>
             <button key={item} className={active === item ? "active" : ""} onClick={() => { setActive(item); setMobileMenu(false); }}>
               <i><NavIcon item={item} /></i><span>{item}</span><em>›</em>
             </button>)}
@@ -436,6 +257,7 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
         {active === "Integrações" && <CoachIntegrations />}
         {active === "Contas" && <AccountsCenter athletes={athleteRecords} />}
         {active === "Segurança" && <><SecurityCenter /><ErrorMonitor /></>}
+        {active === "Equipe" && ehProprietario && <TeamCenter />}
       </main>
       {selectedAthlete && <AthleteProfile athlete={selectedAthlete} close={() => setSelectedAthlete(null)} onOpenPain={id => setPainCase({ id, athleteName: selectedAthlete.name })} />}
       {painCase && <PainCaseScreen reportId={painCase.id} athleteName={painCase.athleteName} close={() => { setPainCase(null); window.dispatchEvent(new Event("zonasapp:athletes-refresh")); }} />}
@@ -1015,8 +837,12 @@ function ErrorMonitor() {
 function PlanLibrary({open}:{open:(plan:TrainingPlan)=>void}) {
   type PlanoProprio={id:string;name:string;distance:string;weeks:number;frequency:string;level:string;goal:string;phases:string};
   const [proprias,setProprias]=useState<PlanoProprio[]>([]);
+  /* Sem isto, "sua biblioteca está vazia" aparecia por um instante em toda
+     abertura, antes da resposta chegar — e um treinador com dez planilhas lia
+     que não tinha nenhuma. */
+  const [carregando,setCarregando]=useState(true);
   const [editando,setEditando]=useState<{id:string;name:string;distance:string;weeks:number;goal:string}|null>(null);
-  const carregar=useCallback(()=>api.get<{plans:PlanoProprio[]}>("/api/plans").then(dados=>setProprias(dados.plans||[])).catch(()=>setProprias([])),[]);
+  const carregar=useCallback(()=>api.get<{plans:PlanoProprio[]}>("/api/plans").then(dados=>setProprias(dados.plans||[])).catch(()=>setProprias([])).finally(()=>setCarregando(false)),[]);
   useEffect(()=>{void carregar()},[carregar]);
 
   const salvar=async()=>{
@@ -1037,7 +863,7 @@ function PlanLibrary({open}:{open:(plan:TrainingPlan)=>void}) {
   };
   const comoPlanilha=(plano:PlanoProprio):TrainingPlan=>({name:plano.name,distance:plano.distance,weeks:plano.weeks,frequency:plano.frequency,level:plano.level,goal:plano.goal,phases:(()=>{try{const lista=JSON.parse(plano.phases);return Array.isArray(lista)?lista:[]}catch{return[]}})()});
 
-  return <><div className="library-intro"><div><span className="overline">BIBLIOTECA DE TREINAMENTO</span><h2>Suas planilhas-base</h2><p>Escolha uma estrutura, veja as semanas e depois aplique ao aluno. Os ritmos e a frequência cardíaca continuam individuais.</p></div><div><b>{trainingPlans.filter(plan=>plan.complete).length}/{trainingPlans.length}</b><span>planilhas completas</span></div></div><section className="plan-library">{trainingPlans.map((plan,index)=><button key={plan.name} className={plan.pending?"pending-plan":""} onClick={()=>open(plan)}><header><i>{String(index+1).padStart(2,"0")}</i><span>{plan.complete?"TREINOS COMPLETOS":plan.pending?"ATUALIZAÇÃO PENDENTE":"ESTRUTURA CADASTRADA"}</span></header><h3>{plan.name}</h3><p>{plan.goal}</p><div className="plan-meta"><span><b>{plan.weeks}</b> semanas</span><span>{plan.frequency}</span></div><div className="phase-strip">{plan.phases.map(phase=><small key={phase}>{phase}</small>)}</div><footer>{plan.complete?"Ver e aplicar treinos reais →":plan.pending?"Abrir para atualizar →":"Ver estrutura →"}</footer></button>)}</section>
+  return <><div className="library-intro"><div><span className="overline">BIBLIOTECA DE TREINAMENTO</span><h2>Suas planilhas-base</h2><p>Escolha uma estrutura, veja as semanas e depois aplique ao aluno. Os ritmos e a frequência cardíaca continuam individuais.</p></div><div><b>{proprias.length}</b><span>{plural(proprias.length,"planilha")}</span></div></div>
 
   <div className="section-title"><div><small>SUAS PLANILHAS</small><h2>Criadas por você</h2></div><button onClick={()=>setEditando({id:"",name:"",distance:"Livre",weeks:12,goal:""})}>+ Nova planilha</button></div>
   {editando&&<section className="plan-form">
@@ -1047,7 +873,9 @@ function PlanLibrary({open}:{open:(plan:TrainingPlan)=>void}) {
     <label className="plan-form-goal">Objetivo<input value={editando.goal} onChange={event=>setEditando({...editando,goal:event.target.value})} placeholder="O que esta planilha entrega"/></label>
     <div><button className="gold" onClick={()=>void salvar()}>Salvar planilha</button><button onClick={()=>setEditando(null)}>Cancelar</button></div>
   </section>}
-  <section className="plan-library">
+  {carregando?<section className="plan-library-empty"><p>Carregando suas planilhas…</p></section>
+  :!proprias.length?<section className="plan-library-empty"><b>Sua biblioteca está vazia</b><p>Crie a primeira planilha-base e monte as semanas dela. Ela vale só para os seus alunos — nenhum outro treinador enxerga ou edita as suas.</p></section>
+  :<section className="plan-library">
     {proprias.map(plano=><button key={plano.id} className="plan-proprio" onClick={()=>open(comoPlanilha(plano))}>
       <header><i>★</i><span>PLANILHA DO TREINADOR</span></header>
       <h3>{plano.name}</h3><p>{plano.goal}</p>
@@ -1058,8 +886,82 @@ function PlanLibrary({open}:{open:(plan:TrainingPlan)=>void}) {
         <span role="button" tabIndex={0} className="plan-proprio-excluir" onClick={evento=>{evento.stopPropagation();void excluir(plano)}} onKeyDown={evento=>evento.key==="Enter"&&void excluir(plano)}>Excluir</span>
       </div>
     </button>)}
-    {!proprias.length&&!editando&&<p className="plan-vazio">Nenhuma planilha própria ainda. Crie uma quando quiser uma progressão que não está entre as dez acima.</p>}
-  </section></>;
+  </section>}</>;
+}
+
+/**
+ * A equipe do proprietário.
+ *
+ * Ele cria a conta do treinador, vê quantos alunos e quantas planilhas cada um
+ * tem, e pode entrar na área de um para conferir. Entrar não é agir como a
+ * pessoa: quem responde pelos atos continua sendo o proprietário, e a entrada
+ * fica registrada no log de segurança.
+ *
+ * O treinador nasce sem aluno e sem planilha. Isso não é um estado a corrigir:
+ * a carteira e a biblioteca são dele, e começam vazias.
+ */
+function TeamCenter() {
+  type Membro = { id:string; email:string; name:string; role:string; status:string; last_login_at:number|null; alunos_ativos:number; planilhas:number };
+  const [equipe,setEquipe]=useState<Membro[]>([]);
+  const [carregando,setCarregando]=useState(true);
+  const [visitando,setVisitando]=useState<{email:string;name:string}|null>(null);
+  const [criando,setCriando]=useState(false);
+  const [formulario,setFormulario]=useState({name:"",email:""});
+  const [salvando,setSalvando]=useState(false);
+
+  const carregar=useCallback(()=>api.get<{coaches:Membro[];visitando:{email:string;name:string}|null}>("/api/equipe")
+    .then(dados=>{setEquipe(dados.coaches||[]);setVisitando(dados.visitando??null)})
+    .catch(()=>setEquipe([]))
+    .finally(()=>setCarregando(false)),[]);
+  useEffect(()=>{void carregar()},[carregar]);
+
+  const criar=async()=>{
+    setSalvando(true);
+    try{
+      const criado=await api.post<{email:string;temporaryPassword:string}>("/api/equipe",{action:"create",name:formulario.name,email:formulario.email});
+      setCriando(false);setFormulario({name:"",email:""});await carregar();
+      /* A senha temporária aparece uma vez só: ela não fica guardada em texto
+         em lugar nenhum, então avisar é a única chance de anotá-la. */
+      avise("ok",`Treinador criado · senha ${criado.temporaryPassword}`,`Anote agora e entregue a ${criado.email}. Ele terá de trocá-la no primeiro acesso, e esta senha não aparece de novo.`);
+    }catch(erro){avise("erro","Não foi possível criar o treinador",describeError(erro,"Confira o nome e o e-mail."))}
+    finally{setSalvando(false)}
+  };
+
+  const entrar=async(membro:Membro)=>{
+    if(!await pergunte({titulo:`Entrar na área de ${membro.name}?`,descricao:"Você verá os alunos e as planilhas dele. A entrada fica registrada no log de segurança.",confirmar:"Entrar"}))return;
+    try{await api.post("/api/equipe",{action:"visit",email:membro.email});window.location.reload()}
+    catch(erro){avise("erro","Não foi possível entrar",describeError(erro))}
+  };
+
+  const sair=async()=>{
+    try{await api.post("/api/equipe",{action:"stop"});window.location.reload()}
+    catch(erro){avise("erro","Não foi possível voltar",describeError(erro))}
+  };
+
+  return <>
+    {visitando&&<section className="team-visiting"><div><small>CONFERINDO</small><b>Você está na área de {visitando.name}</b><span>Os alunos e as planilhas nesta tela são dele.</span></div><button className="gold" onClick={()=>void sair()}>Voltar à minha área</button></section>}
+
+    <div className="section-title"><div><small>SUA EQUIPE</small><h2>Treinadores</h2></div><button onClick={()=>setCriando(atual=>!atual)}>{criando?"Cancelar":"+ Novo treinador"}</button></div>
+
+    {criando&&<section className="team-form">
+      <label>Nome<input value={formulario.name} onChange={evento=>setFormulario({...formulario,name:evento.target.value})} placeholder="Nome completo"/></label>
+      <label>E-mail<input type="email" value={formulario.email} onChange={evento=>setFormulario({...formulario,email:evento.target.value})} placeholder="email@exemplo.com"/></label>
+      <div><button className="gold" disabled={salvando||formulario.name.trim().length<3||!formulario.email.includes("@")} onClick={()=>void criar()}>{salvando?"Criando…":"Criar treinador"}</button></div>
+      <p className="team-form-nota">Ele começa sem aluno e sem planilha. A carteira e a biblioteca são dele, e o que você tem não é copiado.</p>
+    </section>}
+
+    {carregando?<section className="team-empty"><p>Carregando sua equipe…</p></section>
+    :!equipe.length?<section className="team-empty"><b>Nenhum treinador ainda</b><p>Crie a conta do primeiro treinador. Cada um terá os próprios alunos e as próprias planilhas.</p></section>
+    :<section className="team-list">{equipe.map(membro=><article key={membro.id} className={membro.status==="Bloqueado"?"team-blocked":""}>
+      <header><b>{initialsOf(membro.name)}</b><div><strong>{membro.name}</strong><small>{membro.email}</small></div>{membro.role==="owner"&&<span className="team-tag">PROPRIETÁRIO</span>}</header>
+      <div className="team-numbers">
+        <span><b>{membro.alunos_ativos}</b><small>{membro.alunos_ativos===1?"aluno":"alunos"}</small></span>
+        <span><b>{membro.planilhas}</b><small>{membro.planilhas===1?"planilha":"planilhas"}</small></span>
+        <span><b>{membro.last_login_at?new Date(membro.last_login_at).toLocaleDateString("pt-BR"):"—"}</b><small>último acesso</small></span>
+      </div>
+      <footer><span className={membro.status==="Ativo"?"team-ok":"team-off"}>{membro.status}</span>{membro.role!=="owner"&&<button onClick={()=>void entrar(membro)}>Conferir área →</button>}</footer>
+    </article>)}</section>}
+  </>;
 }
 
 function PlanDetails({plan,close}:{plan:TrainingPlan;close:()=>void}) {
@@ -1075,14 +977,12 @@ function PlanDetails({plan,close}:{plan:TrainingPlan;close:()=>void}) {
   const toggleDay=(day:string)=>setAvailableDays(current=>current.includes(day)?current.filter(d=>d!==day):allDays.filter(d=>current.includes(d)||d===day));
   const phaseFor=(n:number)=>plan.phases[Math.min(plan.phases.length-1,Math.floor((n-1)/(plan.weeks/plan.phases.length)))];
   const planningPhaseFor=(n:number)=>{const value=phaseFor(n);if(value.includes("Adaptação"))return"Adaptação";if(value.includes("Base"))return"Base";if(value.includes("Pré")||value.includes("Polimento")||value.includes("Desafio"))return"Pré-prova";if(value.includes("Específica")||value.includes("Ritmo específico"))return"Específica";return"Desenvolvimento"};
-  const samples = plan.name === "Iniciantes" ? ["Caminhada + corrida","Corrida leve","Mobilidade"] : plan.name.includes("Meia") ? ["Rodagem Z2","Tempo Run","Leve Z1","Longão progressivo"] : ["Leve Z1","Intervalado","Tempo Run","Longão"];
   const sampleDays = plan.name === "Meia Finish" ? ["SEG","TER","QUI","SÁB"] : ["SEG","QUA","SEX","SÁB"];
-  const weekSamples = week === plan.weeks ? (plan.name === "Iniciantes" ? ["Leve","Mobilidade","Desafio 5 km"] : ["Leve Z1","8 × 100 m","Leve curto","Prova-alvo"]) : samples;
-  /* Planilha criada pelo treinador não tem versão de fábrica: mostrar os
-     treinos de exemplo ali faria parecer que ela já vem preenchida. */
-  const planilhaPropria=!planWeekTemplates[plan.name];
-  const realTemplate=planWeekTemplates[plan.name]?.[week]||null;
-  const effectiveTemplate=templateEdits[week]||realTemplate;
+  /* Toda planilha é do treinador agora — não existe mais "versão de fábrica"
+     guardada no cliente. As semanas vêm inteiras do servidor, e enquanto não
+     vierem a semana está vazia, que é a verdade. Mostrar os treinos de exemplo
+     faria a planilha parecer preenchida antes de alguém montá-la. */
+  const effectiveTemplate=templateEdits[week]||null;
   const selectedDays=allDays.filter(day=>availableDays.includes(day)).slice(0,effectiveTemplate?.length||4);
   const templatePriority=(session:StructuredSession)=>{const text=`${session.type} ${session.title||""}`.toLowerCase();if(/prova|desafio|longão/.test(text))return 100;if(/tempo|limiar|específico|intervalado|fartlek|vo₂|ritmo|ativação/.test(text))return 80;if(/rodagem|aeróbia|contínua/.test(text))return 40;return 20};
   const adaptedTemplate=effectiveTemplate?effectiveTemplate.map((session,index)=>({session,index})).sort((a,b)=>templatePriority(b.session)-templatePriority(a.session)).slice(0,selectedDays.length).sort((a,b)=>a.index-b.index).map(item=>item.session):[];
@@ -1113,8 +1013,8 @@ function PlanDetails({plan,close}:{plan:TrainingPlan;close:()=>void}) {
 
   const saveTemplateEdit=async(session:StructuredSession)=>{if(editingTemplateIndex===null||!effectiveTemplate)return;const updated=effectiveTemplate.map((item,index)=>index===editingTemplateIndex?session:item);setTemplateEdits(current=>({...current,[week]:updated}));setEditingTemplateIndex(null);setApplyState("idle");if(!await pergunte({titulo:`Salvar esta alteração na planilha ${plan.name}?`,descricao:`Semana ${week}. A alteração passa a valer para os próximos rascunhos; semanas já liberadas não mudam.`,confirmar:"Salvar na planilha-base"}))return;try{await api.post("/api/plan-template-overrides",{plan:plan.name,weekNumber:week,sessions:updated});avise("ok","Alteração salva na planilha-base","Ela será usada nos próximos rascunhos e aplicações.")}catch(erro){avise("erro","Não foi possível salvar na planilha-base",describeError(erro,"Tente novamente em alguns instantes."))}};
   const applyPlan=async()=>{if(!targetAthlete||plan.pending)return;setApplyState("saving");try{await api.post("/api/athlete-planning",{athleteName:targetAthlete,plan:plan.name,phase:planningPhaseFor(week),weekNumber:week,totalWeeks:plan.weeks});if(effectiveTemplate){const chosenDays=selectedDays.slice(0,adaptedTemplate.length).map(day=>day.toUpperCase());const sessions=Object.fromEntries(chosenDays.map((day,index)=>[day,adaptedTemplate[index]]));const draft=await fetch("/api/training-weeks",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({athleteName:targetAthlete,weekStart:targetWeekStart,plan:plan.name,phase:planningPhaseFor(week),weekLabel:`${week} de ${plan.weeks}`,trainingDays:chosenDays,sessions,status:"Rascunho"})});if(!draft.ok)throw new Error()}setApplyState("saved")}catch{setApplyState("error")}};
-  return <div className="overlay" onMouseDown={e=>e.target===e.currentTarget&&close()}><aside className="drawer plan-details"><header><div><span className="overline">PLANILHA-BASE · {plan.distance}</span><h2>{plan.name}</h2><p>{plan.weeks} semanas · {plan.frequency} · {plan.goal}</p></div><button onClick={close}>×</button></header>{plan.pending&&<div className="profile-alert">Esta planilha está registrada, mas precisa ser atualizada antes de ser aplicada aos alunos.</div>}{plan.complete&&<div className="request-success">Treinos reais cadastrados em todas as semanas ✓</div>}<div className="plan-phase-summary">{plan.phases.map((phase,i)=><span key={phase}><b>{i+1}</b><small>{phase}</small></span>)}</div><section className="schedule-adapter"><div className="profile-title"><div><span className="overline">APLICAR AO ALUNO</span><h3>Aluno e dias disponíveis</h3></div><small>{availableDays.length} dias selecionados</small></div><label className="template-athlete-select">Aluno<select value={targetAthlete} onChange={event=>{setTargetAthlete(event.target.value);setApplyState("idle")}}><option value="">Selecione</option>{eligibleAthletes.map(athlete=><option key={athlete.name}>{athlete.name}</option>)}</select></label><label className="template-week-date">Semana no calendário<input type="date" value={targetWeekStart} onChange={event=>{if(event.target.value)setTargetWeekStart(mondayOf(event.target.value));setApplyState("idle")}}/><small>O rascunho será criado de {weekDateLabel(targetWeekStart)}.</small></label><p>Marque os dias reais do aluno. O ZonasApp distribui os treinos da semana nesses dias e cria um rascunho para sua revisão.</p><div className="availability-picker">{allDays.map(day=><button key={day} className={availableDays.includes(day)?"selected":""} onClick={()=>toggleDay(day)}>{day}</button>)}</div><div className="adapted-schedule">{selectedDays.map((day,i)=><article key={day}><b>{day.toUpperCase()}</b><span><strong>{adaptedTemplate[i]?.title||prioritySessions[i]}</strong><small>{realTemplate?"Treino adaptado da semana · revisar antes de liberar":prioritySessions[i]==="Longão"?"Prioridade alta · resistência":"Estrutura-base"}</small></span></article>)}</div></section><section><div className="profile-title"><h3>Escolha uma semana</h3><small>{effectiveTemplate?"Clique no treino para ver e editar":"Visualização da estrutura"}</small></div><div className="template-weeks">{Array.from({length:plan.weeks},(_,i)=>i+1).map(n=><button key={n} className={week===n?"selected":""} onClick={()=>{setWeek(n);setApplyState("idle")}}><b>{n}</b><small>{phaseFor(n)}</small></button>)}</div></section><section className="template-preview"><div><span className="overline">SEMANA {week} DE {plan.weeks}</span><h3>{phaseFor(week)}</h3></div><div>{(effectiveTemplate||(planilhaPropria?[]:weekSamples)).map((item:any,i:number)=><article key={effectiveTemplate?item.title:item} className={effectiveTemplate?"editable-template-session":""}><b>{effectiveTemplate?`TREINO ${i+1}`:sampleDays[i]}</b><span><strong>{effectiveTemplate?item.title:item}</strong><small>{effectiveTemplate?`${item.durationMinutes||"Distância definida"}${item.durationMinutes?" min":""} · ${item.steps?.length||0} etapas`:"Estrutura-base · intensidade individual"}</small></span>{effectiveTemplate&&<button onClick={()=>setEditingTemplateIndex(i)}>Ver e editar treino →</button>}{effectiveTemplate&&<button className="template-remove" onClick={()=>void removerTreino(i)}>Tirar</button>}</article>)}
-    {planilhaPropria&&!effectiveTemplate?.length&&<p className="template-vazio">Semana {week} ainda sem treino. Escreva o primeiro abaixo — algo como “10 min Z1 + 5x(3 min Z4 + 2 min Z1) + 10 min Z1” já vira um treino estruturado.</p>}
+  return <div className="overlay" onMouseDown={e=>e.target===e.currentTarget&&close()}><aside className="drawer plan-details"><header><div><span className="overline">PLANILHA-BASE · {plan.distance}</span><h2>{plan.name}</h2><p>{plan.weeks} semanas · {plan.frequency} · {plan.goal}</p></div><button onClick={close}>×</button></header>{plan.pending&&<div className="profile-alert">Esta planilha está registrada, mas precisa ser atualizada antes de ser aplicada aos alunos.</div>}{plan.complete&&<div className="request-success">Treinos reais cadastrados em todas as semanas ✓</div>}<div className="plan-phase-summary">{plan.phases.map((phase,i)=><span key={phase}><b>{i+1}</b><small>{phase}</small></span>)}</div><section className="schedule-adapter"><div className="profile-title"><div><span className="overline">APLICAR AO ALUNO</span><h3>Aluno e dias disponíveis</h3></div><small>{availableDays.length} dias selecionados</small></div><label className="template-athlete-select">Aluno<select value={targetAthlete} onChange={event=>{setTargetAthlete(event.target.value);setApplyState("idle")}}><option value="">Selecione</option>{eligibleAthletes.map(athlete=><option key={athlete.name}>{athlete.name}</option>)}</select></label><label className="template-week-date">Semana no calendário<input type="date" value={targetWeekStart} onChange={event=>{if(event.target.value)setTargetWeekStart(mondayOf(event.target.value));setApplyState("idle")}}/><small>O rascunho será criado de {weekDateLabel(targetWeekStart)}.</small></label><p>Marque os dias reais do aluno. O ZonasApp distribui os treinos da semana nesses dias e cria um rascunho para sua revisão.</p><div className="availability-picker">{allDays.map(day=><button key={day} className={availableDays.includes(day)?"selected":""} onClick={()=>toggleDay(day)}>{day}</button>)}</div><div className="adapted-schedule">{selectedDays.map((day,i)=><article key={day}><b>{day.toUpperCase()}</b><span><strong>{adaptedTemplate[i]?.title||prioritySessions[i]}</strong><small>{effectiveTemplate?"Treino adaptado da semana · revisar antes de liberar":prioritySessions[i]==="Longão"?"Prioridade alta · resistência":"Estrutura-base"}</small></span></article>)}</div></section><section><div className="profile-title"><h3>Escolha uma semana</h3><small>{effectiveTemplate?"Clique no treino para ver e editar":"Visualização da estrutura"}</small></div><div className="template-weeks">{Array.from({length:plan.weeks},(_,i)=>i+1).map(n=><button key={n} className={week===n?"selected":""} onClick={()=>{setWeek(n);setApplyState("idle")}}><b>{n}</b><small>{phaseFor(n)}</small></button>)}</div></section><section className="template-preview"><div><span className="overline">SEMANA {week} DE {plan.weeks}</span><h3>{phaseFor(week)}</h3></div><div>{(effectiveTemplate||[]).map((item:any,i:number)=><article key={effectiveTemplate?item.title:item} className={effectiveTemplate?"editable-template-session":""}><b>{effectiveTemplate?`TREINO ${i+1}`:sampleDays[i]}</b><span><strong>{effectiveTemplate?item.title:item}</strong><small>{effectiveTemplate?`${item.durationMinutes||"Distância definida"}${item.durationMinutes?" min":""} · ${item.steps?.length||0} etapas`:"Estrutura-base · intensidade individual"}</small></span>{effectiveTemplate&&<button onClick={()=>setEditingTemplateIndex(i)}>Ver e editar treino →</button>}{effectiveTemplate&&<button className="template-remove" onClick={()=>void removerTreino(i)}>Tirar</button>}</article>)}
+    {!effectiveTemplate?.length&&<p className="template-vazio">Semana {week} ainda sem treino. Escreva o primeiro abaixo — algo como “10 min Z1 + 5x(3 min Z4 + 2 min Z1) + 10 min Z1” já vira um treino estruturado.</p>}
     <button className="template-add" onClick={()=>setAdicionandoTreino(true)}>＋ Adicionar treino nesta semana</button></div><p>{effectiveTemplate?"Abra qualquer treino para conferir todas as etapas. As alterações serão usadas neste rascunho e você ainda decidirá quando liberar ao aluno.":"Ao aplicar, a base, a fase e a semana escolhida ficam salvas no cadastro."}</p></section><section className="plan-application-summary"><header><span className="overline">CONFIRA ANTES DE CRIAR</span><h3>Este será o rascunho no Calendário</h3></header><div><article><small>ALUNO</small><b>{targetAthlete||"Escolha um aluno"}</b></article><article><small>PLANILHA E SEMANA</small><b>{plan.name} · {week} de {plan.weeks}</b></article><article><small>DATA NO CALENDÁRIO</small><b>{weekDateLabel(targetWeekStart)}</b></article><article><small>DIAS ADAPTADOS</small><b>{selectedDays.join(", ")||"Nenhum dia"}</b></article></div><p>A semana ${week} da biblioteca será usada nestas datas. Ela ficará como rascunho até você conferir e liberar no Calendário.</p></section>{applyState==="saved"&&<div className="request-success">Planilha aplicada a {targetAthlete} ✓ Semana {week} criada como rascunho em {weekDateLabel(targetWeekStart)}.</div>}{applyState==="error"&&<div className="registration-error">Não foi possível aplicar a planilha.</div>}<footer><button className="outline" onClick={close}>Fechar</button><button className="gold" onClick={applyPlan} disabled={plan.pending||!availableDays.length||!targetAthlete||applyState==="saving"}>{plan.pending?"Atualize antes de aplicar":applyState==="saving"?"Aplicando…":effectiveTemplate?`Criar semana ${week} como rascunho →`:"Aplicar base, fase e semana →"}</button></footer></aside>{editingTemplateIndex!==null&&effectiveTemplate?.[editingTemplateIndex]&&<WorkoutDrawer close={()=>setEditingTemplateIndex(null)} athleteName={targetAthlete||"Planilha-base"} day={`TREINO ${editingTemplateIndex+1}`} initial={effectiveTemplate[editingTemplateIndex]} weekLabel={`Semana ${week} de ${plan.weeks}`} onSave={saveTemplateEdit}/>}
     {adicionandoTreino&&<WorkoutDrawer close={()=>setAdicionandoTreino(false)} athleteName={plan.name} day={`TREINO ${(effectiveTemplate?.length||0)+1}`} weekLabel={`Semana ${week} de ${plan.weeks}`} onSave={adicionarTreino}/>}</div>;
 }
@@ -1301,6 +1201,7 @@ function CoachGroups({ go, chooseDistance, athletes }: { go: (s: string) => void
 
 function Athletes({ filtered, allAthletes, distance, phase, plan, setDistance, setPhase, setPlan, openProfile, situation, setSituation, counts, onArchiveChange }: any) {
   const planCount=(name:string)=>allAthletes.filter((a:Athlete)=>athletePlan(a)===name).length;
+  const planNames=planNamesDe(allAthletes);
   /* Procurar um aluno pelo nome é o gesto mais frequente desta tela e era o
      único que não existia: havia 22 botões de filtro e nenhum campo de busca. */
   const [busca,setBusca]=useState("");

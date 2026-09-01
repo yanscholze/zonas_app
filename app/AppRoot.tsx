@@ -25,7 +25,11 @@ export default function AppRoot() {
             ? <ZonasAppClient session={session} onLeaveDev={() => setModoTreinador(false)} visitando={visitando} />
             : <DevDashboard session={session} onExit={(alvo) => { setVisitando(alvo); setModoTreinador(true); }} />;
         }
-        return session.role === "coach"
+        /* O proprietário abre no painel do treinador, porque é o que ele é. A
+           diferença dele — criar e conferir a equipe — aparece como mais uma
+           seção lá dentro, não como um painel à parte: manter dois painéis
+           quase iguais foi o erro que já corrigimos uma vez. */
+        return session.role === "coach" || session.role === "owner"
           ? <ZonasAppClient session={session} />
           : <StudentEntry session={session} />;
       }}

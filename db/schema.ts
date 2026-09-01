@@ -271,8 +271,12 @@ export const customPlans = sqliteTable("custom_plans", {
   frequency: text("frequency").notNull(), level: text("level").notNull(),
   goal: text("goal").notNull(), phases: text("phases").notNull(),
   createdBy: text("created_by").notNull(),
+  /* De quem é a planilha. Cada treinador tem a própria biblioteca, então o
+     nome só precisa ser único dentro dela: dois treinadores podem ter uma
+     "Base Inverno" cada um, sem se ver e sem se sobrescrever. */
+  coachEmail: text("coach_email"),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
-}, (table) => ({ nameIdx: uniqueIndex("custom_plans_name_idx").on(table.name) }));
+}, (table) => ({ nameIdx: uniqueIndex("custom_plans_coach_name_idx").on(table.coachEmail, table.name) }));
 
 export const priceClasses = sqliteTable("price_classes", {
   id: text("id").primaryKey(), name: text("name").notNull(),
@@ -427,7 +431,11 @@ export const planTemplateOverrides = sqliteTable("plan_template_overrides", {
   weekNumber: integer("week_number").notNull(),
   sessionsJson: text("sessions_json").notNull(),
   updatedBy: text("updated_by").notNull(),
+  /* A semana também é de alguém. Sem esta coluna, dois treinadores editando a
+     semana 3 de planilhas homônimas gravavam na mesma linha e um apagava o
+     treino do outro sem aviso — o ON CONFLICT resolvia pelo par nome+semana. */
+  coachEmail: text("coach_email"),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 }, (table) => ({
-  planWeekIdx: uniqueIndex("plan_template_overrides_plan_week_idx").on(table.planName, table.weekNumber),
+  planWeekIdx: uniqueIndex("plan_template_overrides_coach_plan_week_idx").on(table.coachEmail, table.planName, table.weekNumber),
 }));

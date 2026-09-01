@@ -54,15 +54,26 @@ const coachCookie = { cookie: `zonas_session=${COACH_SESSION}` };
 const studentCookie = { cookie: `zonas_session=${STUDENT_SESSION}` };
 const blockedCookie = { cookie: `zonas_session=${BLOCKED_SESSION}` };
 
-function statement(resolveFirst, onRun) {
+function statement(resolveFirst, onRun, resolveAll) {
   return {
     values: [],
     bind(...values) { this.values = values; return this; },
     async first() { return resolveFirst(this.values); },
-    async all() { return { results: [] }; },
+    async all() { return { results: resolveAll ? resolveAll(this.values) : [] }; },
     async run() { onRun?.(this.values); return { success: true, meta: { changes: 1 } }; },
   };
 }
+
+/**
+ * A biblioteca do treinador da sessão nos testes.
+ *
+ * As planilhas deixaram de ser constantes do cliente e viraram dado de cada
+ * treinador. O treinador principal recebe as dez de fábrica na migração, então
+ * é isso que o dublê devolve — e um nome fora desta lista é recusado, que é
+ * exatamente a separação que se quer provar.
+ */
+const BIBLIOTECA_DO_TREINADOR = ["Iniciantes", "5 km Bronze", "5 km Prata", "5 km Ouro", "5 km Elite",
+  "10 km Lion", "Meia Start", "Meia Finish", "One Marathon", "Full Marathon"].map((name) => ({ name }));
 
 /** Responde às consultas de sessão e delega todo o resto ao banco do teste. */
 function withSession(prepare) {
@@ -78,6 +89,7 @@ function withSession(prepare) {
       return statement(([id]) => Object.values(SESSION_ACCOUNTS).find((account) => account.id === id) ?? null);
     }
     if (sql.startsWith("UPDATE user_sessions")) return statement(() => null);
+    if (sql.includes("FROM custom_plans WHERE coach_email")) return statement(() => null, undefined, () => BIBLIOTECA_DO_TREINADOR);
     return prepare(sql);
   };
 }
@@ -167,6 +179,53 @@ test("uses a computer-first workspace for weekly programming and workout buildin
   assert.match(css, /grid-template-columns:minmax\(0,1\.35fr\) minmax\(330px,\.65fr\)/);
   assert.match(css, /\.student-builder-preview\{grid-column:2/);
   assert.match(css, /width:min\(1120px,calc\(100vw - 260px\)\)/);
+});
+
+test("gives each coach their own athletes and their own base plans", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+
+  // A hierarquia é dev > proprietário > treinador > aluno. O proprietário é um
+  // treinador com duas atribuições a mais: criar as contas dos treinadores e
+  // conferir a área deles. Ele não alcança o diagnóstico — isso é do dev.
+  assert.match(auth, /export type UserRole = "coach" \| "student" \| "dev" \| "owner"/);
+  assert.match(auth, /HIERARQUIA: Record<UserRole, number> = \{ dev: 3, owner: 2, coach: 1, student: 0 \}/);
+  assert.match(worker, /identity\.role !== "dev" && identity\.role !== "owner"/);
+  assert.match(worker, /error: "owner_access_required"/);
+
+  // Sem visita, o proprietário vê a própria carteira — não a soma da equipe.
+  assert.match(worker, /if \(identity\?\.role === "owner"\) return identity\.visitandoEmail \?\? identity\.email/);
+
+  // As planilhas eram globais: sem dono nas duas tabelas, e o índice único por
+  // nome. Dois treinadores com uma "Base Inverno" cada um colidiam, e a semana 3
+  // de uma sobrescrevia a da outra.
+  assert.match(schema, /custom_plans_coach_name_idx"\)\.on\(table\.coachEmail, table\.name\)/);
+  assert.match(schema, /plan_template_overrides_coach_plan_week_idx"\)\.on\(table\.coachEmail, table\.planName, table\.weekNumber\)/);
+  assert.match(worker, /FROM custom_plans WHERE coach_email = \? ORDER BY name/);
+  assert.match(worker, /FROM plan_template_overrides WHERE coach_email=\? AND plan_name=\? AND week_number=\?/);
+
+  // Mandar o id da planilha de outro treinador não pode tomá-la: o WHERE no
+  // ON CONFLICT é o que impede o UPDATE de gravar sobre linha alheia.
+  assert.match(worker, /WHERE custom_plans\.coach_email = excluded\.coach_email/);
+
+  // Um treinador criado agora começa sem aluno e sem planilha; as dez de fábrica
+  // são semeadas uma única vez, e só para o treinador principal.
+  assert.match(worker, /async function semeiaPlanilhasDeFabrica/);
+  // A pergunta é "já foi semeado?", não "tem alguma planilha?": o passo que dá
+  // dono às planilhas existentes já deixa a contagem diferente de zero, e as
+  // dez nunca chegariam.
+  assert.match(worker, /if \(!Number\(jaSemeado\?\.total \?\? 0\)\) await semeiaPlanilhasDeFabrica\(env, principal\)/);
+  assert.match(worker, /role: "coach", password: senhaFinal/);
+
+  // A aba Equipe é a única diferença de navegação entre proprietário e treinador.
+  assert.match(client, /const navDoProprietario = \[\.\.\.nav, "Equipe"\]/);
+  assert.match(client, /active === "Equipe" && ehProprietario && <TeamCenter \/>/);
+
+  // Promover é ato do dev, e o papel aceito é curto: ninguém vira manutenção por aqui.
+  assert.match(worker, /if \(papel !== "owner" && papel !== "coach"\) return Response\.json\(\{ error: "invalid_role" \}/);
+  assert.match(worker, /if \(conta\.role === "dev"\) return Response\.json\(\{ error: "cannot_change_dev_role" \}/);
 });
 
 test("gives the student area a desktop shell instead of a stretched phone", async () => {
@@ -283,7 +342,10 @@ test("uses permanent library edits when loading or advancing an athlete week", a
   assert.match(source, /data\.override\?\.sessions/);
   assert.match(source, /await sessionsForSavedPlanWeek\(current\.plan,nextPlanningWeek,current\.days\)/);
   assert.match(worker, /plan_template_overrides/);
-  assert.match(worker, /ON CONFLICT\(plan_name,week_number\) DO UPDATE/);
+  // O conflito passou a ser por dono + planilha + semana. Sem o dono, dois
+  // treinadores editando a semana 3 de planilhas homônimas gravavam na mesma
+  // linha e um apagava o treino do outro sem aviso.
+  assert.match(worker, /ON CONFLICT\(coach_email,plan_name,week_number\) DO UPDATE/);
 });
 
 test("links the structured workout to an athlete and shows the released steps to the student", async () => {
@@ -1471,13 +1533,24 @@ test("lets the coach create and edit their own base plans", async () => {
   // vazia e continua vazia, sem porta para o primeiro treino.
   assert.match(worker, /DELETE FROM plan_template_overrides WHERE plan_name = \?/);
   assert.match(worker, /SELECT name FROM custom_plans/);
-  assert.match(worker, /\.\.\.\(proprias\.results as Array<\{name:string\}>\)\.map\(linha=>linha\.name\)/);
+  // A lista aceita era "as dez de fábrica mais tudo o que houver no banco", sem
+  // dono: um treinador lia e gravava a semana da planilha de outro só sabendo o
+  // nome. Agora a lista é a biblioteca de quem pede, e nada além dela.
+  assert.match(worker, /SELECT name FROM custom_plans WHERE coach_email=\?/);
+  assert.match(worker, /const allowedPlans=\(proprias\.results as Array<\{name:string\}>\)\.map\(linha=>linha\.name\)/);
   // Zero treinos é um estado legítimo: é como se esvazia uma semana.
   assert.doesNotMatch(worker, /sessions\.length<1\|\|sessions\.length>10/);
   // E a tela tem por onde lançar o primeiro treino, sem inventar exemplos.
   assert.match(client, /className="template-add"/);
-  assert.match(client, /const planilhaPropria=!planWeekTemplates\[plan\.name\]/);
-  assert.match(client, /effectiveTemplate\|\|\(planilhaPropria\?\[\]:weekSamples\)/);
+  // A distinção entre "planilha própria" e "de fábrica" acabou: toda planilha é
+  // de um treinador, e as semanas vêm inteiras do servidor. O retorno para o
+  // conteúdo guardado no cliente saiu porque vazaria os treinos das dez
+  // originais para quem só usasse o mesmo nome.
+  assert.match(client, /const effectiveTemplate=templateEdits\[week\]\|\|null/);
+  assert.doesNotMatch(client, /planWeekTemplates\[plan\.name\]/);
+  // Os treinos de exemplo ilustravam as planilhas de fábrica. Sem elas no
+  // cliente, semana sem treino mostra que está sem treino.
+  assert.match(client, /\(effectiveTemplate\|\|\[\]\)\.map/);
   // E excluir uma planilha em uso é recusado com o motivo.
   assert.match(worker, /plan_in_use/);
 });
@@ -1563,49 +1636,53 @@ test("uses real coach dashboard counts and reviews every registered race", async
 
 test("applies a selected base plan, phase and week to a real athlete", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const fabrica = await readFile(new URL("../db/planilhas-de-fabrica.ts", import.meta.url), "utf8");
   const css = await readCss("../app/globals.css");
   assert.match(client, /className="template-athlete-select"/);
   assert.match(client, /const applyPlan=async/);
-  assert.match(client, /const meiaStartPlanWeeks/);
-  assert.match(client, /"Meia Start":meiaStartPlanWeeks/);
-  assert.match(client, /Primeira meia maratona/);
+  // As dez de fábrica saíram do cliente para um módulo que o worker também lê:
+  // ele precisa delas para semear a biblioteca do treinador principal uma vez.
+  assert.match(client, /from "@\/db\/planilhas-de-fabrica"/);
+  assert.match(fabrica, /const meiaStartPlanWeeks/);
+  assert.match(fabrica, /"Meia Start":meiaStartPlanWeeks/);
+  assert.match(fabrica, /Primeira meia maratona/);
   assert.match(client, /adaptedTemplate/);
   assert.match(client, /Ver e editar treino/);
   assert.match(client, /editingTemplateIndex/);
   assert.match(client, /onSave=\{saveTemplateEdit\}/);
   assert.match(client, /effectiveTemplate\[editingTemplateIndex\]/);
   assert.match(client, /As alterações serão usadas neste rascunho/);
-  assert.match(client, /const meiaFinishPlanWeeks/);
-  assert.match(client, /"Meia Finish":meiaFinishPlanWeeks/);
-  assert.match(client, /Tempo Run combinado 5 km e meia/);
-  assert.match(client, /Prova-alvo de meia maratona/);
-  assert.match(client, /const oneMarathonPlanWeeks/);
-  assert.match(client, /"One Marathon":oneMarathonPlanWeeks/);
-  assert.match(client, /Longão principal com ritmo/);
+  assert.match(fabrica, /const meiaFinishPlanWeeks/);
+  assert.match(fabrica, /"Meia Finish":meiaFinishPlanWeeks/);
+  assert.match(fabrica, /Tempo Run combinado 5 km e meia/);
+  assert.match(fabrica, /Prova-alvo de meia maratona/);
+  assert.match(fabrica, /const oneMarathonPlanWeeks/);
+  assert.match(fabrica, /"One Marathon":oneMarathonPlanWeeks/);
+  assert.match(fabrica, /Longão principal com ritmo/);
   assert.match(client, /Primeira maratona/);
-  assert.match(client, /const fullMarathonPlanWeeks/);
-  assert.match(client, /"Full Marathon":fullMarathonPlanWeeks/);
-  assert.match(client, /Maior longão específico/);
-  assert.match(client, /Maratona-alvo Full/);
+  assert.match(fabrica, /const fullMarathonPlanWeeks/);
+  assert.match(fabrica, /"Full Marathon":fullMarathonPlanWeeks/);
+  assert.match(fabrica, /Maior longão específico/);
+  assert.match(fabrica, /Maratona-alvo Full/);
   assert.match(client, /athleteName:targetAthlete,plan:plan\.name,phase:planningPhaseFor\(week\),weekNumber:week,totalWeeks:plan\.weeks/);
   assert.match(client, /Aplicar base, fase e semana/);
   assert.match(client, /Semana \{week\} criada como rascunho em/);
-  assert.match(client, /const beginnerPlanWeeks/);
-  assert.match(client, /const bronzePlanWeeks/);
-  assert.match(client, /const prataPlanWeeks/);
-  assert.match(client, /const ouroPlanWeeks/);
-  assert.match(client, /const elitePlanWeeks/);
-  assert.match(client, /const lion10kPlanWeeks/);
-  assert.match(client, /"5 km Bronze":bronzePlanWeeks/);
-  assert.match(client, /"5 km Prata":prataPlanWeeks/);
-  assert.match(client, /"5 km Ouro":ouroPlanWeeks/);
-  assert.match(client, /"5 km Elite":elitePlanWeeks/);
-  assert.match(client, /"10 km Lion":lion10kPlanWeeks/);
-  assert.match(client, /Prova-alvo de 10 km/);
-  assert.match(client, /Prova-alvo de 5 km Elite/);
-  assert.match(client, /Prova-alvo de 5 km Ouro/);
-  assert.match(client, /Prova-alvo de 5 km/);
-  assert.match(client, /Desafio ou prova de 5 km/);
+  assert.match(fabrica, /const beginnerPlanWeeks/);
+  assert.match(fabrica, /const bronzePlanWeeks/);
+  assert.match(fabrica, /const prataPlanWeeks/);
+  assert.match(fabrica, /const ouroPlanWeeks/);
+  assert.match(fabrica, /const elitePlanWeeks/);
+  assert.match(fabrica, /const lion10kPlanWeeks/);
+  assert.match(fabrica, /"5 km Bronze":bronzePlanWeeks/);
+  assert.match(fabrica, /"5 km Prata":prataPlanWeeks/);
+  assert.match(fabrica, /"5 km Ouro":ouroPlanWeeks/);
+  assert.match(fabrica, /"5 km Elite":elitePlanWeeks/);
+  assert.match(fabrica, /"10 km Lion":lion10kPlanWeeks/);
+  assert.match(fabrica, /Prova-alvo de 10 km/);
+  assert.match(fabrica, /Prova-alvo de 5 km Elite/);
+  assert.match(fabrica, /Prova-alvo de 5 km Ouro/);
+  assert.match(fabrica, /Prova-alvo de 5 km/);
+  assert.match(fabrica, /Desafio ou prova de 5 km/);
   assert.match(client, /Treinos reais cadastrados em todas as semanas/);
   assert.match(client, /status:"Rascunho"/);
   assert.match(client, /Escolha a base em três passos/);
@@ -1983,7 +2060,11 @@ test("seeds the coach account only while none exists", async () => {
   const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
   // O seed é ignorado assim que existe uma conta de treinador, então trocar
   // COACH_INITIAL_PASSWORD depois disso não reabre o acesso.
-  assert.match(auth, /SELECT id FROM user_accounts WHERE role = 'coach' LIMIT 1/);
+  // O proprietário conta como treinador: promover o único treinador deixava zero
+  // contas 'coach', o seed achava que não havia nenhuma e recriava a conta
+  // configurada — e o upsert de `createAccount` sobrescreve o papel, desfazendo
+  // a promoção no boot seguinte.
+  assert.match(auth, /SELECT id FROM user_accounts WHERE role IN \('coach', 'owner'\) LIMIT 1/);
   assert.match(auth, /if \(existing\) return "ready";/);
   assert.match(auth, /mustChangePassword: true/);
 });
@@ -2326,7 +2407,10 @@ test("keeps one single source of truth for the database schema", async () => {
   assert.doesNotMatch(semComentarios(integrations), /CREATE TABLE IF NOT EXISTS/);
   assert.doesNotMatch(worker, /const create[A-Z]\w*Sql/);
   assert.match(worker, /import \* as schema from "\.\.\/db\/schema"/);
-  assert.match(worker, /import \{ tableColumns, tableSql \} from "\.\.\/db\/sql"/);
+  // Criar tabela, completar colunas, e só então criar índices: um índice novo
+  // sobre coluna nova era criado antes de a coluna existir, e o batch caía.
+  assert.match(worker, /import \{ createIndexesSql, createTableSql, tableColumns, tableSql \} from "\.\.\/db\/sql"/);
+  assert.match(worker, /const indices = pendentes\.flatMap\(tabela => createIndexesSql\(tabela\)\)/);
   // Conferir o esquema é trabalho de uma vez por instância, não de toda chamada.
   assert.match(worker, /const tabelasConferidas = new Set<string>\(\)/);
   assert.match(worker, /if \(!pendentes\.length\) return;/);
@@ -2489,11 +2573,14 @@ test("keeps the visit on the session, not in the browser", async () => {
   // Quem decide o recorte é o servidor; a interface não escolhe o que vê.
   assert.match(schema, /impersonatingUserId: text\("impersonating_user_id"\)/);
   assert.match(auth, /export async function setImpersonation/);
-  assert.match(auth, /AND role = 'coach' LIMIT 1/);
+  // A manutenção passou a poder visitar também o proprietário, então o papel
+  // aceito virou uma lista — e é ela que impede o proprietário de visitar um par.
+  assert.match(auth, /WHERE id = \? AND role IN \(\$\{marcadores\}\) LIMIT 1/);
   // Visitar a área de outra pessoa deixa rastro.
   assert.match(worker, /Manutenção visitou um treinador/);
   // Só a manutenção alcança a rota.
-  assert.match(worker, /url\.pathname === "\/api\/dev\/coaches"[\s\S]{0,120}requireDevApiAccess/);
+  // A rota passou a atender também o proprietário, então a porta é o nível dele.
+  assert.match(worker, /url\.pathname === "\/api\/dev\/coaches" \|\| url\.pathname === "\/api\/equipe"[\s\S]{0,120}requireOwnerApiAccess/);
 });
 
 test("says out loud whose area is open", async () => {

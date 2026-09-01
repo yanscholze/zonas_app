@@ -14085,3 +14085,213 @@ p, span, b, strong, small, em, li, td, th, label {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* -----------------------------------------------------------------------------
+   Equipe do proprietário, e a biblioteca vazia.
+
+   O proprietário é um treinador com duas atribuições a mais, então a tela dele
+   usa os mesmos cartões e a mesma tipografia do resto do painel: ela é mais uma
+   seção, não um segundo painel.
+   ----------------------------------------------------------------------------- */
+.team-visiting {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  margin-bottom: var(--space-4);
+  border: 1px solid var(--gold);
+  border-radius: var(--radius-lg);
+  background: #241f12;
+}
+
+.team-visiting small {
+  display: block;
+  color: var(--gold);
+  font-size: var(--fs-overline);
+  letter-spacing: var(--tracking-overline);
+}
+
+.team-visiting b {
+  display: block;
+  margin: var(--space-1) 0;
+  font-size: var(--fs-md);
+}
+
+.team-visiting span {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.team-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-3);
+  padding: var(--space-5);
+  margin-bottom: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+}
+
+.team-form label {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--muted);
+  font-size: var(--fs-overline);
+  letter-spacing: var(--tracking-overline);
+  text-transform: uppercase;
+}
+
+.team-form-nota {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.team-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--space-3);
+}
+
+.team-list article {
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+}
+
+.team-list article.team-blocked {
+  opacity: .6;
+}
+
+.team-list header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.team-list header>b {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--gold);
+  color: #15120c;
+  font-size: var(--fs-sm);
+}
+
+.team-list header div {
+  min-width: 0;
+}
+
+.team-list header strong,
+.team-list header small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-list header small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.team-tag {
+  margin-left: auto;
+  flex: none;
+  padding: 4px 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid #705b2a;
+  background: #2b2619;
+  color: var(--gold2);
+  font-size: var(--fs-overline);
+  letter-spacing: var(--tracking-overline);
+}
+
+.team-numbers {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.team-numbers span {
+  display: grid;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--surface-3);
+}
+
+.team-numbers b {
+  font-size: var(--fs-md);
+  font-variant-numeric: tabular-nums;
+}
+
+.team-numbers small {
+  color: var(--muted);
+  font-size: var(--fs-overline);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-overline);
+}
+
+.team-list footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--line-soft);
+}
+
+.team-ok { color: var(--green); font-size: var(--fs-xs); font-weight: var(--fw-bold); }
+.team-off { color: var(--red); font-size: var(--fs-xs); font-weight: var(--fw-bold); }
+
+.team-list footer button {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--gold);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  cursor: pointer;
+}
+
+.team-list footer button:hover {
+  border-color: var(--gold);
+}
+
+/* Biblioteca sem planilha nenhuma é o estado normal de um treinador novo, não
+   um erro — o texto diz o que fazer em vez de só constatar o vazio. */
+.team-empty,
+.plan-library-empty {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  padding: var(--space-10) var(--space-6);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-lg);
+  text-align: center;
+}
+
+.team-empty b,
+.plan-library-empty b {
+  font-size: var(--fs-md);
+}
+
+.team-empty p,
+.plan-library-empty p {
+  max-width: 46ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
