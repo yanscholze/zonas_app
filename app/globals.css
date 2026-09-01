@@ -12908,7 +12908,20 @@ p, span, b, strong, small, em, li, td, th, label {
 .dev-status.s4 { background: #3a2f19; color: var(--gold2); }
 .dev-status.s5 { background: #3a251d; color: #ff8b76; }
 
+/* O papel vem num atributo, não numa classe.
+   Escrever `dev-role ${c.role}` punha no elemento uma classe com o nome do
+   papel — e "student" e "coach" já eram classes de layout: `.student` é a raiz
+   da área do aluno e `.coach` é o cartão de perfil da barra lateral. O badge
+   herdava as regras delas. Ficou latente enquanto `.student` só trazia
+   `min-height: 100vh`, que um elemento em linha ignora; no dia em que `.student`
+   virou `display: grid` na versão de computador, o badge virou uma grade de
+   1642px de altura dentro da célula. Um atributo não colide com seletor de
+   classe nenhum, agora nem depois.
+
+   O `inline-block` é a segunda tranca: com display próprio, nada que venha de
+   fora estica o badge outra vez. */
 .dev-role {
+  display: inline-block;
   border-radius:var(--radius-sm);
   padding: 2px 8px;
   font-size:var(--fs-xs);
@@ -12918,9 +12931,10 @@ p, span, b, strong, small, em, li, td, th, label {
   color: var(--muted);
 }
 
-.dev-role.dev { background: #3a2f19; color: var(--gold2); }
-.dev-role.coach { background: #1e3348; color: #7fb6e0; }
-.dev-role.student { background: #183326; color: #69d397; }
+.dev-role[data-papel="dev"] { background: #3a2f19; color: var(--gold2); }
+.dev-role[data-papel="owner"] { background: #3d2a3f; color: #d9a7e4; }
+.dev-role[data-papel="coach"] { background: #1e3348; color: #7fb6e0; }
+.dev-role[data-papel="student"] { background: #183326; color: #69d397; }
 
 .dev-env {
   display: flex;

@@ -181,6 +181,32 @@ test("uses a computer-first workspace for weekly programming and workout buildin
   assert.match(css, /width:min\(1120px,calc\(100vw - 260px\)\)/);
 });
 
+test("keeps role badges out of the layout class namespace", async () => {
+  const dev = await readFile(new URL("../app/DevDashboard.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+
+  // O badge de papel escrevia `dev-role ${c.role}`, o que punha no elemento uma
+  // classe com o nome do papel. "student" e "coach" já eram classes de layout:
+  // `.student` é a raiz da área do aluno e `.coach` é o cartão de perfil da
+  // barra lateral. O badge herdava as regras delas.
+  //
+  // Ficou latente enquanto `.student` só trazia `min-height: 100vh`, que um
+  // elemento em linha ignora. No dia em que `.student` virou `display: grid` na
+  // versão de computador, o badge virou uma grade de 1642px de altura dentro da
+  // célula da tabela, esticando a linha inteira.
+  assert.match(dev, /<span className="dev-role" data-papel=\{c\.role\}>/);
+  assert.doesNotMatch(dev, /className=\{`dev-role \$\{c\.role\}`\}/);
+
+  // Um atributo não colide com seletor de classe nenhum, agora nem depois.
+  for (const papel of ["dev", "owner", "coach", "student"]) {
+    assert.match(css, new RegExp(`\\.dev-role\\[data-papel="${papel}"\\]`));
+  }
+  assert.doesNotMatch(css, /\.dev-role\.(dev|owner|coach|student)\b/);
+
+  // Display próprio é a segunda tranca: nada que venha de fora estica o badge.
+  assert.match(css, /\.dev-role\{display:inline-block/);
+});
+
 test("gives each coach their own athletes and their own base plans", async () => {
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
   const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");

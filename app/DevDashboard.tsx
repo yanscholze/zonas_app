@@ -302,7 +302,7 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
               <thead><tr><th>Papel</th><th>Login</th><th>Nome</th><th>Aluno</th><th>Situação</th><th>Último acesso</th><th>Falhas</th><th>Ações</th></tr></thead>
               <tbody>{dados.contas.map(c => (
                 <tr key={c.id}>
-                  <td><span className={`dev-role ${c.role}`}>{c.role}</span></td>
+                  <td><span className="dev-role" data-papel={c.role}>{c.role}</span></td>
                   <td>{c.email}</td>
                   <td>{c.name}</td>
                   <td>{c.athlete_name || "—"}</td>
