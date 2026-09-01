@@ -169,6 +169,37 @@ test("uses a computer-first workspace for weekly programming and workout buildin
   assert.match(css, /width:min\(1120px,calc\(100vw - 260px\)\)/);
 });
 
+test("gives the student area a desktop shell instead of a stretched phone", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const globals = await readCss("../app/globals.css");
+  const overrides = await readCss("../app/overrides.css");
+
+  // A tela do aluno era só a versão de celular esticada: uma coluna de 800px
+  // parada no meio de 1920px, com a navegação boiando no rodapé. Agora o mesmo
+  // HTML monta a barra à esquerda no computador, como na área do professor.
+  assert.match(client, /<header className="student-rail">/);
+  assert.match(client, /<nav className="student-nav">/);
+  assert.match(client, /className="student-rail-sections"/);
+  assert.match(client, /className="student-rail-exit"/);
+  assert.match(globals, /@media \(min-width:900px\)/);
+  assert.match(globals, /\.student\{display:grid;grid-template-columns:var\(--nav-width\) minmax\(0,1fr\)\}/);
+  assert.match(globals, /\.student-rail\{position:sticky/);
+
+  // A barra já lista as seções, então a aba "Mais" e o "← Voltar" mostrariam a
+  // mesma navegação duas vezes na mesma tela.
+  assert.match(globals, /\.student-nav \.student-tab-more,\.student-content \.student-back\{display:none\}/);
+
+  // O vidro fosco do cabeçalho tem de ficar num pseudoelemento: com o
+  // backdrop-filter na própria barra ela vira bloco-contentor dos filhos fixos,
+  // e a navegação do celular — que agora mora dentro dela — se ancorava no
+  // cabeçalho de 64px em vez da janela, indo parar no topo da tela.
+  assert.match(overrides, /\.student-rail::before\{[^}]*backdrop-filter:blur\(14px\)/);
+  assert.doesNotMatch(overrides, /\.student-rail\{[^}]*backdrop-filter/);
+
+  // A faixa dizia "MAIS" mesmo dentro de uma seção: o caminho, não o lugar.
+  assert.match(client, /const tituloDaFaixa = tab === "Mais" && moreView !== "menu"/);
+});
+
 test("gives the student a polished mobile-first workout experience", async () => {
   const css = await readCss("../app/overrides.css");
   const globals = await readCss("../app/globals.css");
@@ -1032,8 +1063,12 @@ test("uses the current calendar week when the coach previews the student area", 
 test("opens the student's real profile and only coach-approved training zones", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
-  assert.match(client, /\["◎","Testes e zonas","Ritmos e frequência cardíaca","tests"\]/);
-  assert.match(client, /\["○","Meu perfil","Cadastro e dias disponíveis","profile"\]/);
+  // As seções de "Mais" saíram de dentro do JSX para uma constante, porque a
+  // barra lateral do computador lê a mesma lista que os cartões do celular.
+  assert.match(client, /const SECOES_DO_ALUNO: Array<\[string, string, string, string\]> = \[/);
+  assert.match(client, /"Testes e zonas", "Ritmos e frequ\\u00eancia card\\u00edaca", "tests"/);
+  assert.match(client, /"Meu perfil", "Cadastro e dias dispon\\u00edveis", "profile"/);
+  assert.match(client, /<section className="student-more">\{SECOES_DO_ALUNO\.map/);
   assert.match(client, /\/api\/student\/performance-tests/);
   assert.match(client, /test\.status==="Aprovado"/);
   assert.match(client, /Somente ritmos revisados e liberados pelo professor/);

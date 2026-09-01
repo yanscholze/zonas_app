@@ -1617,7 +1617,7 @@ p, span, b, strong, small, em, li, td, th, label {
   color: #1b1a18;
 }
 
-.student>header {
+.student-rail {
   height: 74px;
   border-bottom: 1px solid #dbd6cb;
   display: flex;
@@ -1626,11 +1626,18 @@ p, span, b, strong, small, em, li, td, th, label {
   padding: 0 max(24px,calc((100vw - 800px)/2));
 }
 
-.student>header button {
+.student-rail-exit {
   border: 0;
   background: none;
   color: #8b6c27;
   font-weight: 800;
+}
+
+/* As seções de "Mais" só aparecem abertas na barra do computador. No celular
+   elas são os cartões da própria aba Mais, e repeti-las no cabeçalho seria a
+   mesma lista duas vezes na mesma tela. */
+.student-rail-sections {
+  display: none;
 }
 
 .student>section {
@@ -5144,16 +5151,204 @@ p, span, b, strong, small, em, li, td, th, label {
   font-style: normal;
 }
 
+/* -----------------------------------------------------------------------------
+   Área do aluno no computador e no tablet deitado.
+
+   Até aqui a tela do aluno era a versão de celular esticada: uma coluna de
+   800px parada no meio de 1920px, com a navegação boiando como uma ilha solta
+   no rodapé e creme vazio dos dois lados. Passa a montar o mesmo esquema da
+   área do professor — barra fixa à esquerda, conteúdo à direita — reaproveitando
+   o HTML já existente: a mesma faixa que no celular é o cabeçalho aqui vira a
+   coluna, e a mesma navegação que lá fica no rodapé aqui empilha na barra.
+
+   O que não muda é a identidade: o creme de fundo, a serifa dos títulos, o
+   cartão escuro do treino do dia e os dourados continuam iguais.
+   ----------------------------------------------------------------------------- */
+@media (min-width: 900px) {
+  .student {
+    display: grid;
+    grid-template-columns: var(--nav-width) minmax(0, 1fr);
+  }
+
+  .student-rail {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-2);
+    padding: var(--space-6) var(--space-4);
+    border-right: 1px solid var(--aluno-linha);
+    border-bottom: 0;
+    background: var(--aluno-painel);
+  }
+
+  .student-rail .brand {
+    padding: 0 var(--space-2) var(--space-4);
+  }
+
+  .student-rail .brand>span {
+    border-color: #b08b28;
+  }
+
+  /* A navegação larga o rodapé fixo e vira lista. */
+  .student-nav {
+    position: static;
+    transform: none;
+    width: auto;
+    height: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 0;
+    border: 0;
+    background: none;
+    box-shadow: none;
+  }
+
+  .student-nav button {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 11px;
+    padding: 0 var(--space-3);
+    height: var(--control-lg);
+    border-radius: var(--radius-md);
+    color: var(--aluno-apoio);
+    font-size: var(--fs-sm);
+    text-align: left;
+  }
+
+  .student-nav button:hover {
+    background: var(--aluno-painel-2);
+    color: var(--aluno-texto);
+  }
+
+  .student-nav button.active {
+    background: #f4ead3;
+    color: var(--aluno-dourado);
+    font-weight: 700;
+  }
+
+  /* No rodapé o ícone da aba ativa ganhava uma pílula atrás; em lista quem
+     marca a seleção é o fundo do próprio botão. */
+  .student-nav button.active i {
+    width: auto;
+    height: auto;
+    display: inline;
+    border-radius: 0;
+    background: none;
+  }
+
+  .student-nav button i {
+    font-size: var(--fs-base);
+  }
+
+  .student-nav button span {
+    font-size: var(--fs-sm);
+    font-weight: inherit;
+  }
+
+  /* As seções de "Mais" abertas na barra: no computador sobra altura, e fazer
+     o aluno entrar numa aba para achar o financeiro seria clique jogado fora. */
+  .student-rail-sections {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: var(--space-4);
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--aluno-linha);
+  }
+
+  .student-rail-sections>small {
+    padding: 0 var(--space-3) var(--space-2);
+    color: var(--aluno-apoio);
+    font-size: var(--fs-overline);
+    letter-spacing: .12em;
+  }
+
+  .student-rail-sections button {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 0 var(--space-3);
+    height: 34px;
+    border: 0;
+    border-radius: var(--radius-md);
+    background: none;
+    color: var(--aluno-apoio);
+    font-size: var(--fs-xs);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .student-rail-sections button:hover {
+    background: var(--aluno-painel-2);
+    color: var(--aluno-texto);
+  }
+
+  .student-rail-sections button.active {
+    background: #f4ead3;
+    color: var(--aluno-dourado);
+    font-weight: 700;
+  }
+
+  .student-rail-sections button i {
+    width: 16px;
+    font-style: normal;
+    text-align: center;
+  }
+
+  /* Sair fica no pé da barra, como o cartão do professor fica no dele. */
+  .student-rail-exit {
+    margin-top: auto;
+    padding: 0 var(--space-3);
+    height: var(--control-md);
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    border: 1px solid var(--aluno-linha);
+    border-radius: var(--radius-md);
+    background: var(--aluno-painel-2);
+    color: var(--aluno-apoio);
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .student-rail-exit:hover {
+    border-color: var(--aluno-linha-forte);
+    color: var(--aluno-texto);
+  }
+
+  /* Com as seções abertas na barra, a aba "Mais" mostraria a mesma lista de
+     novo na área de conteúdo. O botão sai, e o "← Voltar" das seções também:
+     quem faz esse papel aqui é a própria barra, sempre visível. */
+  .student-nav .student-tab-more,
+  .student-content .student-back {
+    display: none;
+  }
+
+  /* O conteúdo perde o teto de 800px de celular, mas não vira linha infinita:
+     esta área é de leitura, e o aluno lê instrução de treino aqui. */
+  .student>section {
+    width: 100%;
+    max-width: 1120px;
+    padding: var(--space-8) var(--space-8) var(--space-10);
+  }
+}
+
 @media(max-width:760px) {
-  .student>header {
+  .student-rail {
     height: 64px;
     padding: 0 16px;
   }
-  .student>header .brand>span {
+  .student-rail .brand>span {
     width: 32px;
     height: 32px;
   }
-  .student>header button {
+  .student-rail-exit {
     font-size:var(--fs-xs);
   }
   .student>section {

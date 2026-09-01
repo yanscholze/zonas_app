@@ -48,17 +48,28 @@
     background: linear-gradient(180deg,#f8f4e9,#f2efe7);
     padding-bottom: 20px;
   }
-  .student>header {
+  .student-rail {
     position: sticky;
     top: 0;
     z-index: 9;
     height: 68px;
     padding: 0 17px;
     border-bottom: 1px solid #e3dccb;
+    background: transparent;
+  }
+  /* O vidro fosco fica num pseudoelemento, não na própria barra. Com o
+     backdrop-filter na barra ela virava bloco-contentor dos filhos fixos, e a
+     navegação inferior — que agora mora dentro dela — passava a se ancorar no
+     cabeçalho de 64px em vez da janela: ia parar no topo da tela. */
+  .student-rail::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
     background: #fffdf8e8;
     backdrop-filter: blur(14px);
   }
-  .student>header .brand>span {
+  .student-rail .brand>span {
     border: 0;
     border-radius:var(--radius-md);
     background: #171717;
@@ -67,11 +78,11 @@
     font: 800 20px Georgia;
     box-shadow: 0 5px 16px #3d2c1218;
   }
-  .student>header .brand strong {
+  .student-rail .brand strong {
     font-size:var(--fs-sm);
     color: #25221d;
   }
-  .student>header .brand small {
+  .student-rail .brand small {
     font-size:var(--fs-overline);
     color: #9b7421;
   }
@@ -281,16 +292,19 @@
     background: radial-gradient(circle at 85% 4%,#ead9ad 0,transparent 24%),linear-gradient(180deg,#faf7ef 0,#f0ece2 100%);
     color: var(--student-ink);
   }
-  .student>header {
+  .student-rail {
     height: 72px;
     padding: 0 18px;
-    background: #fffdf8f2;
     box-shadow: 0 4px 24px #4c3b1c0d;
   }
-  .student>header .brand {
+  /* Quem pinta a barra é o pseudoelemento; um fundo aqui cobriria o fosco. */
+  .student-rail::before {
+    background: #fffdf8f2;
+  }
+  .student-rail .brand {
     gap: 10px;
   }
-  .student>header .brand>span {
+  .student-rail .brand>span {
     width: 40px;
     height: 40px;
     border-radius:var(--radius-lg);
