@@ -109,7 +109,7 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/student/feedbacks": new Set(["feeling","note","weekStart","workoutDay"]),
   "/api/student/workout-executions": new Set(["weekStart","workoutDay","actualMinutes","actualKm","action","note"]),
   "/api/student/integration-preference": new Set(["integration"]),
-  "/api/student/performance-tests": new Set(["id","minutes","seconds"]),
+  "/api/student/performance-tests": new Set(["id","minutes","seconds","effort","note","sourceFormat","sourceKm"]),
   "/api/financial": new Set(["action","pixKey","pixName","defaultAmount","dueDay","athleteName","referenceMonth","amount","status","dueDate","classId","name","scope","className","athletes","image","note"]),
   "/api/feedbacks": new Set(["id","status"]),
   "/api/student/races-records": new Set(["kind","name","raceDate","distance","city","goal","priority","resultTime","eventName"]),
@@ -1160,6 +1160,14 @@ async function studentPerformanceTestsApi(request: Request, env: Env, athleteNam
     const id = boundedText(input.id, 80);
     const minutes = Number(input.minutes);
     const seconds = Number(input.seconds);
+    /* Mesmo vocabulário da conclusão de treino: o treinador lê a mesma palavra
+       nos dois lugares em vez de comparar duas escalas para a mesma coisa. */
+    const esforcosAceitos = ["Muito bem", "Cansado", "Sentiu dor"];
+    const effort = boundedText(input.effort, 20);
+    if (effort && !esforcosAceitos.includes(effort)) return Response.json({ error: "invalid_effort" }, { status: 400 });
+    const athleteNote = boundedText(input.note, 500);
+    const sourceFormat = boundedText(input.sourceFormat, 10);
+    const sourceKm = Number(input.sourceKm);
     if (!id) return Response.json({ error: "test_required" }, { status: 400 });
     if (!Number.isFinite(minutes) || minutes < 0 || minutes > 120 || !Number.isFinite(seconds) || seconds < 0 || seconds > 59) {
       return Response.json({ error: "invalid_test_time" }, { status: 400 });
@@ -1168,13 +1176,20 @@ async function studentPerformanceTestsApi(request: Request, env: Env, athleteNam
     if (total < 240) return Response.json({ error: "test_time_too_short", motivo: "O tempo informado é curto demais para um teste.", saida: "Confira os minutos e os segundos." }, { status: 400 });
     const alvo = await env.DB.prepare("SELECT id FROM performance_tests WHERE id = ? AND athlete_name = ? AND status = 'Solicitado' LIMIT 1").bind(id, athleteName).first();
     if (!alvo) return Response.json({ error: "test_not_found" }, { status: 404 });
-    await env.DB.prepare("UPDATE performance_tests SET total_seconds = ?, status = 'Aguardando revisão' WHERE id = ?").bind(total, id).run();
+    /* O arquivo não sobe: é lido no navegador e só o que ele mede segue, como já
+       acontece no registro de treino. O que fica gravado é a origem do número. */
+    await ensureColumns(env, "performance_tests", { effort: "TEXT", athlete_note: "TEXT", source_format: "TEXT", source_km: "TEXT" });
+    await env.DB.prepare(`UPDATE performance_tests
+      SET total_seconds = ?, effort = ?, athlete_note = ?, source_format = ?, source_km = ?, status = 'Aguardando revisão'
+      WHERE id = ?`)
+      .bind(total, effort || null, athleteNote || null, sourceFormat || null,
+        Number.isFinite(sourceKm) && sourceKm > 0 ? String(sourceKm) : null, id).run();
     return Response.json({ sent: true, totalSeconds: total });
   }
 
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
   await ensureTables(env, schema.performanceTests);
-  const tests = await env.DB.prepare("SELECT id,test_date,distance_km,total_seconds,vam,vo2,fc_max,pace_seconds,zones,tempo_runs,status FROM performance_tests WHERE athlete_name = ? ORDER BY test_date DESC,created_at DESC").bind(athleteName).all();
+  const tests = await env.DB.prepare("SELECT id,test_date,distance_km,total_seconds,vam,vo2,fc_max,pace_seconds,zones,tempo_runs,status,effort,athlete_note,source_format,source_km FROM performance_tests WHERE athlete_name = ? ORDER BY test_date DESC,created_at DESC").bind(athleteName).all();
   return Response.json({ tests: tests.results });
 }
 

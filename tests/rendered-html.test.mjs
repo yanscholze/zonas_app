@@ -187,6 +187,41 @@ test("uses a computer-first workspace for weekly programming and workout buildin
   assert.match(css, /width:min\(1120px,calc\(100vw - 260px\)\)/);
 });
 
+test("lets the student send a test result the same way they finish a workout", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+
+  /* O envio não dava sinal nenhum, por dois motivos somados.
+     O primeiro: `CentralDeAvisos` só estava montada no painel do treinador e no
+     diagnóstico. A área do aluno chamava `avise()` sem ter onde mostrar, então o
+     envio acontecia — ou falhava — sem uma palavra na tela.
+     O segundo: na prévia do treinador não há sessão de aluno, e /api/student/*
+     recusa com 403. O botão parecia morto porque as duas coisas se somavam. */
+  assert.match(client, /<CentralDeAvisos \/>\n {2}<\/main>/);
+  assert.match(client, /if\(!secureStudentMode\)\{\s*avise\("atencao","Isto é a prévia do professor"/);
+  assert.match(client, /<StudentTestsView data=\{studentTests\}[\s\S]{0,120}?secureStudentMode=\{secureStudentMode\}/);
+
+  // Entregar o teste passou a ter a forma de concluir um treino: anexo do
+  // relógio, tempo, como terminou e uma observação.
+  assert.match(client, /const receberArquivo=async\(arquivo\?:File\)=>\{/);
+  assert.match(client, /className="test-effort"/);
+  assert.match(client, /\["Muito bem","Cansado","Sentiu dor"\]/);
+  assert.match(client, /sourceFormat:arquivoLido\?\.formato,sourceKm:arquivoLido\?\.km/);
+
+  // O arquivo não sobe: é lido no navegador e só o que ele mede segue.
+  assert.match(client, /leArquivoDeAtividade\(arquivo\)/);
+  assert.doesNotMatch(worker, /"\/api\/student\/performance-tests": new Set\(\["id","minutes","seconds"\]\)/);
+  assert.match(worker, /"\/api\/student\/performance-tests": new Set\(\["id","minutes","seconds","effort","note","sourceFormat","sourceKm"\]\)/);
+
+  // E o treinador precisa ver o que o aluno contou: o número sozinho não conta
+  // tudo, porque um teste feito com dor pede outra leitura dos ritmos.
+  assert.match(schema, /effort: text\("effort"\)/);
+  assert.match(schema, /athleteNote: text\("athlete_note"\)/);
+  assert.match(client, /className="test-back-esforco"/);
+  assert.match(worker, /status,effort,athlete_note,source_format,source_km FROM performance_tests/);
+});
+
 test("tells the student a test was requested, separately from one under review", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
 
@@ -1701,7 +1736,11 @@ test("runs the performance test as a round trip", async () => {
   assert.match(worker, /'Solicitado'/);
   assert.match(worker, /test_already_pending/);
   // O aluno devolve só o tempo; as zonas continuam saindo da revisão.
-  assert.match(worker, /UPDATE performance_tests SET total_seconds = \?, status = 'Aguardando revisão'/);
+  // O aluno passou a devolver o teste como conclui um treino: além do tempo, como
+  // terminou, uma observação e, se anexou o arquivo do relógio, a origem do número.
+  assert.match(worker, /SET total_seconds = \?, effort = \?, athlete_note = \?, source_format = \?, source_km = \?, status = 'Aguardando revisão'/);
+  assert.match(worker, /const esforcosAceitos = \["Muito bem", "Cansado", "Sentiu dor"\]/);
+  assert.match(worker, /error: "invalid_effort"/);
   assert.match(worker, /AND status = 'Solicitado' LIMIT 1/);
   assert.match(client, /className="student-test-request"/);
   // No pedido o treinador informa só a distância: o tempo é medido pelo aluno.

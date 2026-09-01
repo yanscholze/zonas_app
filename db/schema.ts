@@ -85,6 +85,17 @@ export const performanceTests = sqliteTable("performance_tests", {
   zones: text("zones").notNull(),
   tempoRuns: text("tempo_runs").notNull(),
   status: text("status").notNull(),
+  /* Como o aluno terminou o teste e o que ele quis dizer sobre ele. O mesmo
+     vocabulário da conclusão de treino — "Muito bem", "Cansado", "Sentiu dor" —
+     porque é a mesma pergunta, e duas escalas para a mesma coisa fariam o
+     treinador comparar palavras diferentes. */
+  effort: text("effort"),
+  athleteNote: text("athlete_note"),
+  /* Distância e formato do arquivo que o aluno anexou, quando anexou. O arquivo
+     em si não sobe: é lido no navegador e só os números seguem, como já ocorre
+     no registro de treino. */
+  sourceFormat: text("source_format"),
+  sourceKm: text("source_km"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 }, (table) => ({
   athleteDateIdx: index("performance_tests_athlete_date_idx").on(table.athleteName, table.testDate),

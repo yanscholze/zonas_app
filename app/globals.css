@@ -14309,3 +14309,126 @@ p, span, b, strong, small, em, li, td, th, label {
   color: var(--muted);
   font-size: var(--fs-sm);
 }
+
+/* -----------------------------------------------------------------------------
+   Envio do resultado do teste pelo aluno.
+
+   O teste passou a ser entregue como um treino é concluído: anexo do relógio,
+   tempo, como a pessoa terminou e uma observação. É de propósito que a pergunta
+   e as três respostas sejam as mesmas do fim de um treino — é a mesma pergunta,
+   e duas escalas para a mesma coisa só dariam trabalho a quem lê.
+   ----------------------------------------------------------------------------- */
+.test-file {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  margin-top: var(--space-3);
+  border: 1px dashed var(--aluno-linha-forte);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.test-file>span {
+  flex: 1;
+  color: var(--aluno-apoio);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+}
+
+/* O campo de arquivo do navegador traz o próprio texto e não se estiliza; o
+   rótulo visível é o `em` ao lado, e o campo fica escondido sem sair do fluxo
+   de foco do teclado. */
+.test-file>input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.test-file>em {
+  flex: none;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--aluno-painel-2);
+  border: 1px solid var(--aluno-linha);
+  color: var(--aluno-texto);
+  font-style: normal;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+}
+
+.test-file-ok,
+.test-file-erro {
+  margin: var(--space-2) 0 0;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+}
+
+.test-file-ok { color: var(--aluno-verde); }
+.test-file-erro { color: var(--aluno-vermelho); }
+
+.test-effort {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin: var(--space-2) 0 var(--space-3);
+}
+
+.test-effort button {
+  display: grid;
+  gap: var(--space-1);
+  place-items: center;
+  padding: var(--space-3) var(--space-2);
+  border: 1px solid var(--aluno-linha);
+  border-radius: var(--radius-md);
+  background: var(--aluno-painel);
+  color: var(--aluno-texto);
+  font-size: var(--fs-lg);
+  cursor: pointer;
+}
+
+.test-effort button b {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+}
+
+.test-effort button.selected {
+  border-color: var(--aluno-dourado);
+  background: #fbf4e4;
+  color: #7d5c15;
+}
+
+.test-note {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--aluno-apoio);
+  font-size: var(--fs-xs);
+}
+
+.test-note textarea {
+  border: 1px solid var(--aluno-linha);
+  border-radius: var(--radius-md);
+  background: var(--aluno-painel);
+  color: var(--aluno-texto);
+  padding: var(--space-3);
+  font-size: var(--fs-sm);
+  resize: vertical;
+}
+
+/* O que o aluno contou, na tela do treinador: o número sozinho não conta tudo.
+   Um teste feito com dor pede outra leitura dos ritmos que um teste feito bem. */
+.test-back-esforco,
+.test-back-nota {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--fs-xs);
+}
+
+.test-back-esforco { color: var(--muted); }
+.test-back-nota { color: var(--text); font-style: italic; }
