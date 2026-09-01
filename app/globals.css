@@ -1365,6 +1365,56 @@ p, span, b, strong, small, em, li, td, th, label {
   box-shadow: var(--shadow-lg);
 }
 
+/* Entrada e saída do aviso.
+
+   Ele aparecia e sumia no mesmo quadro. Com vários empilhados, fechar um fazia
+   os de baixo saltarem para cima sem que se enxergasse qual havia saído. Agora
+   entra deslizando e sai encolhendo a própria altura, então a pilha se fecha em
+   vez de pular.
+
+   `grid-template-rows` de 1fr para 0fr é o que permite animar a altura sem
+   saber quanto ela mede — `height: auto` não anima. */
+@keyframes aviso-entra {
+  from { opacity: 0; transform: translateY(-8px) scale(.98); }
+  to { opacity: 1; transform: none; }
+}
+
+.avisos-do-sistema article {
+  animation: aviso-entra var(--dur-base) var(--ease) both;
+  /* Um teto de partida é obrigatório: `max-height` não anima a partir de `none`,
+     e sem ele a saída pularia direto para altura zero. O valor é folgado de
+     propósito — só precisa ser maior que qualquer aviso real. */
+  max-height: 320px;
+}
+
+.avisos-do-sistema article.saindo {
+  animation: none;
+  opacity: 0;
+  transform: translateX(12px);
+  /* A margem negativa fecha o vão do `gap` do contêiner enquanto encolhe. */
+  margin-bottom: calc(var(--space-2) * -1);
+  padding-block: 0;
+  border-block-width: 0;
+  max-height: 0;
+  overflow: hidden;
+  transition:
+    opacity var(--dur-base) var(--ease),
+    transform var(--dur-base) var(--ease),
+    max-height var(--dur-base) var(--ease),
+    padding-block var(--dur-base) var(--ease),
+    margin-bottom var(--dur-base) var(--ease),
+    border-block-width var(--dur-base) var(--ease);
+}
+
+/* Sem movimento, o aviso some na hora: quem pediu menos animação não espera. */
+@media (prefers-reduced-motion: reduce) {
+  .avisos-do-sistema article,
+  .avisos-do-sistema article.saindo {
+    animation: none;
+    transition: none;
+  }
+}
+
 .avisos-do-sistema article.erro {
   border-left-color: var(--red);
 }
@@ -14432,3 +14482,112 @@ p, span, b, strong, small, em, li, td, th, label {
 
 .test-back-esforco { color: var(--muted); }
 .test-back-nota { color: var(--text); font-style: italic; }
+
+/* -----------------------------------------------------------------------------
+   Erro aberto no monitoramento.
+
+   A lista dizia "algo falhou em planilhas-base" e parava aí. Cada linha passa a
+   abrir com horário, rota, retorno, mensagem e a pilha — que é o que permite
+   achar a linha do código em vez de adivinhar.
+   ----------------------------------------------------------------------------- */
+.monitor-linha {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, auto) minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.monitor-linha small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitor-linha em {
+  flex: none;
+  color: var(--gold);
+  font-style: normal;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+}
+
+.monitor-list article.aberto {
+  border-color: var(--line-strong);
+}
+
+.monitor-detalhe {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--line);
+}
+
+.monitor-detalhe dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.monitor-detalhe dt {
+  color: var(--muted);
+  font-size: var(--fs-overline);
+  letter-spacing: var(--tracking-overline);
+  text-transform: uppercase;
+}
+
+.monitor-detalhe dd {
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.monitor-detalhe>b {
+  color: var(--muted);
+  font-size: var(--fs-overline);
+  letter-spacing: var(--tracking-overline);
+  text-transform: uppercase;
+}
+
+/* A pilha é o único texto do sistema que não deve ser reformatado para caber:
+   quebrar uma linha dela no meio troca o número da linha de lugar. */
+.monitor-detalhe pre {
+  margin: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.monitor-pilha {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.monitor-copiar {
+  justify-self: start;
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--gold);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  cursor: pointer;
+}
+
+.monitor-copiar:hover { border-color: var(--gold); }

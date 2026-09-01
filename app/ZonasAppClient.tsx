@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { signOut, type Session } from "./AuthGate";
-import { api, copyText, describeError } from "./api-client";
+import { api, copyText, describeError, definePreviaDoTreinador, PreviaDoTreinador } from "./api-client";
 import { NavIcon, IconMais, IconTrocarVisao, IconSair, IconAviso } from "./icons";
 import { avise, pergunte, CentralDeAvisos } from "./avisos";
 import { leArquivoDeAtividade, ArquivoInvalido } from "./atividade-arquivo";
@@ -818,13 +818,48 @@ function SecurityCenter() {
 }
 
 function ErrorMonitor() {
-  type AppError = {id:string;area:string;error_code:string;method:string;status_code:number;created_at:number};
+  type AppError = {id:string;area:string;error_code:string;method:string;status_code:number;created_at:number;route?:string|null;message?:string|null;stack?:string|null;actor_role?:string|null};
   const [errors,setErrors]=useState<AppError[]>([]);
   const [last24Hours,setLast24Hours]=useState(0);
   const [retentionDays,setRetentionDays]=useState(90);
   const [available,setAvailable]=useState(true);
+  /* Um erro por vez aberto. Ver a pilha de dois ao mesmo tempo não ajuda a ler
+     nenhuma das duas, e a lista fica impossível de percorrer. */
+  const [aberto,setAberto]=useState("");
+  const copiar=async(error:AppError)=>{
+    const texto=[
+      `${new Date(Number(error.created_at)).toLocaleString("pt-BR")} · ${error.method} ${error.route??"(rota não registrada)"}`,
+      `${error.status_code} ${error.error_code} · área: ${error.area} · quem chamou: ${error.actor_role??"—"}`,
+      error.message??"(sem mensagem registrada)",
+      error.stack??"",
+    ].join("\n").trim();
+    if(await copyText(texto))avise("ok","Erro copiado","Cole onde precisar investigar.");
+    else avise("erro","Não foi possível copiar","Selecione o texto na tela e copie à mão.");
+  };
   useEffect(()=>{fetch("/api/application-errors").then(r=>r.ok?r.json():Promise.reject()).then(data=>{setErrors(data.errors||[]);setLast24Hours(Number(data.last24Hours)||0);setRetentionDays(Number(data.retentionDays)||90)}).catch(()=>setAvailable(false))},[]);
-  return <section className="error-monitor"><header><div><span className="overline">MONITORAMENTO DA PLATAFORMA</span><h3>Saúde do ZonasApp</h3><p>Registra apenas a área e o tipo da falha. Nenhum dado pessoal, treino, senha ou e-mail de aluno entra neste histórico. Registros técnicos são apagados automaticamente após {retentionDays} dias.</p></div><span className={available&&last24Hours===0?"healthy":"attention"}>{!available?"INDISPONÍVEL":last24Hours===0?"TUDO NORMAL":`${last24Hours} FALHAS EM 24H`}</span></header>{!available?<div className="backup-empty">Não foi possível consultar o monitoramento agora.</div>:errors.length===0?<div className="monitor-empty"><b>✓</b><span><strong>Nenhuma falha registrada</strong><small>A plataforma está operando normalmente.</small></span></div>:<div className="monitor-list">{errors.map(error=><article key={error.id}><b>{error.area}</b><span>{error.error_code.replaceAll("_"," ")}</span><small>{error.method} · {new Date(Number(error.created_at)).toLocaleString("pt-BR")}</small></article>)}</div>}</section>;
+  return <section className="error-monitor"><header><div><span className="overline">MONITORAMENTO DA PLATAFORMA</span><h3>Saúde do ZonasApp</h3><p>Cada falha guarda horário, rota, retorno do servidor, a mensagem e onde ela aconteceu — abra uma para ver tudo. O que continua fora: nome, e-mail, senha e dado de treino de aluno; de quem chamou fica só o papel. Registros técnicos são apagados automaticamente após {retentionDays} dias.</p></div><span className={available&&last24Hours===0?"healthy":"attention"}>{!available?"INDISPONÍVEL":last24Hours===0?"TUDO NORMAL":`${last24Hours} FALHAS EM 24H`}</span></header>{!available?<div className="backup-empty">Não foi possível consultar o monitoramento agora.</div>:errors.length===0?<div className="monitor-empty"><b>✓</b><span><strong>Nenhuma falha registrada</strong><small>A plataforma está operando normalmente.</small></span></div>:<div className="monitor-list">{errors.map(error=>{
+    const estaAberto=aberto===error.id;
+    return <article key={error.id} className={estaAberto?"aberto":""}>
+      <button className="monitor-linha" aria-expanded={estaAberto} onClick={()=>setAberto(estaAberto?"":error.id)}>
+        <b>{error.area}</b>
+        <span>{error.error_code.replaceAll("_"," ")}</span>
+        <small>{error.method} {error.route??""} · {new Date(Number(error.created_at)).toLocaleString("pt-BR")}</small>
+        <em>{estaAberto?"Fechar":"Abrir"}</em>
+      </button>
+      {estaAberto&&<div className="monitor-detalhe">
+        <dl>
+          <div><dt>Quando</dt><dd>{new Date(Number(error.created_at)).toLocaleString("pt-BR",{dateStyle:"full",timeStyle:"medium"})}</dd></div>
+          <div><dt>Rota</dt><dd>{error.method} {error.route??"(não registrada — erro anterior a este log)"}</dd></div>
+          <div><dt>Retorno</dt><dd>{error.status_code} · {error.error_code}</dd></div>
+          <div><dt>Quem chamou</dt><dd>{error.actor_role??"—"}</dd></div>
+        </dl>
+        <b>Mensagem</b>
+        <pre>{error.message??"Sem mensagem registrada. Este erro é anterior ao log detalhado."}</pre>
+        {error.stack&&<><b>Onde aconteceu</b><pre className="monitor-pilha">{error.stack}</pre></>}
+        <button className="monitor-copiar" onClick={()=>void copiar(error)}>Copiar tudo</button>
+      </div>}
+    </article>;
+  })}</div>}</section>;
 }
 
 /**
@@ -2268,14 +2303,6 @@ function StudentTestsView({data,back,recarregar,secureStudentMode}:{data:any;bac
   const enviarResultado=async()=>{
     setEnviando(true);
     try{
-      /* Na prévia do treinador não há sessão de aluno, e a rota do aluno recusa
-         com 403. Antes o envio simplesmente não acontecia e nada era dito —
-         somado à Central de avisos que faltava na área do aluno, o botão parecia
-         morto. Aqui a prévia diz o que é, em vez de falhar em silêncio. */
-      if(!secureStudentMode){
-        avise("atencao","Isto é a prévia do professor","O envio real acontece na conta do aluno. Aqui os campos funcionam, mas nada é gravado.");
-        return;
-      }
       await api.post("/api/student/performance-tests",{
         id:pedido.id,minutes:Number(minutos)||0,seconds:Number(segundos)||0,
         effort:esforco||undefined,note:observacao||undefined,
@@ -2284,6 +2311,12 @@ function StudentTestsView({data,back,recarregar,secureStudentMode}:{data:any;bac
       setMinutos("");setSegundos("");setEsforco("");setObservacao("");setArquivoLido(null);recarregar();
       avise("ok","Resultado enviado","Seu treinador vai revisar e liberar os seus ritmos.");
     }catch(erro){
+      /* A prévia não é falha: é o treinador olhando a tela do aluno. Dizer
+         "não foi possível enviar" ali seria acusar um erro que não houve. */
+      if(erro instanceof PreviaDoTreinador){
+        avise("atencao","Isto é a prévia do professor",erro.friendlyMessage);
+        return;
+      }
       const detalhe=(erro as {details?:{motivo?:string;saida?:string}}).details;
       avise("erro","Não foi possível enviar",detalhe?.motivo?`${detalhe.motivo} ${detalhe.saida??""}`.trim():describeError(erro,"Confira o tempo informado."));
     }finally{setEnviando(false)}
@@ -2368,6 +2401,10 @@ export function StudentView({ onBack, athleteName = "Everton Barbosa" }: { onBac
   useEffect(()=>{setFeedbackState("idle")},[feedback]);
   useEffect(()=>{if(!openedWeekDay)return;const timer=window.setTimeout(()=>{const detail=document.querySelector(".student-week-detail") as HTMLElement|null;detail?.scrollIntoView({behavior:"smooth",block:"start"});detail?.focus({preventScroll:true})},0);return()=>window.clearTimeout(timer)},[openedWeekDay]);
   const secureStudentMode = !onBack;
+  /* Declarado uma vez para o cliente de API. Antes cada chamada se lembrava por
+     conta própria de que a prévia não é sessão de aluno, e as que esqueciam
+     despejavam "Esta área é exclusiva do aluno" na tela do treinador. */
+  useEffect(()=>{definePreviaDoTreinador(!secureStudentMode);return()=>definePreviaDoTreinador(false)},[secureStudentMode]);
   useEffect(()=>{
     if(!secureStudentMode)return;
     let active=true;

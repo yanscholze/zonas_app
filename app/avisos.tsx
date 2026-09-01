@@ -18,7 +18,7 @@ import { useEffect, useSyncExternalStore } from "react";
    ------------------------------------------------------------------------- */
 
 type TomDoAviso = "erro" | "atencao" | "ok";
-type AvisoNaTela = { id: number; tom: TomDoAviso; titulo: string; detalhe?: string };
+type AvisoNaTela = { id: number; tom: TomDoAviso; titulo: string; detalhe?: string; saindo?: boolean };
 type PedidoDeConfirmacao = {
   id: number;
   titulo: string;
@@ -30,6 +30,10 @@ type PedidoDeConfirmacao = {
   perigo?: boolean;
   resolver: (aceitou: boolean) => void;
 };
+
+/* Espelha `--dur-base` do CSS. Quem reduz o movimento não espera: a animação é
+   desligada por `prefers-reduced-motion` e o aviso some de imediato. */
+const DURACAO_DA_SAIDA = 180;
 
 let proximoAviso = 1;
 let avisosNaTela: AvisoNaTela[] = [];
@@ -65,9 +69,21 @@ export function CentralDeAvisos() {
   const avisos = useSyncExternalStore(inscreveOuvinte, () => avisosNaTela, () => avisosNaTela);
   const pedido = useSyncExternalStore(inscreveOuvinte, () => confirmacaoNaTela, () => confirmacaoNaTela);
 
+  /* Fechar em dois tempos. O aviso sumia no mesmo quadro do clique, e com vários
+     empilhados os de baixo saltavam para cima sem que se enxergasse qual tinha
+     saído. Agora ele é marcado como saindo, a animação corre, e só então some da
+     lista — o salto vira deslizamento.
+
+     O tempo aqui e a duração no CSS são a mesma coisa dita duas vezes: se
+     mudarem, mudam juntos. `--dur-base` é o valor de referência. */
   const fecharAviso = (id: number) => {
-    avisosNaTela = avisosNaTela.filter(item => item.id !== id);
+    if (avisosNaTela.some(item => item.id === id && item.saindo)) return;
+    avisosNaTela = avisosNaTela.map(item => item.id === id ? { ...item, saindo: true } : item);
     notificaOuvintes();
+    window.setTimeout(() => {
+      avisosNaTela = avisosNaTela.filter(item => item.id !== id);
+      notificaOuvintes();
+    }, DURACAO_DA_SAIDA);
   };
   const responder = (aceitou: boolean) => {
     const atual = confirmacaoNaTela;
@@ -94,7 +110,7 @@ export function CentralDeAvisos() {
 
   return <>
     {avisos.length > 0 && <div className="avisos-do-sistema" role="status" aria-live="polite">
-      {avisos.map(item => <article key={item.id} className={item.tom}>
+      {avisos.map(item => <article key={item.id} className={`${item.tom}${item.saindo ? " saindo" : ""}`}>
         <div><b>{item.titulo}</b>{item.detalhe && <span>{item.detalhe}</span>}</div>
         <button onClick={() => fecharAviso(item.id)} aria-label="Fechar aviso">×</button>
       </article>)}

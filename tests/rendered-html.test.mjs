@@ -187,6 +187,69 @@ test("uses a computer-first workspace for weekly programming and workout buildin
   assert.match(css, /width:min\(1120px,calc\(100vw - 260px\)\)/);
 });
 
+test("keeps the coach preview out of student-only routes, from one place", async () => {
+  const apiClient = await readFile(new URL("../app/api-client.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+
+  /* Na prévia o treinador continua sendo ele, e /api/student/* recusa com 403.
+     Cada chamada da área do aluno vinha se lembrando disso por conta própria; as
+     que esqueciam falhavam — umas caladas, outras despejando "Esta área é
+     exclusiva do aluno" na tela do treinador, uma por clique. Agora a decisão é
+     uma só: quem esquecer não quebra, porque a chamada nem sai. */
+  assert.match(apiClient, /if \(modoPrevia && path\.startsWith\("\/api\/student\/"\)\) throw new PreviaDoTreinador\(path\)/);
+  assert.match(apiClient, /export class PreviaDoTreinador extends Error/);
+  assert.match(client, /definePreviaDoTreinador\(!secureStudentMode\)/);
+
+  // Prévia não é falha: dizer "não foi possível enviar" acusaria um erro que não
+  // houve. Ela se identifica como prévia.
+  assert.match(client, /avise\("atencao","Isto é a prévia do professor",erro\.friendlyMessage\)/);
+});
+
+test("animates notices out instead of making the stack jump", async () => {
+  const avisos = await readFile(new URL("../app/avisos.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+
+  /* O aviso sumia no mesmo quadro do clique. Com vários empilhados, fechar um
+     fazia os de baixo saltarem para cima sem que se enxergasse qual saiu. */
+  assert.match(avisos, /avisosNaTela = avisosNaTela\.map\(item => item\.id === id \? \{ \.\.\.item, saindo: true \} : item\)/);
+  assert.match(avisos, /const DURACAO_DA_SAIDA = 180/);
+  // Clicar duas vezes no mesmo × não pode agendar duas remoções.
+  assert.match(avisos, /if \(avisosNaTela\.some\(item => item\.id === id && item\.saindo\)\) return/);
+
+  assert.match(css, /@keyframes aviso-entra/);
+  assert.match(css, /\.avisos-do-sistema article\.saindo\{/);
+  // `max-height` não anima a partir de `none`: sem teto de partida a saída
+  // pularia direto para altura zero, que é o salto que se queria remover.
+  assert.match(css, /\.avisos-do-sistema article\{[^}]*max-height:320px/);
+  assert.match(css, /@media \(prefers-reduced-motion:reduce\)\{[^@]*\.avisos-do-sistema article\.saindo\{animation:none;transition:none\}/);
+});
+
+test("records enough about a failure to find the line that caused it", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+
+  /* O log guardava área, código, método e status — o suficiente para saber que
+     algo falhou e insuficiente para saber o quê. A exceção era descartada nos
+     `catch` e nunca chegava ao registro. */
+  assert.match(schema, /route: text\("route"\)/);
+  assert.match(schema, /message: text\("message"\)/);
+  assert.match(schema, /stack: text\("stack"\)/);
+  assert.doesNotMatch(worker, /catch \{ return await applicationFailure/);
+  assert.match(worker, /catch \(falha\) \{ return await applicationFailure\(env, request, "[^"]+", "[^"]+", falha\); \}/);
+  assert.match(worker, /erro\?\.stack \? erro\.stack\.slice\(0, LIMITE_DA_PILHA\) : null/);
+
+  /* Identidade não entra num log técnico: para diagnosticar basta o papel de
+     quem esbarrou, e guardar o e-mail seria dado pessoal sem necessidade. */
+  assert.match(worker, /identidade\?\.role \?\? "anônimo"/);
+  assert.doesNotMatch(worker, /INSERT INTO application_errors[^)]*actor_email/);
+
+  // E dá para abrir o erro na tela e copiar tudo.
+  assert.match(client, /className="monitor-detalhe"/);
+  assert.match(client, /const copiar=async\(error:AppError\)=>\{/);
+  assert.match(client, /aria-expanded=\{estaAberto\}/);
+});
+
 test("lets the student send a test result the same way they finish a workout", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
@@ -199,7 +262,12 @@ test("lets the student send a test result the same way they finish a workout", a
      O segundo: na prévia do treinador não há sessão de aluno, e /api/student/*
      recusa com 403. O botão parecia morto porque as duas coisas se somavam. */
   assert.match(client, /<CentralDeAvisos \/>\n {2}<\/main>/);
-  assert.match(client, /if\(!secureStudentMode\)\{\s*avise\("atencao","Isto é a prévia do professor"/);
+  /* A guarda saiu do envio e virou uma decisão só, no cliente de API: cada
+     chamada da área do aluno vinha se lembrando por conta própria de que a
+     prévia não é sessão de aluno, e as que esqueciam despejavam "Esta área é
+     exclusiva do aluno" na tela do treinador. */
+  assert.match(client, /useEffect\(\(\)=>\{definePreviaDoTreinador\(!secureStudentMode\)/);
+  assert.match(client, /if\(erro instanceof PreviaDoTreinador\)\{/);
   assert.match(client, /<StudentTestsView data=\{studentTests\}[\s\S]{0,120}?secureStudentMode=\{secureStudentMode\}/);
 
   // Entregar o teste passou a ter a forma de concluir um treino: anexo do
@@ -1608,7 +1676,12 @@ test("registers the requests refused at the door", async () => {
   // `applicationFailure`: um cadastro de aluno vinha sendo recusado por campo
   // desconhecido e não aparecia em lugar nenhum do diagnóstico.
   assert.match(worker, /async function recusaNaPorta/);
-  assert.match(worker, /INSERT INTO application_errors \(id, area, error_code, method, status_code, created_at\)/);
+  // A recusa na porta tinha um INSERT próprio, escrito à mão, que não ganhou os
+  // campos novos quando o log foi detalhado: essas recusas apareciam sem rota,
+  // sem mensagem e sem quem chamou, enquanto as falhas de dentro apareciam
+  // completas. A mesma gravação em dois lugares diverge na primeira mudança.
+  assert.match(worker, /await recordApplicationError\(env, request, `envelope \$\{url\.pathname\}`, codigo, status,/);
+  assert.doesNotMatch(worker, /INSERT INTO application_errors \(id, area, error_code, method, status_code, created_at\)/);
   assert.doesNotMatch(worker, /return Response\.json\(\{ error: "unexpected_field" \}, \{ status: 400 \}\)/);
   // E o cadastro manda só o que a rota aceita: `plan`, `next` e `flag` existem
   // apenas na tela e faziam o envelope recusar o corpo inteiro.

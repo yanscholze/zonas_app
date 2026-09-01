@@ -199,10 +199,13 @@ async function recusaNaPorta(
   extra: Record<string, unknown> = {},
 ): Promise<Response> {
   try {
-    await ensureTables(env, schema.applicationErrors);
-    await env.DB.prepare(
-      "INSERT INTO application_errors (id, area, error_code, method, status_code, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-    ).bind(crypto.randomUUID(), `envelope ${url.pathname}`, codigo, request.method, status, Date.now()).run();
+    /* Passa pelo registro único. Havia um INSERT próprio aqui, escrito à mão, e
+       ele não ganhou os campos novos quando o log foi detalhado: as recusas na
+       porta apareciam sem rota, sem mensagem e sem quem chamou, enquanto as
+       falhas de dentro apareciam completas. A mesma gravação em dois lugares
+       diverge na primeira mudança. */
+    await recordApplicationError(env, request, `envelope ${url.pathname}`, codigo, status,
+      new Error(`${codigo}: recusado na validação do envelope${Object.keys(extra).length ? ` · ${JSON.stringify(extra)}` : ""}`));
   } catch {
     // Registrar é importante, responder é mais: seguir mesmo sem o registro.
   }
@@ -632,31 +635,46 @@ async function securityEventsApi(request: Request, env: Env): Promise<Response> 
   return Response.json({ events: events.results, retentionDays: SECURITY_LOG_RETENTION_DAYS });
 }
 
-async function recordApplicationError(env: Env, request: Request, area: string, errorCode: string, statusCode = 503): Promise<void> {
+/** Limites do que se grava por erro. Um log ilegível por tamanho não é log. */
+const LIMITE_DA_MENSAGEM = 500;
+const LIMITE_DA_PILHA = 4000;
+
+async function recordApplicationError(env: Env, request: Request, area: string, errorCode: string, statusCode = 503, falha?: unknown): Promise<void> {
   try {
     await ensureTables(env, schema.applicationErrors);
+    await ensureColumns(env, "application_errors", { route: "TEXT", message: "TEXT", stack: "TEXT", actor_role: "TEXT" });
     const now = Date.now();
+    /* A exceção era descartada nos 29 `catch` que chamam este registro, e o log
+       ficava com "algo falhou em planilhas-base" e mais nada. Agora vem junto a
+       mensagem e a pilha, que são o que permite achar a linha. */
+    const erro = falha instanceof Error ? falha : falha === undefined ? null : new Error(String(falha));
+    const identidade = resolvedIdentities.get(request) ?? null;
     await env.DB.batch([
       env.DB.prepare("DELETE FROM application_errors WHERE created_at < ?").bind(now - SECURITY_LOG_RETENTION_MS),
-      env.DB.prepare("INSERT INTO application_errors (id, area, error_code, method, status_code, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .bind(crypto.randomUUID(), area, errorCode, request.method.toUpperCase(), statusCode, now),
+      env.DB.prepare("INSERT INTO application_errors (id, area, error_code, method, status_code, route, message, stack, actor_role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(crypto.randomUUID(), area, errorCode, request.method.toUpperCase(), statusCode,
+          new URL(request.url).pathname,
+          erro ? `${erro.name}: ${erro.message}`.slice(0, LIMITE_DA_MENSAGEM) : null,
+          erro?.stack ? erro.stack.slice(0, LIMITE_DA_PILHA) : null,
+          identidade?.role ?? "anônimo", now),
     ]);
   } catch { /* Monitoring must never hide the original failure. */ }
 }
 
-async function applicationFailure(env: Env, request: Request, area: string, errorCode: string): Promise<Response> {
-  await recordApplicationError(env, request, area, errorCode);
+async function applicationFailure(env: Env, request: Request, area: string, errorCode: string, falha?: unknown): Promise<Response> {
+  await recordApplicationError(env, request, area, errorCode, 503, falha);
   return Response.json({ error: errorCode }, { status: 503 });
 }
 
 async function applicationErrorsApi(request: Request, env: Env): Promise<Response> {
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
   await ensureTables(env, schema.applicationErrors);
+  await ensureColumns(env, "application_errors", { route: "TEXT", message: "TEXT", stack: "TEXT", actor_role: "TEXT" });
   const now = Date.now();
   await env.DB.prepare("DELETE FROM application_errors WHERE created_at < ?").bind(now - SECURITY_LOG_RETENTION_MS).run();
   const since = now - 86_400_000;
   const [recent, summary] = await Promise.all([
-    env.DB.prepare("SELECT id, area, error_code, method, status_code, created_at FROM application_errors ORDER BY created_at DESC LIMIT 20").all(),
+    env.DB.prepare("SELECT id, area, error_code, method, status_code, route, message, stack, actor_role, created_at FROM application_errors ORDER BY created_at DESC LIMIT 80").all(),
     env.DB.prepare("SELECT COUNT(*) AS total FROM application_errors WHERE created_at >= ?").bind(since).first() as Promise<{ total?: number } | null>,
   ]);
   return Response.json({ errors: recent.results, last24Hours: Number(summary?.total ?? 0), healthy: Number(summary?.total ?? 0) === 0, retentionDays: SECURITY_LOG_RETENTION_DAYS });
@@ -3309,7 +3327,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
         }
         if (url.pathname === "/api/auth/password") return await authPasswordApi(request, env);
         return Response.json({ error: "not_found" }, { status: 404 });
-      } catch { return await applicationFailure(env, request, "autenticação", "auth_unavailable"); }
+      } catch (falha) { return await applicationFailure(env, request, "autenticação", "auth_unavailable", falha); }
     }
 
     // A partir daqui toda rota precisa saber quem está falando.
@@ -3319,7 +3337,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
         await ensureCoachAccount(env.DB, coachEmailOf(env), env.COACH_INITIAL_PASSWORD);
         await ensureDevAccount(env.DB, env.DEV_LOGIN, env.DEV_INITIAL_PASSWORD);
         resolvedIdentities.set(request, await resolveApiIdentity(request, env));
-      } catch { return await applicationFailure(env, request, "sessão", "database_unavailable"); }
+      } catch (falha) { return await applicationFailure(env, request, "sessão", "database_unavailable", falha); }
     }
 
     if (url.pathname === "/api/session") {
@@ -3328,25 +3346,25 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
         if (email) { const limited = await enforceTrafficProtection(request, url, env, email); if (limited) return limited; }
         return await sessionApi(request, env);
       }
-      catch { return await applicationFailure(env, request, "sessão", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "sessão", "database_unavailable", falha); }
     }
 
     // Chamado pelo Strava, não pelo navegador: autentica-se pelo token de
     // verificação combinado, não por sessão.
     if (url.pathname === "/api/integrations/strava/webhook") {
       try { return await stravaWebhookApi(request, url, env, ctx); }
-      catch { return await applicationFailure(env, request, "webhook do Strava", "strava_webhook_failed"); }
+      catch (falha) { return await applicationFailure(env, request, "webhook do Strava", "strava_webhook_failed", falha); }
     }
 
     if (url.pathname.startsWith("/api/integrations/callback/")) {
       try { return await integrationCallbackApi(request, url, env, url.pathname.split("/").pop() || ""); }
-      catch { return await applicationFailure(env, request, "conexão com o aplicativo", "integration_connection_failed"); }
+      catch (falha) { return await applicationFailure(env, request, "conexão com o aplicativo", "integration_connection_failed", falha); }
     }
 
     // Chamado pelo Atalho do iOS, autenticado por token de ingestão.
     if (url.pathname === "/api/ingest/device") {
       try { return await deviceIngestApi(request, env); }
-      catch { return await applicationFailure(env, request, "envio do Apple Saúde", "device_ingest_failed"); }
+      catch (falha) { return await applicationFailure(env, request, "envio do Apple Saúde", "device_ingest_failed", falha); }
     }
 
     if (url.pathname.startsWith("/api/student/")) {
@@ -3368,7 +3386,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
         if (url.pathname === "/api/student/financial") return await studentFinancialApi(request, env, identity.athleteName);
         if (url.pathname === "/api/student/races-records") return await studentRacesRecordsApi(request, env, identity.athleteName);
         return Response.json({ error: "not_found" }, { status: 404 });
-      } catch { return await applicationFailure(env, request, "área do aluno", "database_unavailable"); }
+      } catch (falha) { return await applicationFailure(env, request, "área do aluno", "database_unavailable", falha); }
     }
 
     // Quem acabou de se cadastrar tem sessão mas ainda não é um aluno ativo,
@@ -3381,7 +3399,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
         const invalid = await validateApiEnvelope(request, env, url); if(invalid)return invalid;
         const duplicate = await preventDuplicateSubmission(request,url,env,session.email); if(duplicate)return duplicate;
         return await accessRequestApi(request,env,session.email,session.name);
-      } catch { return await applicationFailure(env,request,"solicitação de cadastro","database_unavailable"); }
+      } catch (falha) { return await applicationFailure(env,request,"solicitação de cadastro","database_unavailable",falha); }
     }
 
     if (url.pathname.startsWith("/api/")) {
@@ -3398,7 +3416,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
       const negado = requireDevApiAccess(request);
       if (negado) return negado;
       try { return await devAccountsApi(request, env); }
-      catch { return await applicationFailure(env, request, "contas de manutenção", "dev_accounts_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "contas de manutenção", "dev_accounts_unavailable", falha); }
     }
 
     /* Dois caminhos, um handler. A manutenção chega por /api/dev/coaches, que já
@@ -3410,75 +3428,75 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
       try {
         const invalido = await validateApiEnvelope(request, env, url); if (invalido) return invalido;
         return await equipeApi(request, env);
-      } catch { return await applicationFailure(env, request, "equipe", "team_unavailable"); }
+      } catch (falha) { return await applicationFailure(env, request, "equipe", "team_unavailable", falha); }
     }
 
     if (url.pathname === "/api/dev/overview") {
       const negado = requireDevApiAccess(request);
       if (negado) return negado;
       try { return await devOverviewApi(request, env); }
-      catch { return await applicationFailure(env, request, "diagnóstico", "dev_overview_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "diagnóstico", "dev_overview_unavailable", falha); }
     }
 
     if (url.pathname === "/api/integrations/strava/subscription") {
       try { return await stravaSubscriptionApi(request, url, env); }
-      catch { return await applicationFailure(env, request, "inscrição do Strava", "strava_subscription_failed"); }
+      catch (falha) { return await applicationFailure(env, request, "inscrição do Strava", "strava_subscription_failed", falha); }
     }
 
     if (url.pathname === "/api/integrations") {
       try { return await integrationsCoachApi(request, env); }
-      catch { return await applicationFailure(env, request, "integrações", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "integrações", "database_unavailable", falha); }
     }
 
     if (url.pathname === "/api/accounts") {
       try { return await coachAccountsApi(request, env); }
-      catch { return await applicationFailure(env, request, "contas de acesso", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "contas de acesso", "database_unavailable", falha); }
     }
 
     if (url.pathname === "/api/plans") {
       try { return await customPlansApi(request, env); }
-      catch { return await applicationFailure(env, request, "planilhas-base", "plans_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "planilhas-base", "plans_unavailable", falha); }
     }
 
     if (url.pathname === "/api/athletes") {
       try { return await athletesApi(request, env); }
-      catch { return await applicationFailure(env, request, "alunos", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "alunos", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/athlete-profile") {
       try { return await athleteProfileApi(request, env); }
-      catch { return await applicationFailure(env, request, "cadastro do aluno", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "cadastro do aluno", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/athlete-planning") {
       try { return await athletePlanningApi(request, env); }
-      catch { return await applicationFailure(env, request, "planejamento do aluno", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "planejamento do aluno", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/plan-template-overrides") {
       try { return await planTemplateOverridesApi(request, env); }
-      catch { return await applicationFailure(env, request, "biblioteca de treinos", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "biblioteca de treinos", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/performance-tests") {
       try { return await performanceTestsApi(request, env); }
-      catch { return await applicationFailure(env, request, "testes de desempenho", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "testes de desempenho", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/training-weeks") {
       try { return await trainingWeeksApi(request, env); }
-      catch { return await applicationFailure(env, request, "semanas de treino", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "semanas de treino", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/pain-reports") {
       try { return await painReportsApi(request, env); }
-      catch { return await applicationFailure(env, request, "relatos de dor", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "relatos de dor", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/feedbacks") {
       try { return await feedbacksApi(request, env); }
-      catch { return await applicationFailure(env, request, "feedbacks", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "feedbacks", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/workout-executions") {
       try { return await workoutExecutionsApi(request, env); }
-      catch { return await applicationFailure(env, request, "análise dos treinos", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "análise dos treinos", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/integration-overview") {
       try { return await integrationOverviewApi(request, env); }
-      catch { return await applicationFailure(env, request, "integrações dos alunos", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "integrações dos alunos", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/integration-readiness") {
       try { return await integrationReadinessApi(request, env); }
@@ -3486,23 +3504,23 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
     }
     if (url.pathname === "/api/financial") {
       try { return await financialApi(request, env); }
-      catch { return await applicationFailure(env, request, "financeiro", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "financeiro", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/races-records") {
       try { return await racesRecordsApi(request, env); }
-      catch { return await applicationFailure(env, request, "provas e recordes", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "provas e recordes", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/athlete-access") {
       try { return await athleteAccessApi(request, env); }
-      catch { return await applicationFailure(env, request, "acesso dos alunos", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "acesso dos alunos", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/access-requests") {
       try { return await accessRequestsCoachApi(request, env); }
-      catch { return await applicationFailure(env, request, "solicitações de cadastro", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "solicitações de cadastro", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/backups") {
       try { return await backupsApi(request, env); }
-      catch { return await applicationFailure(env, request, "backup", "backup_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "backup", "backup_unavailable", falha); }
     }
     if (url.pathname === "/api/security-events") {
       try { return await securityEventsApi(request, env); }

@@ -431,6 +431,17 @@ export const applicationErrors = sqliteTable("application_errors", {
   errorCode: text("error_code").notNull(),
   method: text("method").notNull(),
   statusCode: integer("status_code").notNull(),
+  /* O log guardava só área, código, método e status — o suficiente para saber
+     que algo falhou, e insuficiente para saber o quê. A exceção era descartada
+     no `catch` e nunca chegava aqui. Agora chega.
+
+     `actorRole` e não o e-mail: para diagnosticar basta saber se quem esbarrou
+     era treinador, aluno ou manutenção, e guardar identidade num log técnico é
+     dado pessoal que não precisa existir. */
+  route: text("route"),
+  message: text("message"),
+  stack: text("stack"),
+  actorRole: text("actor_role"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 }, (table) => ({
   createdIdx: index("application_errors_created_idx").on(table.createdAt),
