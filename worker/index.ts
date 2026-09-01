@@ -295,6 +295,39 @@ function recorteDeAlunos(carteira: string | null, coluna = "athletes.coach_email
   return { clausula: `${coluna} = ?`, valores: [carteira] };
 }
 
+/**
+ * Recorte por carteira para as tabelas que guardam só o nome do aluno.
+ *
+ * `recorteDeAlunos` serve a consultas que já cruzam `athletes`. A maioria das
+ * tabelas do treinador — relatos de dor, semanas, feedbacks, execuções, provas —
+ * guarda apenas `athlete_name`, e cada handler teria de lembrar de cruzar por
+ * conta própria. Sete deles não lembraram, e devolviam a base inteira: na área
+ * de um treinador apareciam os alunos de todos.
+ *
+ * Devolver "1=1" quando não há carteira mantém a composição do WHERE igual nos
+ * dois casos, para o handler não precisar de dois caminhos de SQL — foi essa
+ * bifurcação que fez o recorte ser esquecido nos que erraram.
+ */
+function recorteDaCarteira(carteira: string | null, coluna = "athlete_name"): { clausula: string; valores: string[] } {
+  if (!carteira) return { clausula: "1=1", valores: [] };
+  return { clausula: `${coluna} IN (SELECT name FROM athletes WHERE coach_email = ?)`, valores: [carteira] };
+}
+
+/**
+ * Recusa quando o aluno não é da carteira de quem pede.
+ *
+ * O par do `recorteDaCarteira`: aquele filtra o que se lê, este barra o que se
+ * escreve. Ter só o primeiro deixaria o treinador gravar sobre o aluno de
+ * outro — o recorte valeria para olhar e não para agir.
+ */
+async function foraDaCarteira(env: Env, request: Request, athleteName: string): Promise<Response | null> {
+  const carteira = carteiraDe(request);
+  if (!carteira) return null;
+  const dono = await env.DB.prepare("SELECT coach_email FROM athletes WHERE name = ? LIMIT 1").bind(athleteName).first() as { coach_email?: string } | null;
+  if (dono?.coach_email !== carteira) return Response.json({ error: "athlete_not_in_portfolio" }, { status: 403 });
+  return null;
+}
+
 let bibliotecasSeparadas = false;
 
 /**
@@ -964,6 +997,8 @@ async function athleteAccessApi(request: Request, env: Env): Promise<Response> {
   if (request.method === "GET") {
     const athleteName = String(url.searchParams.get("athlete") ?? "").trim();
     if (!athleteName) return Response.json({ error: "athlete_required" }, { status: 400 });
+    const fora = await foraDaCarteira(env, request, athleteName);
+    if (fora) return fora;
     const [access, history] = await Promise.all([
       env.DB.prepare("SELECT * FROM athlete_access WHERE athlete_name = ? LIMIT 1").bind(athleteName).first(),
       env.DB.prepare("SELECT id, action, actor_email, previous_status, new_status, previous_email, new_email, created_at FROM access_audit_log WHERE athlete_name = ? ORDER BY created_at DESC LIMIT 20").bind(athleteName).all(),
@@ -978,6 +1013,10 @@ async function athleteAccessApi(request: Request, env: Env): Promise<Response> {
     if (!athleteName || !email) return Response.json({ error: "athlete_and_email_required" }, { status: 400 });
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return Response.json({ error: "invalid_email" }, { status: 400 });
     if (!["Convite preparado", "Ativo", "Bloqueado"].includes(status)) return Response.json({ error: "invalid_status" }, { status: 400 });
+    /* Liberar ou bloquear o acesso de um aluno de outro treinador é pior que
+       apenas vê-lo: muda quem entra no sistema. */
+    const foraNoAcesso = await foraDaCarteira(env, request, athleteName);
+    if (foraNoAcesso) return foraNoAcesso;
     const existing = await env.DB.prepare("SELECT email, status FROM athlete_access WHERE athlete_name = ? LIMIT 1").bind(athleteName).first() as { email?: string; status?: string } | null;
     const existingEmail = await env.DB.prepare("SELECT athlete_name FROM athlete_access WHERE email = ? AND athlete_name <> ? LIMIT 1").bind(email, athleteName).first();
     if (existingEmail) return Response.json({ error: "email_already_linked" }, { status: 409 });
@@ -1066,7 +1105,11 @@ async function accessRequestsCoachApi(request: Request, env: Env): Promise<Respo
     const existingEmail=await env.DB.prepare("SELECT athlete_name FROM athlete_access WHERE email = ? LIMIT 1").bind(email).first() as {athlete_name?:string}|null;
     if(existingEmail?.athlete_name&&existingEmail.athlete_name!==name)return Response.json({error:"email_already_linked"},{status:409});
     const statements=[];
-    if(!existingName?.id) statements.push(env.DB.prepare("INSERT INTO athletes (id,name,initials,distance,phase,week,next_workout,status,phone,email,training_days,integration,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(athleteId,name,initials,distance,phase,`1 de ${totalWeeks}`,"Aguardando programação",null,row.phone||null,email,days,integration,now));
+    /* O aluno nascia sem `coach_email`: quem aprovava o pedido não virava dono
+       dele. Ficava órfão até `atribuiAlunosSemDono` entregá-lo ao treinador
+       principal — então um aluno aprovado por outro treinador caía na carteira
+       errada, e era assim que a separação furava na origem. */
+    if(!existingName?.id) statements.push(env.DB.prepare("INSERT INTO athletes (id,name,initials,distance,phase,week,next_workout,status,phone,email,training_days,integration,coach_email,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(athleteId,name,initials,distance,phase,`1 de ${totalWeeks}`,"Aguardando programação",null,row.phone||null,email,days,integration,carteiraDe(request),now));
     statements.push(
       env.DB.prepare("INSERT INTO athlete_profiles (athlete_name,phone,birth_date,objective,integration,training_days,updated_at) VALUES (?,?,NULL,?,?,?,?) ON CONFLICT(athlete_name) DO UPDATE SET phone=excluded.phone,objective=excluded.objective,integration=excluded.integration,training_days=excluded.training_days,updated_at=excluded.updated_at").bind(name,row.phone||null,row.objective||null,integration,days,now),
       env.DB.prepare("INSERT INTO athlete_planning (athlete_name,plan,phase,week_number,total_weeks,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(athlete_name) DO UPDATE SET plan=excluded.plan,phase=excluded.phase,week_number=excluded.week_number,total_weeks=excluded.total_weeks,updated_at=excluded.updated_at").bind(name,plan,phase,1,totalWeeks,now),
@@ -1266,6 +1309,10 @@ async function athleteProfileApi(request: Request, env: Env): Promise<Response> 
     const athleteName = boundedText(url.searchParams.get("athlete"), 120);
     if (!athleteName) return Response.json({ error: "athlete_required" }, { status: 400 });
     await ensureTables(env, schema.athletes);
+    /* A ficha traz dado pessoal — dias disponíveis, integração, condição de
+       saúde. Sem esta linha, bastava o nome para ler a de qualquer aluno. */
+    const fora = await foraDaCarteira(env, request, athleteName);
+    if (fora) return fora;
     const [profile, atleta] = await Promise.all([
       env.DB.prepare("SELECT * FROM athlete_profiles WHERE athlete_name = ? LIMIT 1").bind(athleteName).first(),
       /* A marca "sem prova" é decisão do treinador sobre o aluno, então mora em
@@ -1281,6 +1328,8 @@ async function athleteProfileApi(request: Request, env: Env): Promise<Response> 
     const birthDate = boundedText(input.birthDate, 10);
     if (!athleteName) return Response.json({ error: "athlete_required" }, { status: 400 });
     if (birthDate && !isIsoDate(birthDate)) return Response.json({ error: "invalid_birth_date" }, { status: 400 });
+    const foraNoSalvar = await foraDaCarteira(env, request, athleteName);
+    if (foraNoSalvar) return foraNoSalvar;
     const updatedAt = Date.now();
     /* A marca fica em `athletes` porque é decisão do treinador sobre o aluno,
        como a classe de preço, e não dado que o aluno preenche. */
@@ -1363,13 +1412,14 @@ async function planTemplateOverridesApi(request:Request,env:Env):Promise<Respons
 async function performanceTestsApi(request: Request, env: Env): Promise<Response> {
   await ensureTables(env, schema.performanceTests);
   const url = new URL(request.url);
+  const carteira = recorteDaCarteira(carteiraDe(request));
   if (request.method === "GET") {
     const athleteName = boundedText(url.searchParams.get("athlete"), 120);
     if (!athleteName) {
-      const result = await env.DB.prepare("SELECT id, athlete_name, test_date, distance_km, total_seconds, status, created_at FROM performance_tests WHERE status != 'Aprovado' ORDER BY created_at DESC LIMIT 100").all();
+      const result = await env.DB.prepare(`SELECT id, athlete_name, test_date, distance_km, total_seconds, status, created_at FROM performance_tests WHERE status != 'Aprovado' AND ${carteira.clausula} ORDER BY created_at DESC LIMIT 100`).bind(...carteira.valores).all();
       return Response.json({ tests:result.results });
     }
-    const result = await env.DB.prepare("SELECT * FROM performance_tests WHERE athlete_name = ? ORDER BY test_date DESC, created_at DESC LIMIT 20").bind(athleteName).all();
+    const result = await env.DB.prepare(`SELECT * FROM performance_tests WHERE athlete_name = ? AND ${carteira.clausula} ORDER BY test_date DESC, created_at DESC LIMIT 20`).bind(athleteName, ...carteira.valores).all();
     return Response.json({ tests:result.results });
   }
   if (request.method === "POST") {
@@ -1400,7 +1450,7 @@ async function performanceTestsApi(request: Request, env: Env): Promise<Response
     if (action === "cancel_request") {
       const id = boundedText(input.id,80);
       if (!id) return Response.json({error:"test_required"},{status:400});
-      await env.DB.prepare("DELETE FROM performance_tests WHERE id = ? AND status IN ('Solicitado','Aguardando revisão')").bind(id).run();
+      await env.DB.prepare(`DELETE FROM performance_tests WHERE id = ? AND status IN ('Solicitado','Aguardando revisão') AND ${carteira.clausula}`).bind(id, ...carteira.valores).run();
       return Response.json({cancelled:true});
     }
 
@@ -1441,29 +1491,30 @@ async function performanceTestsApi(request: Request, env: Env): Promise<Response
 async function trainingWeeksApi(request: Request, env: Env): Promise<Response> {
   await ensureTables(env, schema.trainingWeeks, schema.trainingWeekAudit);
   const url = new URL(request.url);
+  const carteira = recorteDaCarteira(carteiraDe(request));
   if (request.method === "GET") {
     const athlete = url.searchParams.get("athlete");
     const weekStart = url.searchParams.get("weekStart");
     if (athlete && weekStart) {
       const [row, history] = await Promise.all([
-        env.DB.prepare("SELECT * FROM training_weeks WHERE athlete_name = ? AND week_start = ? LIMIT 1").bind(athlete, weekStart).first(),
-        env.DB.prepare("SELECT id, actor_email, action, changed_fields, created_at FROM training_week_audit WHERE athlete_name = ? AND week_start = ? ORDER BY created_at DESC LIMIT 20").bind(athlete, weekStart).all(),
+        env.DB.prepare(`SELECT * FROM training_weeks WHERE athlete_name = ? AND week_start = ? AND ${carteira.clausula} LIMIT 1`).bind(athlete, weekStart, ...carteira.valores).first(),
+        env.DB.prepare(`SELECT id, actor_email, action, changed_fields, created_at FROM training_week_audit WHERE athlete_name = ? AND week_start = ? AND ${carteira.clausula} ORDER BY created_at DESC LIMIT 20`).bind(athlete, weekStart, ...carteira.valores).all(),
       ]);
       return Response.json({ week: row ?? null, history: history.results });
     }
     if (weekStart) {
       if (!isIsoDate(weekStart)) return Response.json({ error: "invalid_week_start" }, { status: 400 });
-      const result = await env.DB.prepare("SELECT athlete_name, week_start, status, updated_at FROM training_weeks WHERE week_start = ? ORDER BY updated_at DESC").bind(weekStart).all();
+      const result = await env.DB.prepare(`SELECT athlete_name, week_start, status, updated_at FROM training_weeks WHERE week_start = ? AND ${carteira.clausula} ORDER BY updated_at DESC`).bind(weekStart, ...carteira.valores).all();
       return Response.json({ weeks: result.results });
     }
     // Só o atleta, sem semana: antes este caso caía no SELECT sem filtro abaixo
     // e devolvia as semanas de todos os alunos. Quem consultasse pelo primeiro
     // resultado acabaria lendo — ou sobrescrevendo — o treino de outra pessoa.
     if (athlete) {
-      const result = await env.DB.prepare("SELECT * FROM training_weeks WHERE athlete_name = ? ORDER BY week_start DESC").bind(athlete).all();
+      const result = await env.DB.prepare(`SELECT * FROM training_weeks WHERE athlete_name = ? AND ${carteira.clausula} ORDER BY week_start DESC`).bind(athlete, ...carteira.valores).all();
       return Response.json({ weeks: result.results });
     }
-    const result = await env.DB.prepare("SELECT * FROM training_weeks ORDER BY updated_at DESC").all();
+    const result = await env.DB.prepare(`SELECT * FROM training_weeks WHERE ${carteira.clausula} ORDER BY updated_at DESC`).bind(...carteira.valores).all();
     return Response.json({ weeks: result.results });
   }
   if (request.method === "POST") {
@@ -1472,6 +1523,10 @@ async function trainingWeeksApi(request: Request, env: Env): Promise<Response> {
     const weekStart = boundedText(input.weekStart, 10);
     if (!athleteName || !weekStart) return Response.json({ error: "athlete_and_week_required" }, { status: 400 });
     if (!isIsoDate(weekStart)) return Response.json({ error: "invalid_week_start" }, { status: 400 });
+    /* Ler a semana de outro treinador já estava barrado acima; gravar também
+       precisa estar, senão o recorte só valeria de olhar e não de agir. */
+    const fora = await foraDaCarteira(env, request, athleteName);
+    if (fora) return fora;
     const expectedUpdatedAt = Number(input.expectedUpdatedAt ?? 0);
     if (expectedUpdatedAt) {
       const stored = await env.DB.prepare("SELECT updated_at FROM training_weeks WHERE athlete_name = ? AND week_start = ? LIMIT 1").bind(athleteName, weekStart).first() as { updated_at?: number } | null;
@@ -1541,21 +1596,27 @@ async function registraMovimentoDor(env: Env, reportId: string, actor: string, a
 async function painReportsApi(request: Request, env: Env): Promise<Response> {
   await ensurePainReports(env);
   const url = new URL(request.url);
+  const carteira = recorteDaCarteira(carteiraDe(request));
 
   if (request.method === "GET") {
     const reportId = boundedText(url.searchParams.get("id"), 60);
     if (reportId) {
+      /* Buscar por id também precisa do recorte: sem ele, um id conhecido abria
+         o relato de um aluno de outro treinador, com todo o histórico junto. */
       const [relato, historico] = await Promise.all([
-        env.DB.prepare("SELECT * FROM pain_reports WHERE id = ? LIMIT 1").bind(reportId).first(),
-        env.DB.prepare("SELECT id, actor_email, action, note, created_at FROM pain_report_updates WHERE report_id = ? ORDER BY created_at DESC").bind(reportId).all(),
+        env.DB.prepare(`SELECT * FROM pain_reports WHERE id = ? AND ${carteira.clausula} LIMIT 1`).bind(reportId, ...carteira.valores).first(),
+        env.DB.prepare(`SELECT pain_report_updates.id, actor_email, action, note, pain_report_updates.created_at
+                          FROM pain_report_updates JOIN pain_reports ON pain_reports.id = pain_report_updates.report_id
+                         WHERE report_id = ? AND ${carteira.clausula}
+                         ORDER BY pain_report_updates.created_at DESC`).bind(reportId, ...carteira.valores).all(),
       ]);
       if (!relato) return Response.json({ error: "report_not_found" }, { status: 404 });
       return Response.json({ report: relato, history: historico.results });
     }
     const athlete = boundedText(url.searchParams.get("athlete"), 120);
     const result = athlete
-      ? await env.DB.prepare("SELECT * FROM pain_reports WHERE athlete_name = ? ORDER BY created_at DESC LIMIT 50").bind(athlete).all()
-      : await env.DB.prepare("SELECT * FROM pain_reports ORDER BY created_at DESC LIMIT 50").all();
+      ? await env.DB.prepare(`SELECT * FROM pain_reports WHERE athlete_name = ? AND ${carteira.clausula} ORDER BY created_at DESC LIMIT 50`).bind(athlete, ...carteira.valores).all()
+      : await env.DB.prepare(`SELECT * FROM pain_reports WHERE ${carteira.clausula} ORDER BY created_at DESC LIMIT 50`).bind(...carteira.valores).all();
     return Response.json({ reports: result.results, statuses: PAIN_STATUSES });
   }
 
@@ -1586,7 +1647,10 @@ async function painReportsApi(request: Request, env: Env): Promise<Response> {
 
   const reportId = boundedText(input.id, 60);
   if (!reportId) return Response.json({ error: "report_required" }, { status: 400 });
-  const existente = await env.DB.prepare("SELECT id, athlete_name, status, reviewed_at FROM pain_reports WHERE id = ? LIMIT 1").bind(reportId).first() as { id?: string; athlete_name?: string; status?: string; reviewed_at?: number | null } | null;
+  /* Toda ação por id passa por aqui, então o recorte cabe neste ponto só: sem
+     ele, um id conhecido deixaria o treinador agir sobre o relato de um aluno
+     de outro — avaliar, encerrar, reabrir. */
+  const existente = await env.DB.prepare(`SELECT id, athlete_name, status, reviewed_at FROM pain_reports WHERE id = ? AND ${carteira.clausula} LIMIT 1`).bind(reportId, ...carteira.valores).first() as { id?: string; athlete_name?: string; status?: string; reviewed_at?: number | null } | null;
   if (!existente?.id) return Response.json({ error: "report_not_found" }, { status: 404 });
   const note = boundedText(input.note, 1000);
   const agora = Date.now();
@@ -1705,15 +1769,16 @@ async function studentFeedbacksApi(request: Request, env: Env, athleteName: stri
 }
 
 async function feedbacksApi(request: Request, env: Env): Promise<Response> {
+  const carteira = recorteDaCarteira(carteiraDe(request));
   await ensureTrainingFeedbacks(env);
   if(request.method==="GET"){
-    const result=await env.DB.prepare("SELECT * FROM training_feedbacks ORDER BY CASE status WHEN 'Novo' THEN 0 ELSE 1 END, created_at DESC LIMIT 100").all();
+    const result=await env.DB.prepare(`SELECT * FROM training_feedbacks WHERE ${carteira.clausula} ORDER BY CASE status WHEN 'Novo' THEN 0 ELSE 1 END, created_at DESC LIMIT 100`).bind(...carteira.valores).all();
     return Response.json({feedbacks:result.results});
   }
   if(request.method==="POST"){
     const input=await request.json() as Record<string,unknown>;const id=boundedText(input.id,80);const status=boundedText(input.status,20);
     if(!id||status!=="Revisado")return Response.json({error:"invalid_review"},{status:400});
-    const result=await env.DB.prepare("UPDATE training_feedbacks SET status='Revisado', reviewed_at=? WHERE id=? AND status='Novo'").bind(Date.now(),id).run();
+    const result=await env.DB.prepare(`UPDATE training_feedbacks SET status='Revisado', reviewed_at=? WHERE id=? AND status='Novo' AND ${carteira.clausula}`).bind(Date.now(),id,...carteira.valores).run();
     return Response.json({id,status:"Revisado",updated:result.success!==false});
   }
   return new Response("Method not allowed",{status:405});
@@ -1857,15 +1922,17 @@ async function studentWorkoutExecutionsApi(request: Request, env: Env, athleteNa
 }
 
 async function workoutExecutionsApi(request: Request, env: Env): Promise<Response> {
+  const carteira = recorteDaCarteira(carteiraDe(request));
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
   await ensureWorkoutExecutions(env);
-  const result = await env.DB.prepare("SELECT * FROM workout_executions ORDER BY created_at DESC LIMIT 100").all();
+  const result = await env.DB.prepare(`SELECT * FROM workout_executions WHERE ${carteira.clausula} ORDER BY created_at DESC LIMIT 100`).bind(...carteira.valores).all();
   return Response.json({ executions: result.results });
 }
 
 async function integrationOverviewApi(request: Request, env: Env): Promise<Response> {
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
   await ensureTables(env, schema.athletes, schema.athleteProfiles, schema.athleteAccess, schema.workoutExecutions);
+  const alunos = recorteDeAlunos(carteiraDe(request));
   const result = await env.DB.prepare(`SELECT athletes.name AS athlete_name,
     COALESCE(athlete_profiles.integration, athletes.integration, 'Sem integração') AS integration,
     COALESCE(athlete_access.status, 'Não liberado') AS access_status,
@@ -1874,7 +1941,8 @@ async function integrationOverviewApi(request: Request, env: Env): Promise<Respo
     FROM athletes
     LEFT JOIN athlete_profiles ON athlete_profiles.athlete_name = athletes.name
     LEFT JOIN athlete_access ON athlete_access.athlete_name = athletes.name
-    ORDER BY athletes.name ASC`).all();
+    WHERE ${alunos.clausula || "1=1"}
+    ORDER BY athletes.name ASC`).bind(...alunos.valores).all();
   const integrations = result.results.map((row:any) => ({...row, connection_status: row.integration === "Sem integração" ? "Sem integração" : row.last_source && row.last_source !== "Manual" ? "Sincronizado" : "Aguardando conexão oficial"}));
   return Response.json({ integrations });
 }
@@ -1896,18 +1964,20 @@ async function ensureFinancial(env: Env) {
 }
 
 async function financialApi(request:Request,env:Env):Promise<Response>{
+  const alunos = recorteDeAlunos(carteiraDe(request));
+  const carteira = recorteDaCarteira(carteiraDe(request));
   await ensureFinancial(env);const url=new URL(request.url);const month=boundedText(url.searchParams.get("month"),7)||currentReferenceMonth();
   if(request.method==="GET"){
     const comprovante=boundedText(url.searchParams.get("receipt"),120);
     if(comprovante){
-      const linha=await env.DB.prepare("SELECT receipt_image,receipt_note,receipt_added_at FROM student_payments WHERE athlete_name=? AND reference_month=? LIMIT 1").bind(comprovante,month).first();
+      const linha=await env.DB.prepare(`SELECT receipt_image,receipt_note,receipt_added_at FROM student_payments WHERE athlete_name=? AND reference_month=? AND ${carteira.clausula} LIMIT 1`).bind(comprovante,month).first();
       return Response.json({receipt:linha??null});
     }
     const [settings,payments,classes]=await Promise.all([
       env.DB.prepare("SELECT * FROM financial_settings WHERE id='default' LIMIT 1").first(),
       /* `receipt_image` fica de fora da lista: são centenas de KB por linha e a
          tela só precisa saber que existe. A imagem vem quando for aberta. */
-      env.DB.prepare(`SELECT athletes.name AS athlete_name,athletes.price_class,athlete_access.status AS access_status,student_payments.id,student_payments.reference_month,student_payments.amount_cents,student_payments.due_date,student_payments.status,student_payments.paid_at,student_payments.receipt_note,student_payments.receipt_added_at,(student_payments.receipt_image IS NOT NULL) AS has_receipt FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name=athletes.name LEFT JOIN student_payments ON student_payments.athlete_name=athletes.name AND student_payments.reference_month=? WHERE COALESCE(athlete_access.status,'Ativo')<>'Bloqueado' AND athletes.archived_at IS NULL ORDER BY athletes.name`).bind(month).all(),
+      env.DB.prepare(`SELECT athletes.name AS athlete_name,athletes.price_class,athlete_access.status AS access_status,student_payments.id,student_payments.reference_month,student_payments.amount_cents,student_payments.due_date,student_payments.status,student_payments.paid_at,student_payments.receipt_note,student_payments.receipt_added_at,(student_payments.receipt_image IS NOT NULL) AS has_receipt FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name=athletes.name LEFT JOIN student_payments ON student_payments.athlete_name=athletes.name AND student_payments.reference_month=? WHERE ${alunos.clausula ? `${alunos.clausula} AND ` : ''}COALESCE(athlete_access.status,'Ativo')<>'Bloqueado' AND athletes.archived_at IS NULL ORDER BY athletes.name`).bind(month, ...alunos.valores).all(),
       env.DB.prepare("SELECT id,name,amount_cents,due_day FROM price_classes ORDER BY amount_cents DESC,name").all(),
     ]);
     return Response.json({month,settings:settings??null,payments:payments.results,classes:classes.results});
@@ -1933,8 +2003,11 @@ async function financialApi(request:Request,env:Env):Promise<Response>{
     if(alcance==="class"&&!classeAlvo)return Response.json({error:"class_required"},{status:400});
     if(alcance==="athletes"&&!escolhidos.length)return Response.json({error:"athletes_required"},{status:400});
 
+    /* Gerar cobrança para o aluno de outro treinador seria pior que apenas
+       vê-lo: cria dívida no nome dele, na carteira errada. */
     const filtros=["COALESCE(athlete_access.status,'Ativo')<>'Bloqueado'","athletes.archived_at IS NULL"];
     const valores:string[]=[];
+    if(alunos.clausula){filtros.push(alunos.clausula);valores.push(...alunos.valores)}
     if(alcance==="class"){filtros.push("athletes.price_class = ?");valores.push(classeAlvo)}
     if(alcance==="athletes"){filtros.push(`athletes.name IN (${escolhidos.map(()=>"?").join(",")})`);valores.push(...escolhidos)}
     const alvos=await env.DB.prepare(`SELECT athletes.name, athletes.price_class FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name=athletes.name WHERE ${filtros.join(" AND ")}`).bind(...valores).all();
@@ -2665,15 +2738,18 @@ async function enviarTreinoParaGarmin(
 /** Visão do treinador: quem conectou o quê, e o que ainda depende de cadastro. */
 async function integrationsCoachApi(request: Request, env: Env): Promise<Response> {
   await ensureIntegrationTables(env);
+  const carteira = recorteDaCarteira(carteiraDe(request));
   if (request.method === "GET") {
+    /* Conexão de relógio diz de quem é a conta no Strava ou no Garmin e quando
+       a pessoa treinou. Sem recorte, isso aparecia para qualquer treinador. */
     const connections = await env.DB.prepare(
       `SELECT athlete_name, provider, status, external_athlete_id, last_sync_at, updated_at
-         FROM external_integrations ORDER BY athlete_name, provider`,
-    ).all();
+         FROM external_integrations WHERE ${carteira.clausula} ORDER BY athlete_name, provider`,
+    ).bind(...carteira.valores).all();
     const activities = await env.DB.prepare(
       `SELECT athlete_name, provider, COUNT(*) AS total, MAX(started_at) AS last_activity_at
-         FROM external_activities GROUP BY athlete_name, provider`,
-    ).all();
+         FROM external_activities WHERE ${carteira.clausula} GROUP BY athlete_name, provider`,
+    ).bind(...carteira.valores).all();
     return Response.json({
       providers: Object.values(PROVIDERS).map(provider => ({
         id: provider.id,
@@ -3102,14 +3178,15 @@ async function customPlansApi(request: Request, env: Env): Promise<Response> {
 }
 
 async function racesRecordsApi(request: Request, env: Env): Promise<Response> {
+  const carteira = recorteDaCarteira(carteiraDe(request));
   await ensureTables(env, schema.athleteRaces, schema.personalRecords);
   const url=new URL(request.url);
   if(request.method==="GET"){
     const athlete=String(url.searchParams.get("athlete")||"");
-    if(!athlete){const races=await env.DB.prepare("SELECT * FROM athlete_races ORDER BY race_date ASC,created_at DESC").all();return Response.json({races:races.results,records:[]})}
+    if(!athlete){const races=await env.DB.prepare(`SELECT * FROM athlete_races WHERE ${carteira.clausula} ORDER BY race_date ASC,created_at DESC`).bind(...carteira.valores).all();return Response.json({races:races.results,records:[]})}
     const [races,records]=await Promise.all([
-      env.DB.prepare("SELECT * FROM athlete_races WHERE athlete_name = ? ORDER BY race_date ASC").bind(athlete).all(),
-      env.DB.prepare("SELECT * FROM personal_records WHERE athlete_name = ? ORDER BY updated_at DESC").bind(athlete).all(),
+      env.DB.prepare(`SELECT * FROM athlete_races WHERE athlete_name = ? AND ${carteira.clausula} ORDER BY race_date ASC`).bind(athlete,...carteira.valores).all(),
+      env.DB.prepare(`SELECT * FROM personal_records WHERE athlete_name = ? AND ${carteira.clausula} ORDER BY updated_at DESC`).bind(athlete,...carteira.valores).all(),
     ]);
     return Response.json({races:races.results,records:records.results});
   }
@@ -3119,7 +3196,7 @@ async function racesRecordsApi(request: Request, env: Env): Promise<Response> {
     if(action==="review_race"){
       const id=boundedText(input.id,80);const status=boundedText(input.status,30);const priority=boundedText(input.priority,30);
       if(!id||!["Aprovada","Aguardando análise","Descartada"].includes(status)||!["Prova A","Prova B","Treino"].includes(priority))return Response.json({error:"invalid_race_review"},{status:400});
-      await env.DB.prepare("UPDATE athlete_races SET status = ?, priority = ? WHERE id = ?").bind(status,priority,id).run();
+      await env.DB.prepare(`UPDATE athlete_races SET status = ?, priority = ? WHERE id = ? AND ${carteira.clausula}`).bind(status,priority,id,...carteira.valores).run();
       return Response.json({id,status,priority});
     }
     if(!athlete)return Response.json({error:"athlete_required"},{status:400});

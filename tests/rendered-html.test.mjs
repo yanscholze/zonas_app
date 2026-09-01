@@ -90,6 +90,12 @@ function withSession(prepare) {
     }
     if (sql.startsWith("UPDATE user_sessions")) return statement(() => null);
     if (sql.includes("FROM custom_plans WHERE coach_email")) return statement(() => null, undefined, () => BIBLIOTECA_DO_TREINADOR);
+    /* Gravar sobre um aluno passou a exigir que ele seja da carteira de quem
+       pede. Nos testes o aluno é do treinador da sessão; os que provam a recusa
+       montam o próprio dublê e não passam por aqui. */
+    if (sql.includes("SELECT coach_email FROM athletes WHERE name")) {
+      return statement(() => ({ coach_email: "treinador@exemplo.com" }));
+    }
     return prepare(sql);
   };
 }
@@ -179,6 +185,55 @@ test("uses a computer-first workspace for weekly programming and workout buildin
   assert.match(css, /grid-template-columns:minmax\(0,1\.35fr\) minmax\(330px,\.65fr\)/);
   assert.match(css, /\.student-builder-preview\{grid-column:2/);
   assert.match(css, /width:min\(1120px,calc\(100vw - 260px\)\)/);
+});
+
+test("every coach-facing endpoint scopes athlete data to the coach's portfolio", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+
+  /* O vínculo aluno→treinador (`athletes.coach_email`) sempre esteve certo; o
+     que faltava era cada endpoint respeitá-lo. Sete não respeitavam, e na área
+     de um treinador apareciam os alunos de todos — foi assim que a Central de
+     avisos mostrou relatos de dor de aluno alheio.
+     Esta lista é o contrato: um handler novo que sirva o painel do treinador e
+     não recorte quebra aqui, em vez de vazar em silêncio. */
+  const HANDLERS_DO_TREINADOR = [
+    "painReportsApi", "trainingWeeksApi", "feedbacksApi", "workoutExecutionsApi",
+    "racesRecordsApi", "integrationOverviewApi",
+    "athletesApi", "athleteProfileApi", "athletePlanningApi", "performanceTestsApi",
+    "customPlansApi", "planTemplateOverridesApi", "financialApi", "coachAccountsApi",
+    "athleteAccessApi", "integrationsCoachApi",
+  ];
+
+  const semRecorte = HANDLERS_DO_TREINADOR.filter((nome) => {
+    const inicio = worker.indexOf(`async function ${nome}(`);
+    if (inicio < 0) return true;
+    const proximo = worker.indexOf("\nasync function ", inicio + 1);
+    const corpo = worker.slice(inicio, proximo < 0 ? worker.length : proximo);
+    return !/recorteDaCarteira|recorteDeAlunos|foraDaCarteira|carteiraDe\(request\)/.test(corpo);
+  });
+  assert.deepEqual(semRecorte, [], `estes handlers do treinador não recortam por carteira: ${semRecorte.join(", ")}`);
+
+  // Os dois lados do recorte: um filtra o que se lê, o outro barra o que se
+  // escreve. Só o primeiro deixaria o treinador gravar sobre o aluno de outro.
+  assert.match(worker, /function recorteDaCarteira\(carteira: string \| null, coluna = "athlete_name"\)/);
+  assert.match(worker, /\$\{coluna\} IN \(SELECT name FROM athletes WHERE coach_email = \?\)/);
+  assert.match(worker, /async function foraDaCarteira\(env: Env, request: Request, athleteName: string\)/);
+  assert.match(worker, /error: "athlete_not_in_portfolio"/);
+
+  /* `accessRequestsCoachApi` fica fora da lista de propósito. O pedido de acesso
+     é de quem ainda NÃO é aluno — a tabela não tem `athlete_name`, e recortar
+     por carteira ali não significa nada. O que ela precisava era do vínculo na
+     outra ponta: quem aprova o pedido vira dono do aluno criado. Sem isso o
+     aluno nascia órfão e `atribuiAlunosSemDono` o entregava ao treinador
+     principal, fosse quem fosse que tivesse aprovado. */
+  assert.match(worker, /INSERT INTO athletes \([^)]*coach_email[^)]*\)/);
+  assert.match(worker, /integration,coach_email,created_at\)/);
+
+  // Nenhuma leitura das tabelas do treinador pode sobrar sem WHERE.
+  for (const tabela of ["pain_reports", "training_weeks", "training_feedbacks", "workout_executions", "athlete_races"]) {
+    assert.doesNotMatch(worker, new RegExp(`SELECT \\* FROM ${tabela} ORDER BY`),
+      `${tabela} está sendo lida sem recorte de carteira`);
+  }
 });
 
 test("keeps role badges out of the layout class namespace", async () => {
@@ -1654,7 +1709,9 @@ test("uses real coach dashboard counts and reviews every registered race", async
   assert.match(client, /fetch\("\/api\/races-records"\)/);
   assert.match(client, /action:"review_race"/);
   assert.match(client, /Aprovar e usar no planejamento/);
-  assert.match(worker, /SELECT \* FROM athlete_races ORDER BY race_date ASC/);
+  // A lista de provas passou a ser recortada pela carteira de quem pede: sem
+  // isso, o treinador via as provas dos alunos de todos os outros.
+  assert.match(worker, /SELECT \* FROM athlete_races WHERE \$\{carteira\.clausula\} ORDER BY race_date ASC/);
   assert.match(worker, /UPDATE athlete_races SET status = \?, priority = \?/);
   assert.doesNotMatch(client, /<b>48<\/b>/);
   assert.doesNotMatch(client, /31<em>\/48<\/em>/);
@@ -2351,7 +2408,11 @@ test("scopes the training weeks query to the requested athlete", async () => {
   const leitura = consultas.find(({ sql }) => sql.includes("SELECT * FROM training_weeks") && !sql.includes("LIMIT 1"));
   assert.ok(leitura, "deve haver uma leitura da tabela de semanas");
   assert.match(leitura.sql, /WHERE athlete_name = \?/);
-  assert.deepEqual(leitura.values, ["Ana Souza"]);
+  // O recorte por carteira entrou depois: além do aluno pedido, a consulta
+  // confirma que ele é de quem está pedindo. Na área de um treinador apareciam
+  // os alunos de todos, porque sete endpoints não cruzavam `coach_email`.
+  assert.match(leitura.sql, /athlete_name IN \(SELECT name FROM athletes WHERE coach_email = \?\)/);
+  assert.deepEqual(leitura.values, ["Ana Souza", "treinador@exemplo.com"]);
 });
 
 test("lets the student finish a workout without typing any number", async () => {
