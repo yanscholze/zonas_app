@@ -454,14 +454,17 @@ p, span, b, strong, small, em, li, td, th, label {
      isso, uma tabela larga empurraria a página inteira para o lado. */
   padding: 0 var(--space-8) var(--space-10);
   min-width: 0;
-}
-
-/* Em tela muito larga a linha de texto fica longa demais para ser lida com
-   conforto, e os cartões esticam sem ganhar informação. */
-@media (min-width: 1600px) {
-  .content {
-    max-width: 1480px;
-  }
+  /* O teto era 1480px a partir de 1600px de tela. Como esta é a segunda coluna
+     da grade, o teto não centralizava nada: encostava tudo na barra lateral e
+     jogava a sobra inteira para a direita — 208px de vazio numa tela de
+     1920px, bem onde ficam os cartões mais largos. Agora o teto só entra
+     quando a linha ficaria mesmo longa demais para ler, e a sobra é dividida
+     pelos dois lados, então a folga nunca fica torta. O width:100% é
+     obrigatório: numa grade, margem automática desliga o esticamento e a
+     coluna encolheria até o tamanho do conteúdo. */
+  width: 100%;
+  max-width: 1900px;
+  margin-inline: auto;
 }
 
 .top {
