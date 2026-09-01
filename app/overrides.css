@@ -15,14 +15,31 @@
 
 /* -----------------------------------------------------------------------------
    mobile-dashboard.css
-   Painel do treinador no celular: colapsa a barra lateral e empilha os cartões.
+   Painel do treinador no celular: deita a barra lateral e reduz a navegação aos
+   quatro primeiros atalhos, com "Mais" para o resto. Os blocos do painel são os
+   mesmos do desktop — eles próprios se reorganizam.
+
+   Atenção: a regra `.sidebar{position:fixed}` abaixo não chega a valer. O corpo
+   de globals.css declara `.sidebar{position:static}` na mesma media query e com
+   a mesma especificidade, e vence por vir depois na cascata. A barra flutuante
+   que este trecho descreve nunca apareceu.
    ----------------------------------------------------------------------------- */
 
-.mobile-coach-home {
-  display: none;
-}
-
 @media(max-width:760px) {
+  .sidebar {
+    position: fixed;
+    z-index: 50;
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    width: auto;
+    height: 67px;
+    padding: 8px 10px;
+    border: 1px solid #3d3930;
+    border-radius: 18px;
+    background: #171718eb;
+    box-shadow: 0 14px 40px #000;
+  }
   .mobile-coach-home {
     display: block;
     margin: 0 -14px;
