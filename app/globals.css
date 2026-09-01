@@ -549,6 +549,19 @@ p, span, b, strong, small, em, li, td, th, label {
   width: 100%;
 }
 
+/* Um cartão só: a fila de pendências que dividia esta faixa vive na central. */
+.hero {
+  display: grid;
+  gap: 15px;
+}
+
+.hero>div:first-child {
+  border: 1px solid #4d422b;
+  border-radius: 18px;
+  padding: 28px;
+  background: radial-gradient(circle at 86% 24%,#58451f,transparent 34%),linear-gradient(135deg,#22201b,#131314);
+}
+
 .pill {
   display: inline-flex;
   border: 1px solid #705b2a;
@@ -620,6 +633,8 @@ p, span, b, strong, small, em, li, td, th, label {
 .coach-week-state>span,
 .coach-week-state>small {
   display: inline;
+.red {
+  background: var(--red);
 }
 
 .coach-week-state>small {
@@ -653,6 +668,11 @@ p, span, b, strong, small, em, li, td, th, label {
   border-radius: var(--radius-md);
   color: var(--text);
   cursor: pointer;
+.stats {
+  display: grid;
+  grid-template-columns: repeat(5,1fr);
+  gap: 11px;
+  margin: 15px 0 38px;
 }
 
 .coach-week-facts button:hover {
@@ -1772,6 +1792,10 @@ p, span, b, strong, small, em, li, td, th, label {
     display: grid;
     place-items: center;
   }
+  .stats,
+  .groups {
+    grid-template-columns: repeat(3,1fr);
+  }
   .week {
     overflow: auto;
     grid-template-columns: repeat(7,135px);
@@ -1838,6 +1862,25 @@ p, span, b, strong, small, em, li, td, th, label {
   }
   .top h1 {
     font-size:var(--fs-lg);  }
+    font-size: 19px;
+  }
+  .hero h2 {
+    font-size: 29px;
+  }
+  .stats {
+    grid-template-columns: repeat(2,1fr);
+  }
+  /* Cinco cartões em duas colunas: o último ocupa a linha em vez de sobrar. */
+  .stats .stat-card:last-child {
+    grid-column: span 2;
+  }
+  .groups {
+    display: flex;
+    overflow: auto;
+  }
+  .groups button {
+    min-width: 165px;
+  }
   .athlete-list {
     overflow: auto;
   }
@@ -1953,6 +1996,7 @@ p, span, b, strong, small, em, li, td, th, label {
     grid-template-columns: repeat(2,1fr);
   }
 }
+
 .athlete-row {
   cursor: pointer;
 }
@@ -2573,6 +2617,9 @@ p, span, b, strong, small, em, li, td, th, label {
   border-radius:var(--radius-md);
   padding: 8px 10px;
   font-size:var(--fs-xs);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 9px;
 }
 
 .history-head button.handled {
@@ -14064,6 +14111,51 @@ p, span, b, strong, small, em, li, td, th, label {
   font-size:var(--fs-base);
   color: var(--muted);
   padding: 20px 0;
+}
+
+/* --- Números do painel: cada um leva ao lugar onde se age sobre ele -------- */
+
+.stats .stat-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  padding: 18px;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.stats .stat-card:hover {
+  border-color: #7e662e;
+  background: #1f1d18;
+}
+
+.stats .stat-card small {
+  display: block;
+  font-size: 8px;
+  color: var(--muted);
+  letter-spacing: 0.12em;
+}
+
+.stats .stat-card b {
+  font-size: 29px;
+  display: block;
+  margin: 9px 0 4px;
+}
+
+.stats .stat-card b em {
+  font-size: 13px;
+  font-style: normal;
+  color: var(--muted);
+}
+
+.stats .stat-card span {
+  font-size: 10px;
+  color: var(--gold);
 }
 
 /* Prova aprovada: resta apenas desfazer, e desfazer é uma ação de risco. */

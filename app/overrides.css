@@ -25,6 +25,203 @@
    ----------------------------------------------------------------------------- */
 
 @media(max-width:760px) {
+
+   Atenção: a regra `.sidebar{position:fixed}` abaixo não chega a valer. O corpo
+   de globals.css declara `.sidebar{position:static}` na mesma media query e com
+   a mesma especificidade, e vence por vir depois na cascata. A barra flutuante
+   que este trecho descreve nunca apareceu.
+   ----------------------------------------------------------------------------- */
+
+@media(max-width:760px) {
+  .sidebar {
+    position: fixed;
+    z-index: 50;
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    width: auto;
+    height: 67px;
+    padding: 8px 10px;
+    border: 1px solid #3d3930;
+    border-radius: 18px;
+    background: #171718eb;
+    box-shadow: 0 14px 40px #000;
+  }
+  .mobile-coach-home {
+    display: block;
+    margin: 0 -14px;
+    padding: 4px 18px 30px;
+    background: linear-gradient(180deg,#15130f,#0c0c0d);
+  }
+  .mobile-coach-home~.hero,
+  .mobile-coach-home~.stats,
+  .mobile-coach-home~.section-title,
+  .mobile-coach-home~.groups,
+  .mobile-coach-home~.coach-feedbacks {
+    display: none;
+  }
+  .mobile-coach-home>header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0 22px;
+  }
+  .mobile-coach-home>header small {
+    color: var(--gold);
+    font-size: 8px;
+    font-weight: 900;
+    letter-spacing: .14em;
+  }
+  .mobile-coach-home>header h2 {
+    margin: 7px 0 2px;
+    font: 500 27px Georgia;
+  }
+  .mobile-coach-home>header p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .mobile-coach-home>header button {
+    width: 43px;
+    height: 43px;
+    border: 1px solid #68552e;
+    border-radius: 50%;
+    background: #2c261a;
+    color: var(--gold2);
+    font-weight: 900;
+  }
+  .mobile-coach-stats {
+    display: grid;
+    grid-template-columns: repeat(3,1fr);
+    gap: 9px;
+  }
+  .mobile-coach-stats article {
+    display: grid;
+    place-items: center;
+    min-height: 118px;
+    padding: 12px 6px;
+    border: 1px solid #38352e;
+    border-radius: 15px;
+    background: #19191a;
+    text-align: center;
+  }
+  .mobile-coach-stats i {
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    border-radius: 9px;
+    background: #302819;
+    color: var(--gold2);
+    font-style: normal;
+    font-weight: 900;
+  }
+  .mobile-coach-stats b {
+    font: 600 28px Georgia;
+  }
+  .mobile-coach-stats span {
+    color: var(--muted);
+    font-size: 9px;
+  }
+  .mobile-new-workout {
+    width: 100%;
+    margin: 14px 0 22px;
+    padding: 15px;
+    border: 0;
+    border-radius: 12px;
+    background: var(--gold);
+    color: #15120c;
+    font-size: 14px;
+    font-weight: 900;
+  }
+  .mobile-recent>header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .mobile-recent h3 {
+    font-size: 16px;
+  }
+  .mobile-recent header button {
+    border: 0;
+    background: transparent;
+    color: var(--gold);
+    font-size: 10px;
+    font-weight: 800;
+  }
+  .mobile-recent>article {
+    display: grid;
+    grid-template-columns: 34px 1fr auto;
+    gap: 10px;
+    align-items: center;
+    padding: 15px;
+    border: 1px solid #44382a;
+    border-radius: 12px;
+    background: #1a1815;
+  }
+  .mobile-recent>article>i {
+    width: 32px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: #46241f;
+    color: #ff9b85;
+    font-style: normal;
+  }
+  .mobile-recent article b,
+  .mobile-recent article small {
+    display: block;
+  }
+  .mobile-recent article b {
+    font-size: 11px;
+  }
+  .mobile-recent article small {
+    margin-top: 5px;
+    color: var(--muted);
+    font-size: 9px;
+  }
+  .mobile-recent>div {
+    display: grid;
+    place-items: center;
+    min-height: 170px;
+    padding: 20px;
+    border: 1px dashed #3b3934;
+    border-radius: 14px;
+    text-align: center;
+  }
+  .mobile-recent>div i {
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: #193426;
+    color: #83d6a4;
+    font-style: normal;
+  }
+  .mobile-recent>div b {
+    margin-top: 10px;
+    font-size: 12px;
+  }
+  .mobile-recent>div span {
+    margin-top: 5px;
+    color: var(--muted);
+    font-size: 9px;
+  }
+  .mobile-coach-home>footer {
+    margin-top: 28px;
+    color: #6f6b62;
+    font: italic 13px Georgia;
+    text-align: center;
+  }
+  /*
+     A forma da barra (fixed, cantos, fundo, sombra) e o `padding-bottom` que o
+     `.content` reserva para ela vivem no bloco @media(max-width:760px) de
+     globals.css. Declarar aqui não adiantava: globals.css importa este arquivo
+     na primeira linha, então em empate de especificidade ele vence. O que
+     sobrou nesta seção são as regras que globals.css não contradiz.
+  */
   .sidebar>.brand,
   .sidebar>.coach,
   .sidebar>.student-switch {
