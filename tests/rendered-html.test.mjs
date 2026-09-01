@@ -1431,8 +1431,18 @@ test("lets the coach create and edit their own base plans", async () => {
   assert.match(worker, /async function customPlansApi/);
   assert.match(worker, /url\.pathname === "\/api\/plans"/);
   assert.match(client, /\+ Nova planilha/);
-  // As semanas usam o mesmo caminho de edição das planilhas de fábrica.
+  // As semanas usam o mesmo caminho de edição das planilhas de fábrica — e o
+  // endpoint precisa aceitar o nome delas, senão a planilha própria nasce
+  // vazia e continua vazia, sem porta para o primeiro treino.
   assert.match(worker, /DELETE FROM plan_template_overrides WHERE plan_name = \?/);
+  assert.match(worker, /SELECT name FROM custom_plans/);
+  assert.match(worker, /\.\.\.\(proprias\.results as Array<\{name:string\}>\)\.map\(linha=>linha\.name\)/);
+  // Zero treinos é um estado legítimo: é como se esvazia uma semana.
+  assert.doesNotMatch(worker, /sessions\.length<1\|\|sessions\.length>10/);
+  // E a tela tem por onde lançar o primeiro treino, sem inventar exemplos.
+  assert.match(client, /className="template-add"/);
+  assert.match(client, /const planilhaPropria=!planWeekTemplates\[plan\.name\]/);
+  assert.match(client, /effectiveTemplate\|\|\(planilhaPropria\?\[\]:weekSamples\)/);
   // E excluir uma planilha em uso é recusado com o motivo.
   assert.match(worker, /plan_in_use/);
 });

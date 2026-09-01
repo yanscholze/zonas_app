@@ -1201,7 +1201,13 @@ async function athletePlanningApi(request:Request,env:Env):Promise<Response>{
 
 async function planTemplateOverridesApi(request:Request,env:Env):Promise<Response>{
   await ensureTables(env, schema.planTemplateOverrides);
-  const allowedPlans=["Iniciantes","5 km Bronze","5 km Prata","5 km Ouro","5 km Elite","10 km Lion","Meia Start","Meia Finish","One Marathon","Full Marathon"];
+  await ensureTables(env, schema.customPlans);
+  /* As dez de fábrica mais as que o treinador criou. Só a lista fixa estava
+     aceita aqui, e por isso uma planilha própria não conseguia receber treino
+     nenhum: nascia vazia e continuava vazia. */
+  const proprias=await env.DB.prepare("SELECT name FROM custom_plans").all();
+  const allowedPlans=["Iniciantes","5 km Bronze","5 km Prata","5 km Ouro","5 km Elite","10 km Lion","Meia Start","Meia Finish","One Marathon","Full Marathon",
+    ...(proprias.results as Array<{name:string}>).map(linha=>linha.name)];
   const url=new URL(request.url);
   if(request.method==="GET"){
     const plan=boundedText(url.searchParams.get("plan"),80);const weekNumber=Number(url.searchParams.get("week"));
@@ -1212,7 +1218,8 @@ async function planTemplateOverridesApi(request:Request,env:Env):Promise<Respons
   }
   if(request.method==="POST"){
     const input=await request.json() as Record<string,unknown>;const plan=boundedText(input.plan,80);const weekNumber=Number(input.weekNumber);const sessions=input.sessions;
-    if(!allowedPlans.includes(plan)||!Number.isInteger(weekNumber)||weekNumber<1||weekNumber>60||!Array.isArray(sessions)||sessions.length<1||sessions.length>10||!validStructuredValue(sessions))return Response.json({error:"invalid_template"},{status:400});
+    /* Zero treinos é um estado legítimo: é como se esvazia uma semana. */
+    if(!allowedPlans.includes(plan)||!Number.isInteger(weekNumber)||weekNumber<1||weekNumber>60||!Array.isArray(sessions)||sessions.length>10||!validStructuredValue(sessions))return Response.json({error:"invalid_template"},{status:400});
     const sessionsJson=JSON.stringify(sessions);if(sessionsJson.length>200_000)return Response.json({error:"template_too_large"},{status:413});
     const updatedAt=Date.now();const updatedBy=normalizedAuthenticatedEmail(request) ?? "sistema";const id=crypto.randomUUID();
     await env.DB.prepare("INSERT INTO plan_template_overrides (id,plan_name,week_number,sessions_json,updated_by,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(plan_name,week_number) DO UPDATE SET sessions_json=excluded.sessions_json,updated_by=excluded.updated_by,updated_at=excluded.updated_at").bind(id,plan,weekNumber,sessionsJson,updatedBy,updatedAt).run();

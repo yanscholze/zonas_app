@@ -11966,6 +11966,49 @@ p, span, b, strong, small, em, li, td, th, label {
   }
 }
 
+/* Montar a semana de uma planilha própria: ela nasce vazia, e o primeiro
+   treino precisa de uma porta de entrada. */
+.template-vazio {
+  margin: var(--space-2) 0 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+}
+
+.template-add {
+  width: 100%;
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--gold);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+}
+
+.template-add:hover {
+  background: var(--surface-3);
+  border-style: solid;
+}
+
+.template-remove {
+  margin-left: var(--space-2);
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.template-remove:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+
 /* --- Teste de desempenho: pedido, resposta e revisão ----------------------- */
 
 .test-request {
