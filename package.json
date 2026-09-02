@@ -14,7 +14,11 @@
     "validate:artifact": "bash scripts/validate-artifact.sh",
     "lint": "bash scripts/sites-env.sh -- eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate",
-    "coach:reset-password": "node scripts/reset-coach-password.mjs"
+    "coach:reset-password": "node scripts/reset-coach-password.mjs",
+    "deploy": "bash scripts/sites-env.sh -- vinext deploy",
+    "secrets:check": "node scripts/verifica-segredos.mjs",
+    "deploy:ensaio": "bash scripts/sites-env.sh -- vinext deploy --env ensaio",
+    "secrets:check:ensaio": "node scripts/verifica-segredos.mjs --env ensaio"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",

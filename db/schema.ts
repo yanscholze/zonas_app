@@ -8,6 +8,16 @@ export const athletes = sqliteTable("athletes", {
   phase: text("phase").notNull(),
   week: text("week").notNull(),
   nextWorkout: text("next_workout").notNull(),
+  /** Classe de preço aplicada na geração das cobranças. Vazio usa o padrão. */
+  priceClass: text("price_class"),
+  /**
+   * Aluno que treina sem prova-alvo no momento.
+   *
+   * Sem esta marca, quem não corre prova ficava para sempre como "cadastro
+   * incompleto" e o painel seguia cobrando um dado que não existe. A marca diz
+   * que a ausência é intencional, e não um cadastro pela metade.
+   */
+  noTargetRace: integer("no_target_race"),
   status: text("status"),
   phone: text("phone"),
   email: text("email"),
@@ -75,6 +85,17 @@ export const performanceTests = sqliteTable("performance_tests", {
   zones: text("zones").notNull(),
   tempoRuns: text("tempo_runs").notNull(),
   status: text("status").notNull(),
+  /* Como o aluno terminou o teste e o que ele quis dizer sobre ele. O mesmo
+     vocabulário da conclusão de treino — "Muito bem", "Cansado", "Sentiu dor" —
+     porque é a mesma pergunta, e duas escalas para a mesma coisa fariam o
+     treinador comparar palavras diferentes. */
+  effort: text("effort"),
+  athleteNote: text("athlete_note"),
+  /* Distância e formato do arquivo que o aluno anexou, quando anexou. O arquivo
+     em si não sobe: é lido no navegador e só os números seguem, como já ocorre
+     no registro de treino. */
+  sourceFormat: text("source_format"),
+  sourceKm: text("source_km"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 }, (table) => ({
   athleteDateIdx: index("performance_tests_athlete_date_idx").on(table.athleteName, table.testDate),
@@ -105,6 +126,14 @@ export const painReports = sqliteTable("pain_reports", {
   /* Acompanhamento da queixa, do aviso do aluno até a alta. */
   reviewedBy: text("reviewed_by"),
   reviewedAt: integer("reviewed_at"),
+  /**
+   * Conduta decidida na avaliação.
+   *
+   * A avaliação existia apenas como texto livre, escrito de passagem ao mudar
+   * a situação do caso: não havia como saber, depois, o que o treinador
+   * decidiu fazer. A conduta é o que muda o treino da semana.
+   */
+  assessmentConduct: text("assessment_conduct"),
   contactedAt: integer("contacted_at"),
   coachNote: text("coach_note"),
   resolution: text("resolution"),
@@ -232,10 +261,47 @@ export const financialSettings = sqliteTable("financial_settings", {
   defaultAmountCents: integer("default_amount_cents").notNull(), dueDay: integer("due_day").notNull(), updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });
 
+/**
+ * Faixas de preço da assessoria.
+ *
+ * O valor raramente é o mesmo para todo mundo, e antes só existia um padrão
+ * único. A classe agrupa quem paga igual, para um reajuste alcançar o grupo de
+ * uma vez; a negociação de um aluno continua sendo o valor da própria cobrança.
+ */
+/**
+ * Planilhas-base criadas pelo treinador.
+ *
+ * As dez planilhas originais vivem no código. Quando o treinador muda o método
+ * ou quer uma progressão própria, precisa de um lugar para criá-la — e as
+ * semanas dela usam o mesmo `plan_template_overrides` que já edita as semanas
+ * das planilhas de fábrica, em vez de um segundo mecanismo.
+ */
+export const customPlans = sqliteTable("custom_plans", {
+  id: text("id").primaryKey(), name: text("name").notNull(),
+  distance: text("distance").notNull(), weeks: integer("weeks").notNull(),
+  frequency: text("frequency").notNull(), level: text("level").notNull(),
+  goal: text("goal").notNull(), phases: text("phases").notNull(),
+  createdBy: text("created_by").notNull(),
+  /* De quem é a planilha. Cada treinador tem a própria biblioteca, então o
+     nome só precisa ser único dentro dela: dois treinadores podem ter uma
+     "Base Inverno" cada um, sem se ver e sem se sobrescrever. */
+  coachEmail: text("coach_email"),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => ({ nameIdx: uniqueIndex("custom_plans_coach_name_idx").on(table.coachEmail, table.name) }));
+
+export const priceClasses = sqliteTable("price_classes", {
+  id: text("id").primaryKey(), name: text("name").notNull(),
+  amountCents: integer("amount_cents").notNull(), dueDay: integer("due_day").notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => ({ nameIdx: uniqueIndex("price_classes_name_idx").on(table.name) }));
+
 export const studentPayments = sqliteTable("student_payments", {
   id: text("id").primaryKey(), athleteName: text("athlete_name").notNull(), referenceMonth: text("reference_month").notNull(),
   amountCents: integer("amount_cents").notNull(), dueDate: text("due_date").notNull(), status: text("status").notNull(),
   paidAt: integer("paid_at", { mode: "timestamp_ms" }), updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  /** Comprovante anexado pelo treinador: imagem reduzida no navegador. */
+  receiptImage: text("receipt_image"), receiptNote: text("receipt_note"),
+  receiptAddedAt: integer("receipt_added_at", { mode: "timestamp_ms" }),
 }, (table) => ({ athleteMonthIdx: uniqueIndex("student_payments_athlete_month_idx").on(table.athleteName, table.referenceMonth) }));
 
 export const athleteRaces = sqliteTable("athlete_races", {
@@ -365,6 +431,17 @@ export const applicationErrors = sqliteTable("application_errors", {
   errorCode: text("error_code").notNull(),
   method: text("method").notNull(),
   statusCode: integer("status_code").notNull(),
+  /* O log guardava só área, código, método e status — o suficiente para saber
+     que algo falhou, e insuficiente para saber o quê. A exceção era descartada
+     no `catch` e nunca chegava aqui. Agora chega.
+
+     `actorRole` e não o e-mail: para diagnosticar basta saber se quem esbarrou
+     era treinador, aluno ou manutenção, e guardar identidade num log técnico é
+     dado pessoal que não precisa existir. */
+  route: text("route"),
+  message: text("message"),
+  stack: text("stack"),
+  actorRole: text("actor_role"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 }, (table) => ({
   createdIdx: index("application_errors_created_idx").on(table.createdAt),
@@ -376,7 +453,11 @@ export const planTemplateOverrides = sqliteTable("plan_template_overrides", {
   weekNumber: integer("week_number").notNull(),
   sessionsJson: text("sessions_json").notNull(),
   updatedBy: text("updated_by").notNull(),
+  /* A semana também é de alguém. Sem esta coluna, dois treinadores editando a
+     semana 3 de planilhas homônimas gravavam na mesma linha e um apagava o
+     treino do outro sem aviso — o ON CONFLICT resolvia pelo par nome+semana. */
+  coachEmail: text("coach_email"),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 }, (table) => ({
-  planWeekIdx: uniqueIndex("plan_template_overrides_plan_week_idx").on(table.planName, table.weekNumber),
+  planWeekIdx: uniqueIndex("plan_template_overrides_coach_plan_week_idx").on(table.coachEmail, table.planName, table.weekNumber),
 }));

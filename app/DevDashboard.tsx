@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { api, describeError } from "./api-client";
+import { api, copyText, describeError } from "./api-client";
 import { signOut, type Session } from "./AuthGate";
+import { avise, pergunte, CentralDeAvisos } from "./avisos";
 
 /**
  * Painel de manutenção.
@@ -19,7 +20,7 @@ type Conta = {
   locked_until: number | null; last_login_at: number | null; created_at: number;
 };
 type Sessao = { email: string; role?: string; created_at: number; last_seen_at: number; expires_at: number };
-type Erro = { id: string; area: string; error_code: string; method: string; status_code: number; created_at: number };
+type Erro = { id: string; area: string; error_code: string; method: string; status_code: number; created_at: number; route?: string | null; message?: string | null; stack?: string | null; actor_role?: string | null };
 type Evento = { id: string; actor_email: string; event_type: string; route: string; details: string; created_at: number };
 type Limite = { actor_email: string; route: string; method: string; request_count: number; window_start: number };
 type Provedor = { id: string; label: string; disponivel: boolean; estado: string };
@@ -51,6 +52,74 @@ const relativo = (ms: number) => {
 type Treinador = { id: string; email: string; name: string; status: string; last_login_at: number | null; alunos_ativos: number };
 type Visita = { email: string; name: string; userId: string } | null;
 
+
+/**
+ * Um erro, inteiro, numa tela só.
+ *
+ * A tabela mostrava área, código e status — dava para saber que algo falhou e
+ * não o quê. A pilha é o que aponta o arquivo e a linha, e tem dezenas de
+ * linhas: não cabe numa célula sem tornar a lista ilegível. Por isso abre numa
+ * tela própria, com o texto preservado como veio.
+ */
+function ErroAberto({ erro, fechar }: { erro: Erro; fechar: () => void }) {
+  /* Esc fecha. Quem está investigando um erro chega aqui de teclado, lê e sai —
+     obrigar a mirar o botão no canto atrapalha justamente esse uso. */
+  useEffect(() => {
+    const aoTeclar = (evento: KeyboardEvent) => { if (evento.key === "Escape") fechar(); };
+    window.addEventListener("keydown", aoTeclar);
+    return () => window.removeEventListener("keydown", aoTeclar);
+  }, [fechar]);
+
+  const texto = [
+    `${new Date(Number(erro.created_at)).toLocaleString("pt-BR", { dateStyle: "full", timeStyle: "medium" })}`,
+    `${erro.method} ${erro.route ?? "(rota não registrada)"} → ${erro.status_code} ${erro.error_code}`,
+    `área: ${erro.area} · quem chamou: ${erro.actor_role ?? "—"}`,
+    "",
+    erro.message ?? "(sem mensagem registrada)",
+    erro.stack ?? "",
+  ].join("\n").trim();
+
+  const copiar = async () => {
+    if (await copyText(texto)) avise("ok", "Erro copiado", "Cole onde precisar investigar.");
+    else avise("erro", "Não foi possível copiar", "Selecione o texto na tela e copie à mão.");
+  };
+
+  return <div className="overlay" onMouseDown={evento => evento.target === evento.currentTarget && fechar()}>
+    <aside className="drawer erro-aberto" role="dialog" aria-modal="true" aria-label={`Erro ${erro.error_code}`}>
+      <header>
+        <div>
+          <small>ERRO REGISTRADO</small>
+          <h2>{erro.error_code.replaceAll("_", " ")}</h2>
+          <p>{erro.area}</p>
+        </div>
+        <button onClick={fechar} aria-label="Fechar">×</button>
+      </header>
+
+      <dl className="erro-fatos">
+        <div><dt>Quando</dt><dd>{new Date(Number(erro.created_at)).toLocaleString("pt-BR", { dateStyle: "full", timeStyle: "medium" })}</dd></div>
+        <div><dt>Rota</dt><dd><code>{erro.method} {erro.route ?? "(não registrada — erro anterior a este log)"}</code></dd></div>
+        <div><dt>Retorno</dt><dd>{erro.status_code} · <code>{erro.error_code}</code></dd></div>
+        <div><dt>Quem chamou</dt><dd>{erro.actor_role ?? "—"}</dd></div>
+      </dl>
+
+      <section>
+        <b>Mensagem</b>
+        <pre>{erro.message ?? "Sem mensagem registrada. Este erro é anterior ao log detalhado."}</pre>
+      </section>
+
+      {erro.stack && <section>
+        <b>Onde aconteceu</b>
+        <pre className="erro-pilha">{erro.stack}</pre>
+      </section>}
+
+      <footer>
+        <button className="dev-copiar" onClick={() => void copiar()}>Copiar tudo</button>
+        <button onClick={fechar}>Fechar</button>
+      </footer>
+    </aside>
+  </div>;
+}
+
 export default function DevDashboard({ session, onExit }: { session: Session; onExit: (visitando: Visita) => void }) {
   const [treinadores, setTreinadores] = useState<Treinador[]>([]);
   const [visitando, setVisitando] = useState<Visita>(null);
@@ -58,6 +127,9 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
   const [criando, setCriando] = useState(false);
   const [novo, setNovo] = useState({ name: "", email: "" });
   const [senhaNova, setSenhaNova] = useState<{ email: string; senha: string } | null>(null);
+  /* O erro abre numa tela própria em vez de esticar a linha da tabela: a pilha
+     tem dezenas de linhas e não cabe numa célula sem tornar a lista ilegível. */
+  const [erroAberto, setErroAberto] = useState<Erro | null>(null);
   const [dados, setDados] = useState<Diagnostico | null>(null);
   const [erro, setErro] = useState("");
   const [aba, setAba] = useState<"resumo" | "contas" | "erros" | "seguranca" | "banco">("resumo");
@@ -87,6 +159,37 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
       setVisitando(r.visitando ?? null);
       onExit(r.visitando ?? null);
     } catch (e) { setErro(describeError(e, "Não foi possível abrir a área deste treinador.")); }
+  };
+
+  /**
+   * Ações da manutenção sobre uma conta.
+   *
+   * Excluir é a única sem volta, e o servidor recusa quando a conta ainda é
+   * dona de alguma coisa. A recusa vem com motivo e saída, e é isso que a tela
+   * mostra — "não foi possível" sozinho obrigaria a adivinhar.
+   */
+  const acaoNaConta = async (conta: Conta, acao: "reset_password" | "block" | "unblock" | "delete" | "promote" | "demote") => {
+    const rotulos = {
+      promote: { titulo: `Tornar ${conta.email} proprietário?`, descricao: "Ele passa a criar treinadores e conferir a área deles, sem alcançar este diagnóstico. As sessões abertas caem para o novo papel valer agora.", confirmar: "Promover", perigo: false },
+      demote: { titulo: `${conta.email} volta a ser treinador comum?`, descricao: "Ele perde a aba Equipe e deixa de criar treinadores. Os alunos e as planilhas dele continuam onde estão.", confirmar: "Rebaixar", perigo: true },
+      reset_password: { titulo: `Gerar nova senha temporária para ${conta.email}?`, descricao: "A senha atual deixa de valer na hora e as sessões abertas caem. A nova aparece uma única vez.", confirmar: "Gerar senha", perigo: false },
+      block: { titulo: `Bloquear ${conta.email}?`, descricao: "A conta perde o acesso imediatamente e as sessões abertas caem. Pode ser liberada depois.", confirmar: "Bloquear conta", perigo: true },
+      unblock: { titulo: `Liberar ${conta.email}?`, descricao: "A conta volta a entrar com a senha que já tinha.", confirmar: "Liberar conta", perigo: false },
+      delete: { titulo: `Excluir ${conta.email}?`, descricao: "A conta é apagada e não há como desfazer. O servidor recusa se ela ainda for dona de alunos.", confirmar: "Excluir definitivamente", perigo: true },
+    }[acao];
+    if (!await pergunte(rotulos)) return;
+    try {
+      const promocao = acao === "promote" || acao === "demote";
+      const r = await api.post<{ temporaryPassword?: string; status?: string; deleted?: boolean }>("/api/dev/accounts",
+        promocao ? { action: "set_role", email: conta.email, role: acao === "promote" ? "owner" : "coach" } : { action: acao, email: conta.email });
+      if (r.temporaryPassword) setSenhaNova({ email: conta.email, senha: r.temporaryPassword });
+      else avise("ok", acao === "delete" ? "Conta excluída" : "Conta atualizada", `${conta.email}${r.status ? ` · ${r.status}` : ""}`);
+      await carregar();
+    } catch (e) {
+      const detalhe = (e as { details?: { motivo?: string; saida?: string } }).details;
+      avise("erro", detalhe?.motivo ? "Não é possível excluir esta conta" : "Não foi possível concluir",
+        detalhe?.motivo ? `${detalhe.motivo} ${detalhe.saida ?? ""}`.trim() : describeError(e, "Tente novamente em alguns instantes."));
+    }
   };
 
   const criarTreinador = async () => {
@@ -130,7 +233,7 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
       <nav className="dev-tabs">
         {([
           ["resumo", "Resumo"],
-          ["erros", `Erros${dados?.erros.length ? ` (${dados.erros.length})` : ""}`],
+          ["erros", `Erros${dados?.saude.errosUltimas24h ? ` (${dados.saude.errosUltimas24h})` : ""}`],
           ["contas", `Contas${dados?.contas.length ? ` (${dados.contas.length})` : ""}`],
           ["seguranca", "Segurança"],
           ["banco", "Banco"],
@@ -184,30 +287,32 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
             {semDono > 0 && <p className="dev-hint">{semDono} aluno(s) ainda sem treinador dono.</p>}
           </section>
 
+          {/* Cada número leva à tela onde ele é detalhado: um indicador que não
+              abre nada obriga a procurar no menu o que já estava à vista. */}
           <section className="dev-cards">
-            <article className={semErros ? "ok" : "alerta"}>
+            <button className={semErros ? "ok" : "alerta"} onClick={() => setAba("erros")}>
               <small>ERROS · 24 H</small>
               <b>{saude?.errosUltimas24h}</b>
-              <span>{semErros ? "nenhuma falha registrada" : "requer atenção"}</span>
-            </article>
-            <article>
+              <span>{semErros ? "nenhuma falha registrada" : "requer atenção"} →</span>
+            </button>
+            <button onClick={() => setAba("contas")}>
               <small>SESSÕES ATIVAS</small>
               <b>{saude?.sessoesAtivas}</b>
-              <span>logins válidos agora</span>
-            </article>
-            <article>
+              <span>logins válidos agora{(saude?.sessoesAtivas ?? 0) > dados.sessoes.length ? ` · tabela mostra ${dados.sessoes.length}` : ""} →</span>
+            </button>
+            <button onClick={() => setAba("contas")}>
               <small>CONTAS</small>
               <b>{dados.contas.length}</b>
-              <span>{saude?.contasBloqueadas} bloqueada(s)</span>
-            </article>
-            <article>
+              <span>{saude?.contasBloqueadas} bloqueada(s) →</span>
+            </button>
+            <button onClick={() => document.getElementById("dev-ambiente")?.scrollIntoView({ behavior: "smooth", block: "start" })}>
               <small>INTEGRAÇÕES</small>
               <b>{saude?.integracoesConectadas}</b>
-              <span>com atividade importada</span>
-            </article>
+              <span>relógios e aplicativos conectados →</span>
+            </button>
           </section>
 
-          <section className="dev-panel">
+          <section className="dev-panel" id="dev-ambiente">
             <h2>Ambiente</h2>
             <p className="dev-hint">Só a presença de cada variável — o valor nunca sai do servidor.</p>
             <div className="dev-env">
@@ -244,17 +349,18 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
 
         {aba === "erros" && <section className="dev-panel">
           <h2>Erros da aplicação</h2>
-          <p className="dev-hint">Registrados pelo Worker. Guardam área, código e status — nunca dado de aluno.</p>
+          <p className="dev-hint">Registrados pelo Worker. Abra um erro para ver a mensagem e a pilha, com arquivo e linha. Nunca entra dado de aluno; de quem chamou fica só o papel. A tabela mostra as 80 ocorrências mais recentes; o cartão do resumo conta todas as últimas 24 horas.</p>
           {dados.erros.length === 0 ? <p className="dev-empty">Nenhum erro registrado.</p> : (
             <table className="dev-table">
-              <thead><tr><th>Quando</th><th>Área</th><th>Código</th><th>Método</th><th>Status</th></tr></thead>
+              <thead><tr><th>Quando</th><th>Área</th><th>Código</th><th>Rota</th><th>Status</th><th></th></tr></thead>
               <tbody>{dados.erros.map(e => (
                 <tr key={e.id}>
                   <td title={quando(e.created_at)}>{relativo(e.created_at)}</td>
                   <td>{e.area}</td>
                   <td><code>{e.error_code}</code></td>
-                  <td>{e.method}</td>
+                  <td><code>{e.method} {e.route ?? "—"}</code></td>
                   <td><span className={`dev-status s${String(e.status_code)[0]}`}>{e.status_code}</span></td>
+                  <td className="dev-acoes"><button onClick={() => setErroAberto(e)}>Abrir</button></td>
                 </tr>
               ))}</tbody>
             </table>
@@ -265,16 +371,25 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
           <section className="dev-panel">
             <h2>Todas as contas</h2>
             <table className="dev-table">
-              <thead><tr><th>Papel</th><th>Login</th><th>Nome</th><th>Aluno</th><th>Situação</th><th>Último acesso</th><th>Falhas</th></tr></thead>
+              <thead><tr><th>Papel</th><th>Login</th><th>Nome</th><th>Aluno</th><th>Situação</th><th>Último acesso</th><th>Falhas</th><th>Ações</th></tr></thead>
               <tbody>{dados.contas.map(c => (
                 <tr key={c.id}>
-                  <td><span className={`dev-role ${c.role}`}>{c.role}</span></td>
+                  <td><span className="dev-role" data-papel={c.role}>{c.role}</span></td>
                   <td>{c.email}</td>
                   <td>{c.name}</td>
                   <td>{c.athlete_name || "—"}</td>
                   <td>{c.status}{Number(c.must_change_password) === 1 ? " · senha temporária" : ""}</td>
                   <td>{quando(c.last_login_at)}</td>
                   <td>{c.failed_attempts || 0}{c.locked_until ? " · travada" : ""}</td>
+                  <td className="dev-acoes">
+                    <button onClick={() => void acaoNaConta(c, "reset_password")}>Nova senha</button>
+                    {c.role === "coach" && <button onClick={() => void acaoNaConta(c, "promote")}>Tornar proprietário</button>}
+                    {c.role === "owner" && <button onClick={() => void acaoNaConta(c, "demote")}>Rebaixar a treinador</button>}
+                    {c.status === "Bloqueado"
+                      ? <button onClick={() => void acaoNaConta(c, "unblock")}>Liberar</button>
+                      : <button onClick={() => void acaoNaConta(c, "block")}>Bloquear</button>}
+                    <button className="dev-excluir" onClick={() => void acaoNaConta(c, "delete")}>Excluir</button>
+                  </td>
                 </tr>
               ))}</tbody>
             </table>
@@ -343,6 +458,8 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
 
         <footer className="dev-footer">Diagnóstico gerado em {quando(dados.generatedAt)}</footer>
       </>}
+      {erroAberto && <ErroAberto erro={erroAberto} fechar={() => setErroAberto(null)} />}
+      <CentralDeAvisos />
     </main>
   );
 }

@@ -15,6 +15,7 @@ import {
   hashPassword,
   identityFromRequest,
   isLockedOut,
+  isValidDevLogin,
   isValidEmail,
   passwordProblem,
   readSessionToken,
@@ -38,7 +39,8 @@ import {
   type ProviderId,
 } from "./integrations";
 import * as schema from "../db/schema";
-import { tableColumns, tableSql } from "../db/sql";
+import { trainingPlans, planWeekTemplates } from "../db/planilhas-de-fabrica";
+import { createIndexesSql, createTableSql, tableColumns, tableSql } from "../db/sql";
 
 interface Env {
   ASSETS: Fetcher;
@@ -82,16 +84,22 @@ interface ExecutionContext {
 const coachEmailOf = (env: Env) => env.COACH_EMAIL?.trim().toLowerCase() || null;
 const JSON_BODY_LIMIT = 64 * 1024;
 const TRAINING_BODY_LIMIT = 256 * 1024;
+/* Comprovante de pagamento vai no corpo como imagem já reduzida no navegador.
+   Nos 64 KB gerais só caberia uma foto ilegível: a base64 infla um terço, e
+   sobrariam menos de 45 KB de JPEG. O teto do que é gravado continua menor que
+   este, em `save_receipt`, e bem abaixo do limite de uma linha do D1. */
+const FINANCIAL_BODY_LIMIT = 512 * 1024;
 const SECURITY_LOG_RETENTION_DAYS = 90;
 const SECURITY_LOG_RETENTION_MS = SECURITY_LOG_RETENTION_DAYS * 86_400_000;
 
 const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/athletes": new Set(["name","initials","distance","phase","week","nextWorkout","status","phone","email","trainingDays","integration","action","reason"]),
-  "/api/athlete-profile": new Set(["athleteName","phone","birthDate","objective","integration","trainingDays"]),
+  "/api/plans": new Set(["action","planId","name","distance","weeks","frequency","level","goal","phases"]),
+  "/api/athlete-profile": new Set(["athleteName","phone","birthDate","objective","integration","trainingDays","noTargetRace"]),
   "/api/athlete-planning": new Set(["athleteName","plan","phase","weekNumber","totalWeeks"]),
   "/api/performance-tests": new Set(["athleteName","testDate","distanceKm","minutes","seconds","age","id","action","zones","tempoRuns"]),
   "/api/training-weeks": new Set(["athleteName","weekStart","plan","phase","weekLabel","trainingDays","sessions","status","auditDifferences","expectedUpdatedAt"]),
-  "/api/pain-reports": new Set(["athleteName","bodyArea","intensity","trainingImpact","note","action","id","weekStart","status"]),
+  "/api/pain-reports": new Set(["athleteName","bodyArea","intensity","trainingImpact","note","action","id","weekStart","status","conduct"]),
   "/api/races-records": new Set(["kind","athleteName","name","raceDate","distance","city","goal","priority","resultTime","eventName","action","id","status"]),
   "/api/athlete-access": new Set(["athleteName","email","status"]),
   "/api/access-request": new Set(["name","phone","objective","distance","trainingDays","integration"]),
@@ -101,7 +109,8 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/student/feedbacks": new Set(["feeling","note","weekStart","workoutDay"]),
   "/api/student/workout-executions": new Set(["weekStart","workoutDay","actualMinutes","actualKm","action","note"]),
   "/api/student/integration-preference": new Set(["integration"]),
-  "/api/financial": new Set(["action","pixKey","pixName","defaultAmount","dueDay","athleteName","referenceMonth","amount","status","dueDate"]),
+  "/api/student/performance-tests": new Set(["id","minutes","seconds","effort","note","sourceFormat","sourceKm"]),
+  "/api/financial": new Set(["action","pixKey","pixName","defaultAmount","dueDay","athleteName","referenceMonth","amount","status","dueDate","classId","name","scope","className","athletes","image","note"]),
   "/api/feedbacks": new Set(["id","status"]),
   "/api/student/races-records": new Set(["kind","name","raceDate","distance","city","goal","priority","resultTime","eventName"]),
   "/api/plan-template-overrides": new Set(["plan","weekNumber","sessions"]),
@@ -112,6 +121,8 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/integrations": new Set(["action","provider","athleteName","payload","weekStart","workoutDay"]),
   "/api/integrations/strava/subscription": new Set(["action","id"]),
   "/api/dev/coaches": new Set(["action","email","name","password"]),
+  "/api/equipe": new Set(["action","email","name","password"]),
+  "/api/dev/accounts": new Set(["action","email","role"]),
   "/api/student/integrations": new Set(["action","provider"]),
 };
 
@@ -119,39 +130,109 @@ function boundedText(value: unknown, max: number): string {
   return typeof value === "string" ? value.trim().slice(0, max) : "";
 }
 
+/**
+ * Dias de treino aceitos, sempre no mesmo vocabulário.
+ *
+ * Os dias são comparados como texto no calendário, na semana gravada e no
+ * perfil. Havia quatro leituras diferentes do mesmo campo: umas aceitavam
+ * qualquer texto, outra descartava em silêncio o que não estivesse em
+ * maiúsculas. Guardar "Seg" onde o resto guarda "SEG" faz o dia nunca casar, e
+ * o aluno acaba sem nenhum dia disponível.
+ */
+const DIAS_DA_SEMANA = ["SEG","TER","QUA","QUI","SEX","SÁB","DOM"];
+
+function diasDeTreino(valor: unknown): string[] {
+  if (!Array.isArray(valor)) return [];
+  const normalizados = valor
+    .map(dia => boundedText(dia, 12).toLocaleUpperCase("pt-BR"))
+    .filter(dia => DIAS_DA_SEMANA.includes(dia));
+  return [...new Set(normalizados)].slice(0, 7);
+}
+
 function isIsoDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(`${value}T00:00:00Z`));
 }
 
-function validStructuredValue(value: unknown, depth = 0): boolean {
+/**
+ * Campos que podem exceder o teto geral de texto, por rota.
+ *
+ * O limite de 12 mil caracteres protege todo campo de texto do produto, e vale
+ * a pena mantê-lo. O comprovante é a exceção legítima: chega como imagem em
+ * base64, já reduzida no navegador, e tem validação própria em `save_receipt`
+ * — precisa ser `data:image/` e caber em 420 mil caracteres.
+ */
+const longBodyFields: Record<string, Set<string>> = {
+  "/api/financial": new Set(["image"]),
+};
+
+const LONG_FIELD_LIMIT = 420_000;
+
+function validStructuredValue(value: unknown, depth = 0, longKeys?: Set<string>): boolean {
   if (depth > 8) return false;
   if (typeof value === "string") return value.length <= 12_000;
   if (value === null || typeof value === "number" || typeof value === "boolean") return true;
-  if (Array.isArray(value)) return value.length <= 200 && value.every(item => validStructuredValue(item, depth + 1));
+  if (Array.isArray(value)) return value.length <= 200 && value.every(item => validStructuredValue(item, depth + 1, longKeys));
   if (typeof value !== "object") return false;
   const entries = Object.entries(value as Record<string, unknown>);
-  return entries.length <= 200 && entries.every(([key, item]) => !["__proto__","prototype","constructor"].includes(key) && validStructuredValue(item, depth + 1));
+  return entries.length <= 200 && entries.every(([key, item]) => {
+    if (["__proto__","prototype","constructor"].includes(key)) return false;
+    if (depth === 0 && longKeys?.has(key) && typeof item === "string") return item.length <= LONG_FIELD_LIMIT;
+    return validStructuredValue(item, depth + 1, longKeys);
+  });
 }
 
-async function validateApiEnvelope(request: Request, url: URL): Promise<Response | null> {
+/**
+ * Recusa no envelope, registrada.
+ *
+ * Estas checagens rodam antes do handler, e por isso a falha não passava por
+ * `applicationFailure`: a requisição era barrada na porta e não aparecia em
+ * lugar nenhum do diagnóstico. Foi o que escondeu um cadastro de aluno que
+ * vinha sendo recusado por campo desconhecido. Só rota, método e código são
+ * gravados — nunca o corpo.
+ */
+async function recusaNaPorta(
+  env: Env,
+  request: Request,
+  url: URL,
+  codigo: string,
+  status: number,
+  extra: Record<string, unknown> = {},
+): Promise<Response> {
+  try {
+    /* Passa pelo registro único. Havia um INSERT próprio aqui, escrito à mão, e
+       ele não ganhou os campos novos quando o log foi detalhado: as recusas na
+       porta apareciam sem rota, sem mensagem e sem quem chamou, enquanto as
+       falhas de dentro apareciam completas. A mesma gravação em dois lugares
+       diverge na primeira mudança. */
+    await recordApplicationError(env, request, `envelope ${url.pathname}`, codigo, status,
+      new Error(`${codigo}: recusado na validação do envelope${Object.keys(extra).length ? ` · ${JSON.stringify(extra)}` : ""}`));
+  } catch {
+    // Registrar é importante, responder é mais: seguir mesmo sem o registro.
+  }
+  return Response.json({ error: codigo, ...extra }, { status });
+}
+
+async function validateApiEnvelope(request: Request, env: Env, url: URL): Promise<Response | null> {
   if (["GET","HEAD","OPTIONS"].includes(request.method.toUpperCase())) return null;
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
-    return Response.json({ error: "json_content_type_required" }, { status: 415 });
+    return await recusaNaPorta(env, request, url, "json_content_type_required", 415);
   }
-  const limit = url.pathname.includes("training-weeks") ? TRAINING_BODY_LIMIT : JSON_BODY_LIMIT;
+  const limit = url.pathname.includes("training-weeks") ? TRAINING_BODY_LIMIT
+    : url.pathname === "/api/financial" ? FINANCIAL_BODY_LIMIT
+    : JSON_BODY_LIMIT;
   const declaredLength = Number(request.headers.get("content-length") || 0);
-  if (declaredLength > limit) return Response.json({ error: "payload_too_large", maxBytes: limit }, { status: 413 });
+  if (declaredLength > limit) return await recusaNaPorta(env, request, url, "payload_too_large", 413, { maxBytes: limit });
   const raw = await request.clone().text();
-  if (new TextEncoder().encode(raw).byteLength > limit) return Response.json({ error: "payload_too_large", maxBytes: limit }, { status: 413 });
+  if (new TextEncoder().encode(raw).byteLength > limit) return await recusaNaPorta(env, request, url, "payload_too_large", 413, { maxBytes: limit });
   let input: unknown;
   try { input = JSON.parse(raw); }
-  catch { return Response.json({ error: "invalid_json" }, { status: 400 }); }
-  if (!input || Array.isArray(input) || typeof input !== "object" || !validStructuredValue(input)) {
-    return Response.json({ error: "invalid_payload" }, { status: 400 });
+  catch { return await recusaNaPorta(env, request, url, "invalid_json", 400); }
+  if (!input || Array.isArray(input) || typeof input !== "object" || !validStructuredValue(input, 0, longBodyFields[url.pathname])) {
+    return await recusaNaPorta(env, request, url, "invalid_payload", 400);
   }
   const allowed = allowedBodyKeys[url.pathname];
   if (allowed && Object.keys(input as Record<string, unknown>).some(key => !allowed.has(key))) {
-    return Response.json({ error: "unexpected_field" }, { status: 400 });
+    return await recusaNaPorta(env, request, url, "unexpected_field", 400);
   }
   return null;
 }
@@ -186,13 +267,19 @@ function requireCoachApiAccess(request: Request): Response | null {
 /**
  * De quem é a carteira que esta requisição enxerga.
  *
- * Um treinador vê os próprios alunos. A conta de manutenção vê a carteira do
- * treinador que estiver visitando e, sem visita nenhuma, vê tudo — é o modo de
- * diagnóstico. `null` significa "sem recorte".
+ * Um treinador vê os próprios alunos. O proprietário também, porque é um
+ * treinador — e vê a carteira de quem estiver visitando. A conta de manutenção
+ * vê a carteira do treinador que estiver visitando e, sem visita nenhuma, vê
+ * tudo: é o modo de diagnóstico. `null` significa "sem recorte".
  */
 function carteiraDe(request: Request): string | null {
   const identity = resolvedIdentities.get(request) ?? null;
   if (identity?.role === "coach") return identity.email;
+  /* O proprietário é treinador antes de ser proprietário: sem visita ele vê a
+     própria carteira, não a de todo mundo. Ver tudo somado seria misturar os
+     alunos da equipe com os dele, e não é isso que supervisão quer dizer —
+     para olhar a carteira de alguém ele entra na área daquela pessoa. */
+  if (identity?.role === "owner") return identity.visitandoEmail ?? identity.email;
   if (identity?.role === "dev") return identity.visitandoEmail ?? null;
   return null;
 }
@@ -209,6 +296,118 @@ function carteiraDe(request: Request): string | null {
 function recorteDeAlunos(carteira: string | null, coluna = "athletes.coach_email"): { clausula: string; valores: string[] } {
   if (!carteira) return { clausula: "", valores: [] };
   return { clausula: `${coluna} = ?`, valores: [carteira] };
+}
+
+/**
+ * Recorte por carteira para as tabelas que guardam só o nome do aluno.
+ *
+ * `recorteDeAlunos` serve a consultas que já cruzam `athletes`. A maioria das
+ * tabelas do treinador — relatos de dor, semanas, feedbacks, execuções, provas —
+ * guarda apenas `athlete_name`, e cada handler teria de lembrar de cruzar por
+ * conta própria. Sete deles não lembraram, e devolviam a base inteira: na área
+ * de um treinador apareciam os alunos de todos.
+ *
+ * Devolver "1=1" quando não há carteira mantém a composição do WHERE igual nos
+ * dois casos, para o handler não precisar de dois caminhos de SQL — foi essa
+ * bifurcação que fez o recorte ser esquecido nos que erraram.
+ */
+function recorteDaCarteira(carteira: string | null, coluna = "athlete_name"): { clausula: string; valores: string[] } {
+  if (!carteira) return { clausula: "1=1", valores: [] };
+  return { clausula: `${coluna} IN (SELECT name FROM athletes WHERE coach_email = ?)`, valores: [carteira] };
+}
+
+/**
+ * Recusa quando o aluno não é da carteira de quem pede.
+ *
+ * O par do `recorteDaCarteira`: aquele filtra o que se lê, este barra o que se
+ * escreve. Ter só o primeiro deixaria o treinador gravar sobre o aluno de
+ * outro — o recorte valeria para olhar e não para agir.
+ */
+async function foraDaCarteira(env: Env, request: Request, athleteName: string): Promise<Response | null> {
+  const carteira = carteiraDe(request);
+  if (!carteira) return null;
+  const dono = await env.DB.prepare("SELECT coach_email FROM athletes WHERE name = ? LIMIT 1").bind(athleteName).first() as { coach_email?: string } | null;
+  if (dono?.coach_email !== carteira) return Response.json({ error: "athlete_not_in_portfolio" }, { status: 403 });
+  return null;
+}
+
+let bibliotecasSeparadas = false;
+
+/**
+ * Dá dono às planilhas e semeia a biblioteca do treinador principal.
+ *
+ * As planilhas nasceram globais: `custom_plans` e `plan_template_overrides` não
+ * tinham dono, e as dez de fábrica eram constantes do cliente. Com a equipe,
+ * cada treinador tem a própria biblioteca e um treinador novo começa sem
+ * nenhuma — o que obriga a três coisas nesta ordem:
+ *
+ * 1. As planilhas e semanas que já existem passam a ser do treinador principal,
+ *    porque foi ele quem as criou.
+ * 2. Os índices únicos deixam de ser por nome e passam a ser por dono + nome.
+ *    Sem isso, o segundo treinador a criar uma "Base Inverno" tomaria 409, e
+ *    dois treinadores editando a semana 3 de planilhas homônimas gravariam na
+ *    mesma linha — um apagando o treino do outro em silêncio.
+ * 3. As dez de fábrica viram linhas do treinador principal. Elas eram o que ele
+ *    já usava; virar dado é o que permite ao treinador novo não recebê-las.
+ *
+ * Roda uma vez por instância e é idempotente: só toca em linha sem dono e só
+ * semeia planilha que ainda não existe.
+ */
+async function separaBibliotecasDePlanilhas(env: Env): Promise<void> {
+  if (bibliotecasSeparadas) return;
+  await ensureTables(env, schema.customPlans, schema.planTemplateOverrides);
+  await ensureColumns(env, "custom_plans", { coach_email: "TEXT" });
+  await ensureColumns(env, "plan_template_overrides", { coach_email: "TEXT" });
+
+  const principal = coachEmailOf(env);
+  if (!principal) return;
+
+  await env.DB.batch([
+    env.DB.prepare("UPDATE custom_plans SET coach_email = ? WHERE coach_email IS NULL").bind(principal),
+    env.DB.prepare("UPDATE plan_template_overrides SET coach_email = ? WHERE coach_email IS NULL").bind(principal),
+    env.DB.prepare("DROP INDEX IF EXISTS custom_plans_name_idx"),
+    env.DB.prepare("DROP INDEX IF EXISTS plan_template_overrides_plan_week_idx"),
+    env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS custom_plans_coach_name_idx ON custom_plans (coach_email, name)"),
+    env.DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS plan_template_overrides_coach_plan_week_idx ON plan_template_overrides (coach_email, plan_name, week_number)"),
+  ]);
+
+  /* A pergunta certa é "já foi semeado?", não "tem alguma planilha?". A primeira
+     versão perguntava a segunda, e como o passo acima acabara de dar dono às
+     planilhas que o treinador já tinha criado, a contagem nunca era zero e as
+     dez nunca chegavam. Perguntar pelas dez pelo nome também respeita quem
+     apagar alguma depois: com pelo menos uma presente, não se semeia de novo e
+     nada ressuscita. */
+  const nomesDeFabrica = trainingPlans.map(plano => plano.name);
+  const marcadores = nomesDeFabrica.map(() => "?").join(",");
+  const jaSemeado = await env.DB.prepare(
+    `SELECT COUNT(*) AS total FROM custom_plans WHERE coach_email = ? AND name IN (${marcadores})`,
+  ).bind(principal, ...nomesDeFabrica).first() as { total?: number } | null;
+  if (!Number(jaSemeado?.total ?? 0)) await semeiaPlanilhasDeFabrica(env, principal);
+  bibliotecasSeparadas = true;
+}
+
+/**
+ * Escreve as dez planilhas de fábrica na biblioteca de um treinador.
+ *
+ * Usada só na migração do treinador principal. Um treinador criado depois não
+ * passa por aqui: ele começa com a biblioteca vazia, que foi o combinado.
+ */
+async function semeiaPlanilhasDeFabrica(env: Env, dono: string): Promise<void> {
+  const agora = Date.now();
+  const comandos = [];
+  for (const plano of trainingPlans) {
+    comandos.push(env.DB.prepare(
+      `INSERT INTO custom_plans (id,name,distance,weeks,frequency,level,goal,phases,created_by,coach_email,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`,
+    ).bind(crypto.randomUUID(), plano.name, plano.distance, plano.weeks, plano.frequency, plano.level, plano.goal, JSON.stringify(plano.phases), dono, dono, agora));
+    for (const [semana, sessoes] of Object.entries(planWeekTemplates[plano.name] ?? {})) {
+      comandos.push(env.DB.prepare(
+        `INSERT INTO plan_template_overrides (id,plan_name,week_number,sessions_json,updated_by,coach_email,updated_at)
+         VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`,
+      ).bind(crypto.randomUUID(), plano.name, Number(semana), JSON.stringify(sessoes), dono, dono, agora));
+    }
+  }
+  await env.DB.batch(comandos);
 }
 
 let alunosAtribuidos = false;
@@ -235,14 +434,43 @@ function requireDevApiAccess(request: Request): Response | null {
   return null;
 }
 
+/**
+ * Anota um ato no log de segurança.
+ *
+ * A mesma inserção estava repetida em cada lugar que precisava deixar rastro,
+ * cada uma com a rota escrita à mão — e uma delas ficou apontando para o
+ * caminho antigo depois de um renome. Aqui é um lugar só.
+ */
+async function registraNaSeguranca(env: Env, request: Request, evento: string, detalhe: string, rota: string) {
+  await ensureTables(env, schema.securityEvents);
+  await env.DB.prepare(
+    "INSERT INTO security_events (id, actor_email, event_type, route, details, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+  ).bind(crypto.randomUUID(), normalizedAuthenticatedEmail(request) ?? "desconhecido", evento, rota, detalhe, Date.now()).run();
+}
+
+/**
+ * A equipe é assunto do proprietário para cima.
+ *
+ * O proprietário cria e confere os treinadores dele; a manutenção alcança o
+ * mesmo porque alcança tudo. Um treinador comum não passa daqui — quem pode
+ * criar conta pode criar acesso, e isso não desce na hierarquia.
+ */
+function requireOwnerApiAccess(request: Request): Response | null {
+  const identity = resolvedIdentities.get(request) ?? null;
+  if (!identity) return Response.json({ error: "authentication_required" }, { status: 401 });
+  if (identity.role !== "dev" && identity.role !== "owner") return Response.json({ error: "owner_access_required" }, { status: 403 });
+  return null;
+}
+
 type ApiIdentity =
   | { role: "dev"; email: string; visitandoEmail?: string }
+  | { role: "owner"; email: string; visitandoEmail?: string }
   | { role: "coach"; email: string }
   | { role: "student"; email: string; athleteName: string };
 
-/** A conta de manutenção alcança tudo o que o treinador alcança, e mais. */
+/** Manutenção e proprietário alcançam tudo o que o treinador alcança, e mais. */
 function isCoachLevel(identity: ApiIdentity | null): boolean {
-  return identity?.role === "coach" || identity?.role === "dev";
+  return identity?.role === "coach" || identity?.role === "dev" || identity?.role === "owner";
 }
 
 
@@ -271,8 +499,12 @@ async function ensureTables(env: Env, ...tabelas: Array<Parameters<typeof tableS
   const pendentes = tabelas.filter(tabela => !tabelasConferidas.has(nomeDaTabela(tabela)));
   if (!pendentes.length) return;
 
-  const instrucoes = pendentes.flatMap(tabela => tableSql(tabela));
-  await env.DB.batch(instrucoes.map(sql => env.DB.prepare(sql)));
+  /* A ordem aqui importa e custou um 503 para ficar clara: criar tabela,
+     completar as colunas e só então criar os índices. Antes o `tableSql` vinha
+     inteiro num batch só, então um índice novo sobre uma coluna nova era criado
+     antes de a coluna existir — e o batch inteiro falhava num banco que já vinha
+     de uma versão anterior. */
+  await env.DB.batch(pendentes.map(tabela => env.DB.prepare(createTableSql(tabela))));
 
   // Um banco criado por uma versão anterior não ganha colunas novas com
   // `CREATE TABLE IF NOT EXISTS`; este passo completa o que falta sem tocar
@@ -281,6 +513,9 @@ async function ensureTables(env: Env, ...tabelas: Array<Parameters<typeof tableS
     await ensureColumns(env, nomeDaTabela(tabela), tableColumns(tabela));
     tabelasConferidas.add(nomeDaTabela(tabela));
   }
+
+  const indices = pendentes.flatMap(tabela => createIndexesSql(tabela));
+  if (indices.length) await env.DB.batch(indices.map(sql => env.DB.prepare(sql)));
 }
 
 function nomeDaTabela(tabela: Parameters<typeof tableSql>[0]): string {
@@ -400,31 +635,46 @@ async function securityEventsApi(request: Request, env: Env): Promise<Response> 
   return Response.json({ events: events.results, retentionDays: SECURITY_LOG_RETENTION_DAYS });
 }
 
-async function recordApplicationError(env: Env, request: Request, area: string, errorCode: string, statusCode = 503): Promise<void> {
+/** Limites do que se grava por erro. Um log ilegível por tamanho não é log. */
+const LIMITE_DA_MENSAGEM = 500;
+const LIMITE_DA_PILHA = 4000;
+
+async function recordApplicationError(env: Env, request: Request, area: string, errorCode: string, statusCode = 503, falha?: unknown): Promise<void> {
   try {
     await ensureTables(env, schema.applicationErrors);
+    await ensureColumns(env, "application_errors", { route: "TEXT", message: "TEXT", stack: "TEXT", actor_role: "TEXT" });
     const now = Date.now();
+    /* A exceção era descartada nos 29 `catch` que chamam este registro, e o log
+       ficava com "algo falhou em planilhas-base" e mais nada. Agora vem junto a
+       mensagem e a pilha, que são o que permite achar a linha. */
+    const erro = falha instanceof Error ? falha : falha === undefined ? null : new Error(String(falha));
+    const identidade = resolvedIdentities.get(request) ?? null;
     await env.DB.batch([
       env.DB.prepare("DELETE FROM application_errors WHERE created_at < ?").bind(now - SECURITY_LOG_RETENTION_MS),
-      env.DB.prepare("INSERT INTO application_errors (id, area, error_code, method, status_code, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .bind(crypto.randomUUID(), area, errorCode, request.method.toUpperCase(), statusCode, now),
+      env.DB.prepare("INSERT INTO application_errors (id, area, error_code, method, status_code, route, message, stack, actor_role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(crypto.randomUUID(), area, errorCode, request.method.toUpperCase(), statusCode,
+          new URL(request.url).pathname,
+          erro ? `${erro.name}: ${erro.message}`.slice(0, LIMITE_DA_MENSAGEM) : null,
+          erro?.stack ? erro.stack.slice(0, LIMITE_DA_PILHA) : null,
+          identidade?.role ?? "anônimo", now),
     ]);
   } catch { /* Monitoring must never hide the original failure. */ }
 }
 
-async function applicationFailure(env: Env, request: Request, area: string, errorCode: string): Promise<Response> {
-  await recordApplicationError(env, request, area, errorCode);
+async function applicationFailure(env: Env, request: Request, area: string, errorCode: string, falha?: unknown): Promise<Response> {
+  await recordApplicationError(env, request, area, errorCode, 503, falha);
   return Response.json({ error: errorCode }, { status: 503 });
 }
 
 async function applicationErrorsApi(request: Request, env: Env): Promise<Response> {
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
   await ensureTables(env, schema.applicationErrors);
+  await ensureColumns(env, "application_errors", { route: "TEXT", message: "TEXT", stack: "TEXT", actor_role: "TEXT" });
   const now = Date.now();
   await env.DB.prepare("DELETE FROM application_errors WHERE created_at < ?").bind(now - SECURITY_LOG_RETENTION_MS).run();
   const since = now - 86_400_000;
   const [recent, summary] = await Promise.all([
-    env.DB.prepare("SELECT id, area, error_code, method, status_code, created_at FROM application_errors ORDER BY created_at DESC LIMIT 20").all(),
+    env.DB.prepare("SELECT id, area, error_code, method, status_code, route, message, stack, actor_role, created_at FROM application_errors ORDER BY created_at DESC LIMIT 80").all(),
     env.DB.prepare("SELECT COUNT(*) AS total FROM application_errors WHERE created_at >= ?").bind(since).first() as Promise<{ total?: number } | null>,
   ]);
   return Response.json({ errors: recent.results, last24Hours: Number(summary?.total ?? 0), healthy: Number(summary?.total ?? 0) === 0, retentionDays: SECURITY_LOG_RETENTION_DAYS });
@@ -496,6 +746,7 @@ async function resolveApiIdentity(request: Request, env: Env): Promise<ApiIdenti
   const session = await identityFromRequest(env.DB, request);
   if (!session) return null;
   if (session.role === "dev") return { role: "dev", email: session.email, visitandoEmail: session.visitando?.email };
+  if (session.role === "owner") return { role: "owner", email: session.email, visitandoEmail: session.visitando?.email };
   if (session.role === "coach") return { role: "coach", email: session.email };
   await ensureAthleteAccess(env);
   const row = await env.DB.prepare(
@@ -633,15 +884,53 @@ async function authPasswordApi(request: Request, env: Env): Promise<Response> {
 }
 
 /** Contas de aluno vistas e administradas pelo treinador. */
+/**
+ * Contas de acesso vistas pelo treinador.
+ *
+ * A consulta não tinha recorte nenhum: cada treinador via todas as contas do
+ * sistema — as de manutenção, as dos outros treinadores e os alunos de todas as
+ * carteiras. E `reset_password` não conferia o papel do alvo, então bastava
+ * pedir por outro e-mail para redefinir a senha de uma conta de manutenção.
+ *
+ * A cadeia é dev acima de treinador, treinador acima de aluno: aqui o
+ * treinador alcança apenas os alunos da própria carteira, nunca um par nem
+ * quem está acima dele.
+ */
+/**
+ * Recusa quando o alvo não é um aluno da carteira de quem está pedindo.
+ *
+ * Sem esta checagem bastava trocar o e-mail no corpo da requisição para agir
+ * sobre a conta de outro treinador ou sobre a manutenção — inclusive para
+ * redefinir a senha dela.
+ */
+async function foraDaCarteiraDoTreinador(
+  env: Env,
+  conta: { role?: string; athlete_name?: string | null },
+  carteira: string | null,
+): Promise<Response | null> {
+  if (conta.role !== "student") return Response.json({ error: "student_accounts_only" }, { status: 403 });
+  if (!carteira) return null;
+  const dono = await env.DB.prepare("SELECT coach_email FROM athletes WHERE name = ? LIMIT 1").bind(conta.athlete_name ?? "").first() as { coach_email?: string } | null;
+  if (dono?.coach_email !== carteira) return Response.json({ error: "athlete_not_in_portfolio" }, { status: 403 });
+  return null;
+}
+
 async function coachAccountsApi(request: Request, env: Env): Promise<Response> {
+  const carteira = carteiraDe(request);
+  const recorte = carteira
+    ? { clausula: " AND athletes.coach_email = ?", valores: [carteira] }
+    : { clausula: "", valores: [] as string[] };
+
   if (request.method === "GET") {
     const accounts = await env.DB.prepare(
       `SELECT user_accounts.id, user_accounts.email, user_accounts.name, user_accounts.role,
               user_accounts.athlete_name, user_accounts.status, user_accounts.must_change_password,
               user_accounts.last_login_at, user_accounts.created_at
          FROM user_accounts
-        ORDER BY user_accounts.role DESC, user_accounts.name`,
-    ).all();
+         JOIN athletes ON athletes.name = user_accounts.athlete_name
+        WHERE user_accounts.role = 'student'${recorte.clausula}
+        ORDER BY user_accounts.name`,
+    ).bind(...recorte.valores).all();
     return Response.json({ accounts: accounts.results });
   }
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
@@ -675,6 +964,8 @@ async function coachAccountsApi(request: Request, env: Env): Promise<Response> {
   if (action === "reset_password") {
     const account = await accountByEmail(env.DB, email);
     if (!account) return Response.json({ error: "account_not_found" }, { status: 404 });
+    const impedido = await foraDaCarteiraDoTreinador(env, account, carteira);
+    if (impedido) return impedido;
     const temporaryPassword = generateTemporaryPassword();
     await setPassword(env.DB, account.id, temporaryPassword, true);
     await destroySessionsForUser(env.DB, account.id);
@@ -684,7 +975,8 @@ async function coachAccountsApi(request: Request, env: Env): Promise<Response> {
   if (action === "block" || action === "unblock") {
     const account = await accountByEmail(env.DB, email);
     if (!account) return Response.json({ error: "account_not_found" }, { status: 404 });
-    if (account.role === "coach") return Response.json({ error: "cannot_block_coach" }, { status: 400 });
+    const impedido = await foraDaCarteiraDoTreinador(env, account, carteira);
+    if (impedido) return impedido;
     const status = action === "block" ? "Bloqueado" : "Ativo";
     await env.DB.prepare("UPDATE user_accounts SET status = ?, updated_at = ? WHERE id = ?")
       .bind(status, Date.now(), account.id).run();
@@ -723,6 +1015,8 @@ async function athleteAccessApi(request: Request, env: Env): Promise<Response> {
   if (request.method === "GET") {
     const athleteName = String(url.searchParams.get("athlete") ?? "").trim();
     if (!athleteName) return Response.json({ error: "athlete_required" }, { status: 400 });
+    const fora = await foraDaCarteira(env, request, athleteName);
+    if (fora) return fora;
     const [access, history] = await Promise.all([
       env.DB.prepare("SELECT * FROM athlete_access WHERE athlete_name = ? LIMIT 1").bind(athleteName).first(),
       env.DB.prepare("SELECT id, action, actor_email, previous_status, new_status, previous_email, new_email, created_at FROM access_audit_log WHERE athlete_name = ? ORDER BY created_at DESC LIMIT 20").bind(athleteName).all(),
@@ -737,6 +1031,10 @@ async function athleteAccessApi(request: Request, env: Env): Promise<Response> {
     if (!athleteName || !email) return Response.json({ error: "athlete_and_email_required" }, { status: 400 });
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return Response.json({ error: "invalid_email" }, { status: 400 });
     if (!["Convite preparado", "Ativo", "Bloqueado"].includes(status)) return Response.json({ error: "invalid_status" }, { status: 400 });
+    /* Liberar ou bloquear o acesso de um aluno de outro treinador é pior que
+       apenas vê-lo: muda quem entra no sistema. */
+    const foraNoAcesso = await foraDaCarteira(env, request, athleteName);
+    if (foraNoAcesso) return foraNoAcesso;
     const existing = await env.DB.prepare("SELECT email, status FROM athlete_access WHERE athlete_name = ? LIMIT 1").bind(athleteName).first() as { email?: string; status?: string } | null;
     const existingEmail = await env.DB.prepare("SELECT athlete_name FROM athlete_access WHERE email = ? AND athlete_name <> ? LIMIT 1").bind(email, athleteName).first();
     if (existingEmail) return Response.json({ error: "email_already_linked" }, { status: 409 });
@@ -784,7 +1082,7 @@ async function accessRequestApi(request: Request, env: Env, sessionEmail: string
     const integration = boundedText(input.integration, 30) || "Sem integração";
     const allowedDistances = ["Iniciantes", "5 km", "10 km", "Meia", "Maratona"];
     const allowedIntegrations = [...SUPPORTED_PROVIDER_LABELS, "Sem integração"];
-    const trainingDays = Array.isArray(input.trainingDays) ? input.trainingDays.map(day => boundedText(day, 12)).filter(day => ["SEG","TER","QUA","QUI","SEX","SÁB","DOM"].includes(day)).slice(0, 7) : [];
+    const trainingDays = diasDeTreino(input.trainingDays);
     if (!name || name.length < 3 || !allowedDistances.includes(distance) || !trainingDays.length || !allowedIntegrations.includes(integration)) return Response.json({ error: "invalid_registration" }, { status: 400 });
     const existing = await env.DB.prepare("SELECT status FROM access_requests WHERE email = ? LIMIT 1").bind(email).first() as {status?:string}|null;
     if (existing?.status === "Aprovado") return Response.json({ error: "already_approved" }, { status: 409 });
@@ -816,7 +1114,7 @@ async function accessRequestsCoachApi(request: Request, env: Env): Promise<Respo
       await env.DB.prepare("UPDATE access_requests SET status='Recusado', reviewed_by=?, reviewed_at=?, updated_at=? WHERE id=?").bind(actor,now,now,id).run();
       return Response.json({id,status:"Recusado"});
     }
-    const name=String(row.name); const email=String(row.email); const distance=String(row.distance); const days=String(row.training_days||"[]"); const integration=String(row.integration||"Sem integração");
+    const name=String(row.name); const email=String(row.email); const distance=String(row.distance); const days=JSON.stringify(diasDeTreino((()=>{try{return JSON.parse(String(row.training_days||"[]"))}catch{return[]}})())); const integration=String(row.integration||"Sem integração");
     const initials=name.split(/\s+/).filter(Boolean).slice(0,2).map(part=>part[0]?.toUpperCase()).join("")||"AL";
     const plan=distance==="Iniciantes"?"Iniciantes":distance==="5 km"?"5 km Bronze":distance==="10 km"?"10 km Lion":distance==="Meia"?"Meia Start":"One Marathon";
     const totalWeeks=distance==="Iniciantes"?10:distance==="5 km"?10:distance==="10 km"?16:distance==="Meia"?14:20;
@@ -825,7 +1123,11 @@ async function accessRequestsCoachApi(request: Request, env: Env): Promise<Respo
     const existingEmail=await env.DB.prepare("SELECT athlete_name FROM athlete_access WHERE email = ? LIMIT 1").bind(email).first() as {athlete_name?:string}|null;
     if(existingEmail?.athlete_name&&existingEmail.athlete_name!==name)return Response.json({error:"email_already_linked"},{status:409});
     const statements=[];
-    if(!existingName?.id) statements.push(env.DB.prepare("INSERT INTO athletes (id,name,initials,distance,phase,week,next_workout,status,phone,email,training_days,integration,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(athleteId,name,initials,distance,phase,`1 de ${totalWeeks}`,"Aguardando programação",null,row.phone||null,email,days,integration,now));
+    /* O aluno nascia sem `coach_email`: quem aprovava o pedido não virava dono
+       dele. Ficava órfão até `atribuiAlunosSemDono` entregá-lo ao treinador
+       principal — então um aluno aprovado por outro treinador caía na carteira
+       errada, e era assim que a separação furava na origem. */
+    if(!existingName?.id) statements.push(env.DB.prepare("INSERT INTO athletes (id,name,initials,distance,phase,week,next_workout,status,phone,email,training_days,integration,coach_email,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(athleteId,name,initials,distance,phase,`1 de ${totalWeeks}`,"Aguardando programação",null,row.phone||null,email,days,integration,carteiraDe(request),now));
     statements.push(
       env.DB.prepare("INSERT INTO athlete_profiles (athlete_name,phone,birth_date,objective,integration,training_days,updated_at) VALUES (?,?,NULL,?,?,?,?) ON CONFLICT(athlete_name) DO UPDATE SET phone=excluded.phone,objective=excluded.objective,integration=excluded.integration,training_days=excluded.training_days,updated_at=excluded.updated_at").bind(name,row.phone||null,row.objective||null,integration,days,now),
       env.DB.prepare("INSERT INTO athlete_planning (athlete_name,plan,phase,week_number,total_weeks,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(athlete_name) DO UPDATE SET plan=excluded.plan,phase=excluded.phase,week_number=excluded.week_number,total_weeks=excluded.total_weeks,updated_at=excluded.updated_at").bind(name,plan,phase,1,totalWeeks,now),
@@ -867,9 +1169,45 @@ async function studentProfileApi(request: Request, env: Env, athleteName: string
 }
 
 async function studentPerformanceTestsApi(request: Request, env: Env, athleteName: string): Promise<Response> {
+  await ensureTables(env, schema.performanceTests);
+
+  /* O aluno devolve só o que ele mede: o tempo. As zonas continuam saindo do
+     cálculo do treinador na revisão — é ele quem responde pelos ritmos. */
+  if (request.method === "POST") {
+    const input = await request.json() as Record<string, unknown>;
+    const id = boundedText(input.id, 80);
+    const minutes = Number(input.minutes);
+    const seconds = Number(input.seconds);
+    /* Mesmo vocabulário da conclusão de treino: o treinador lê a mesma palavra
+       nos dois lugares em vez de comparar duas escalas para a mesma coisa. */
+    const esforcosAceitos = ["Muito bem", "Cansado", "Sentiu dor"];
+    const effort = boundedText(input.effort, 20);
+    if (effort && !esforcosAceitos.includes(effort)) return Response.json({ error: "invalid_effort" }, { status: 400 });
+    const athleteNote = boundedText(input.note, 500);
+    const sourceFormat = boundedText(input.sourceFormat, 10);
+    const sourceKm = Number(input.sourceKm);
+    if (!id) return Response.json({ error: "test_required" }, { status: 400 });
+    if (!Number.isFinite(minutes) || minutes < 0 || minutes > 120 || !Number.isFinite(seconds) || seconds < 0 || seconds > 59) {
+      return Response.json({ error: "invalid_test_time" }, { status: 400 });
+    }
+    const total = Math.round(minutes * 60 + seconds);
+    if (total < 240) return Response.json({ error: "test_time_too_short", motivo: "O tempo informado é curto demais para um teste.", saida: "Confira os minutos e os segundos." }, { status: 400 });
+    const alvo = await env.DB.prepare("SELECT id FROM performance_tests WHERE id = ? AND athlete_name = ? AND status = 'Solicitado' LIMIT 1").bind(id, athleteName).first();
+    if (!alvo) return Response.json({ error: "test_not_found" }, { status: 404 });
+    /* O arquivo não sobe: é lido no navegador e só o que ele mede segue, como já
+       acontece no registro de treino. O que fica gravado é a origem do número. */
+    await ensureColumns(env, "performance_tests", { effort: "TEXT", athlete_note: "TEXT", source_format: "TEXT", source_km: "TEXT" });
+    await env.DB.prepare(`UPDATE performance_tests
+      SET total_seconds = ?, effort = ?, athlete_note = ?, source_format = ?, source_km = ?, status = 'Aguardando revisão'
+      WHERE id = ?`)
+      .bind(total, effort || null, athleteNote || null, sourceFormat || null,
+        Number.isFinite(sourceKm) && sourceKm > 0 ? String(sourceKm) : null, id).run();
+    return Response.json({ sent: true, totalSeconds: total });
+  }
+
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
   await ensureTables(env, schema.performanceTests);
-  const tests = await env.DB.prepare("SELECT id,test_date,distance_km,total_seconds,vam,vo2,fc_max,pace_seconds,zones,tempo_runs,status FROM performance_tests WHERE athlete_name = ? ORDER BY test_date DESC,created_at DESC").bind(athleteName).all();
+  const tests = await env.DB.prepare("SELECT id,test_date,distance_km,total_seconds,vam,vo2,fc_max,pace_seconds,zones,tempo_runs,status,effort,athlete_note,source_format,source_km FROM performance_tests WHERE athlete_name = ? ORDER BY test_date DESC,created_at DESC").bind(athleteName).all();
   return Response.json({ tests: tests.results });
 }
 
@@ -903,7 +1241,7 @@ async function studentRacesRecordsApi(request: Request, env: Env, athleteName: s
 }
 
 async function athletesApi(request: Request, env: Env): Promise<Response> {
-  await ensureTables(env, schema.athletes, schema.athletePlanning, schema.athleteAccess);
+  await ensureTables(env, schema.athletes, schema.athletePlanning, schema.athleteAccess, schema.athleteProfiles);
   await atribuiAlunosSemDono(env);
   const url = new URL(request.url);
   if (request.method === "GET") {
@@ -916,10 +1254,20 @@ async function athletesApi(request: Request, env: Env): Promise<Response> {
     const carteira = recorteDeAlunos(carteiraDe(request));
     const condicoes = [situacao, carteira.clausula].filter(Boolean);
     const filtro = condicoes.length ? `WHERE ${condicoes.join(" AND ")}` : "";
-    const result = await env.DB.prepare(`SELECT athletes.*, athlete_access.status AS access_status, athlete_planning.plan AS saved_plan, athlete_planning.phase AS planning_phase, athlete_planning.week_number AS planning_week_number, athlete_planning.total_weeks AS planning_total_weeks FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name = athletes.name LEFT JOIN athlete_planning ON athlete_planning.athlete_name = athletes.name ${filtro} ORDER BY athletes.created_at DESC`).bind(...carteira.valores).all();
+    const result = await env.DB.prepare(`SELECT athletes.*, athlete_access.status AS access_status, athlete_planning.plan AS saved_plan, athlete_planning.phase AS planning_phase, athlete_planning.week_number AS planning_week_number, athlete_planning.total_weeks AS planning_total_weeks, athlete_profiles.training_days AS profile_training_days FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name = athletes.name LEFT JOIN athlete_planning ON athlete_planning.athlete_name = athletes.name LEFT JOIN athlete_profiles ON athlete_profiles.athlete_name = athletes.name ${filtro} ORDER BY athletes.created_at DESC`).bind(...carteira.valores).all();
+    /* Os dias de treino do aluno vivem em `athlete_profiles`: é lá que o
+       cadastro do aluno e a ficha do treinador gravam. A cópia em `athletes`
+       nasceu do pedido de acesso e envelhece sozinha — o calendário lia essa
+       cópia vazia e marcava a semana inteira como indisponível, mesmo com a
+       semana liberada. Aqui a lista passa a ter uma fonte só. */
+    const alunos = (result.results as Array<Record<string, unknown>>).map(linha => {
+      const { profile_training_days: diasDoPerfil, ...aluno } = linha;
+      const dias = String(diasDoPerfil ?? "");
+      return { ...aluno, training_days: dias && dias !== "[]" ? dias : String(aluno.training_days ?? "[]") };
+    });
     const totaisSql = `SELECT SUM(CASE WHEN archived_at IS NULL THEN 1 ELSE 0 END) AS ativos, SUM(CASE WHEN archived_at IS NOT NULL THEN 1 ELSE 0 END) AS inativos FROM athletes${carteira.clausula ? ` WHERE ${carteira.clausula.replace(/athletes\./g, "")}` : ""}`;
     const totais = await env.DB.prepare(totaisSql).bind(...carteira.valores).first() as { ativos?: number; inativos?: number } | null;
-    return Response.json({ athletes: result.results, counts: { active: Number(totais?.ativos ?? 0), archived: Number(totais?.inativos ?? 0) } });
+    return Response.json({ athletes: alunos, counts: { active: Number(totais?.ativos ?? 0), archived: Number(totais?.inativos ?? 0) } });
   }
   if (request.method === "POST") {
     const input = await request.json() as Record<string, unknown>;
@@ -958,7 +1306,7 @@ async function athletesApi(request: Request, env: Env): Promise<Response> {
     const phase = boundedText(input.phase, 40);
     const week = boundedText(input.week, 30);
     const nextWorkout = boundedText(input.nextWorkout, 160);
-    const trainingDays = Array.isArray(input.trainingDays) ? input.trainingDays.map(day => boundedText(day, 12)).filter(Boolean).slice(0, 7) : [];
+    const trainingDays = diasDeTreino(input.trainingDays);
     if (!name) return Response.json({ error: "name_required" }, { status: 400 });
     if (!initials || !distance || !phase || !week) return Response.json({ error: "required_fields" }, { status: 400 });
     const jaExiste = await env.DB.prepare("SELECT name FROM athletes WHERE name = ? LIMIT 1").bind(name).first();
@@ -972,6 +1320,16 @@ async function athletesApi(request: Request, env: Env): Promise<Response> {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(id, name, initials, distance, phase, week, nextWorkout, boundedText(input.status, 120) || null, boundedText(input.phone, 30) || null, boundedText(input.email, 254).toLowerCase() || null, JSON.stringify(trainingDays), boundedText(input.integration, 40) || null, createdAt, carteiraDe(request))
       .run();
+    /* O cadastro pelo treinador gravava só `athletes`, enquanto a aprovação de
+       um pedido de acesso gravava também `athlete_profiles`. Como o perfil é a
+       fonte dos dias de treino, o aluno criado por aqui nascia sem dia nenhum e
+       o calendário mostrava a semana inteira indisponível. */
+    await ensureTables(env, schema.athleteProfiles);
+    await env.DB.prepare(`INSERT INTO athlete_profiles (athlete_name, phone, birth_date, objective, integration, training_days, updated_at)
+      VALUES (?, ?, NULL, NULL, ?, ?, ?)
+      ON CONFLICT(athlete_name) DO UPDATE SET phone=excluded.phone, integration=excluded.integration, training_days=excluded.training_days, updated_at=excluded.updated_at`)
+      .bind(name, boundedText(input.phone, 30) || null, boundedText(input.integration, 60) || null, JSON.stringify(trainingDays), createdAt)
+      .run();
     return Response.json({ id, createdAt }, { status: 201 });
   }
   return new Response("Method not allowed", { status: 405 });
@@ -983,17 +1341,41 @@ async function athleteProfileApi(request: Request, env: Env): Promise<Response> 
   if (request.method === "GET") {
     const athleteName = boundedText(url.searchParams.get("athlete"), 120);
     if (!athleteName) return Response.json({ error: "athlete_required" }, { status: 400 });
-    const profile = await env.DB.prepare("SELECT * FROM athlete_profiles WHERE athlete_name = ? LIMIT 1").bind(athleteName).first();
-    return Response.json({ profile: profile ?? null });
+    await ensureTables(env, schema.athletes);
+    /* A ficha traz dado pessoal — dias disponíveis, integração, condição de
+       saúde. Sem esta linha, bastava o nome para ler a de qualquer aluno. */
+    const fora = await foraDaCarteira(env, request, athleteName);
+    if (fora) return fora;
+    const [profile, atleta] = await Promise.all([
+      env.DB.prepare("SELECT * FROM athlete_profiles WHERE athlete_name = ? LIMIT 1").bind(athleteName).first(),
+      /* A marca "sem prova" é decisão do treinador sobre o aluno, então mora em
+         `athletes` junto da classe de preço — e a ficha precisa dela aqui. */
+      env.DB.prepare("SELECT no_target_race FROM athletes WHERE name = ? LIMIT 1").bind(athleteName).first(),
+    ]);
+    return Response.json({ profile: profile ?? null, athlete: atleta ?? null });
   }
   if (request.method === "POST") {
     const input = await request.json() as Record<string, unknown>;
     const athleteName = boundedText(input.athleteName, 120);
-    const trainingDays = Array.isArray(input.trainingDays) ? input.trainingDays.map(day => boundedText(day, 12)).filter(Boolean).slice(0, 7) : [];
+    const trainingDays = diasDeTreino(input.trainingDays);
     const birthDate = boundedText(input.birthDate, 10);
     if (!athleteName) return Response.json({ error: "athlete_required" }, { status: 400 });
     if (birthDate && !isIsoDate(birthDate)) return Response.json({ error: "invalid_birth_date" }, { status: 400 });
+    const foraNoSalvar = await foraDaCarteira(env, request, athleteName);
+    if (foraNoSalvar) return foraNoSalvar;
     const updatedAt = Date.now();
+    /* A marca fica em `athletes` porque é decisão do treinador sobre o aluno,
+       como a classe de preço, e não dado que o aluno preenche. */
+    if (input.noTargetRace !== undefined) {
+      await ensureTables(env, schema.athletes);
+      const marcado = input.noTargetRace ? 1 : 0;
+      await env.DB.prepare("UPDATE athletes SET no_target_race = ? WHERE name = ?").bind(marcado, athleteName).run();
+      /* Era a prova que mantinha o "cadastro incompleto". Assumida a ausência,
+         o aviso sai — e volta se o treinador desmarcar. */
+      if (marcado) {
+        await env.DB.prepare("UPDATE athletes SET status = NULL WHERE name = ? AND status = 'Cadastro incompleto'").bind(athleteName).run();
+      }
+    }
     await env.DB.prepare(`INSERT INTO athlete_profiles (athlete_name,phone,birth_date,objective,integration,training_days,updated_at)
       VALUES (?,?,?,?,?,?,?) ON CONFLICT(athlete_name) DO UPDATE SET phone=excluded.phone,birth_date=excluded.birth_date,objective=excluded.objective,integration=excluded.integration,training_days=excluded.training_days,updated_at=excluded.updated_at`)
       .bind(athleteName,boundedText(input.phone,30)||null,birthDate||null,boundedText(input.objective,120)||null,boundedText(input.integration,40)||null,JSON.stringify(trainingDays),updatedAt).run();
@@ -1014,7 +1396,15 @@ async function athletePlanningApi(request:Request,env:Env):Promise<Response>{
   if(request.method==="POST"){
     const input=await request.json() as Record<string,unknown>;
     const athleteName=boundedText(input.athleteName,120);const plan=boundedText(input.plan,80);const phase=boundedText(input.phase,40);const weekNumber=Number(input.weekNumber);const totalWeeks=Number(input.totalWeeks);
-    const allowedPhases=["Adaptação","Base","Desenvolvimento","Específica","Pré-prova"];const allowedPlans=["Iniciantes","5 km Bronze","5 km Prata","5 km Ouro","5 km Elite","10 km Lion","Meia Start","Meia Finish","One Marathon","Full Marathon"];
+    const allowedPhases=["Adaptação","Base","Desenvolvimento","Específica","Pré-prova"];
+    /* A base do aluno tem de existir na biblioteca de quem o treina. A lista
+       aqui era as dez de fábrica cravadas, então uma planilha própria nunca
+       podia ser atribuída — e, agora que cada treinador tem a sua, cravar a
+       lista deixaria de fazer sentido de todo jeito. */
+    await separaBibliotecasDePlanilhas(env);
+    const dono=carteiraDe(request);
+    const biblioteca=await env.DB.prepare("SELECT name FROM custom_plans WHERE coach_email=?").bind(dono??"").all();
+    const allowedPlans=(biblioteca.results as Array<{name:string}>).map(linha=>linha.name);
     if(!athleteName||!allowedPlans.includes(plan)||!allowedPhases.includes(phase)||!Number.isInteger(totalWeeks)||totalWeeks<1||totalWeeks>60||!Number.isInteger(weekNumber)||weekNumber<1||weekNumber>totalWeeks)return Response.json({error:"invalid_planning"},{status:400});
     const updatedAt=Date.now();
     await env.DB.prepare("INSERT INTO athlete_planning (athlete_name,plan,phase,week_number,total_weeks,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(athlete_name) DO UPDATE SET plan=excluded.plan,phase=excluded.phase,week_number=excluded.week_number,total_weeks=excluded.total_weeks,updated_at=excluded.updated_at").bind(athleteName,plan,phase,weekNumber,totalWeeks,updatedAt).run();
@@ -1024,22 +1414,29 @@ async function athletePlanningApi(request:Request,env:Env):Promise<Response>{
 }
 
 async function planTemplateOverridesApi(request:Request,env:Env):Promise<Response>{
-  await ensureTables(env, schema.planTemplateOverrides);
-  const allowedPlans=["Iniciantes","5 km Bronze","5 km Prata","5 km Ouro","5 km Elite","10 km Lion","Meia Start","Meia Finish","One Marathon","Full Marathon"];
+  await separaBibliotecasDePlanilhas(env);
+  /* A biblioteca é de quem pede. Antes a lista aceita eram as dez de fábrica
+     mais todas as planilhas do banco, sem dono — então um treinador podia ler e
+     gravar a semana da planilha de outro só sabendo o nome dela. */
+  const dono=carteiraDe(request);
+  if(!dono)return Response.json({error:"coach_scope_required"},{status:403});
+  const proprias=await env.DB.prepare("SELECT name FROM custom_plans WHERE coach_email=?").bind(dono).all();
+  const allowedPlans=(proprias.results as Array<{name:string}>).map(linha=>linha.name);
   const url=new URL(request.url);
   if(request.method==="GET"){
     const plan=boundedText(url.searchParams.get("plan"),80);const weekNumber=Number(url.searchParams.get("week"));
     if(!allowedPlans.includes(plan)||!Number.isInteger(weekNumber)||weekNumber<1||weekNumber>60)return Response.json({error:"invalid_plan_week"},{status:400});
-    const row=await env.DB.prepare("SELECT sessions_json,updated_by,updated_at FROM plan_template_overrides WHERE plan_name=? AND week_number=? LIMIT 1").bind(plan,weekNumber).first<Record<string,unknown>>();
+    const row=await env.DB.prepare("SELECT sessions_json,updated_by,updated_at FROM plan_template_overrides WHERE coach_email=? AND plan_name=? AND week_number=? LIMIT 1").bind(dono,plan,weekNumber).first<Record<string,unknown>>();
     if(!row)return Response.json({override:null});
     try{return Response.json({override:{sessions:JSON.parse(String(row.sessions_json)),updatedBy:row.updated_by,updatedAt:row.updated_at}})}catch{return Response.json({error:"invalid_saved_template"},{status:500})}
   }
   if(request.method==="POST"){
     const input=await request.json() as Record<string,unknown>;const plan=boundedText(input.plan,80);const weekNumber=Number(input.weekNumber);const sessions=input.sessions;
-    if(!allowedPlans.includes(plan)||!Number.isInteger(weekNumber)||weekNumber<1||weekNumber>60||!Array.isArray(sessions)||sessions.length<1||sessions.length>10||!validStructuredValue(sessions))return Response.json({error:"invalid_template"},{status:400});
+    /* Zero treinos é um estado legítimo: é como se esvazia uma semana. */
+    if(!allowedPlans.includes(plan)||!Number.isInteger(weekNumber)||weekNumber<1||weekNumber>60||!Array.isArray(sessions)||sessions.length>10||!validStructuredValue(sessions))return Response.json({error:"invalid_template"},{status:400});
     const sessionsJson=JSON.stringify(sessions);if(sessionsJson.length>200_000)return Response.json({error:"template_too_large"},{status:413});
     const updatedAt=Date.now();const updatedBy=normalizedAuthenticatedEmail(request) ?? "sistema";const id=crypto.randomUUID();
-    await env.DB.prepare("INSERT INTO plan_template_overrides (id,plan_name,week_number,sessions_json,updated_by,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(plan_name,week_number) DO UPDATE SET sessions_json=excluded.sessions_json,updated_by=excluded.updated_by,updated_at=excluded.updated_at").bind(id,plan,weekNumber,sessionsJson,updatedBy,updatedAt).run();
+    await env.DB.prepare("INSERT INTO plan_template_overrides (id,plan_name,week_number,sessions_json,updated_by,coach_email,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(coach_email,plan_name,week_number) DO UPDATE SET sessions_json=excluded.sessions_json,updated_by=excluded.updated_by,updated_at=excluded.updated_at").bind(id,plan,weekNumber,sessionsJson,updatedBy,dono,updatedAt).run();
     return Response.json({saved:true,updatedAt});
   }
   return new Response("Method not allowed",{status:405});
@@ -1048,18 +1445,48 @@ async function planTemplateOverridesApi(request:Request,env:Env):Promise<Respons
 async function performanceTestsApi(request: Request, env: Env): Promise<Response> {
   await ensureTables(env, schema.performanceTests);
   const url = new URL(request.url);
+  const carteira = recorteDaCarteira(carteiraDe(request));
   if (request.method === "GET") {
     const athleteName = boundedText(url.searchParams.get("athlete"), 120);
     if (!athleteName) {
-      const result = await env.DB.prepare("SELECT id, athlete_name, test_date, distance_km, total_seconds, status, created_at FROM performance_tests WHERE status != 'Aprovado' ORDER BY created_at DESC LIMIT 100").all();
+      const result = await env.DB.prepare(`SELECT id, athlete_name, test_date, distance_km, total_seconds, status, created_at FROM performance_tests WHERE status != 'Aprovado' AND ${carteira.clausula} ORDER BY created_at DESC LIMIT 100`).bind(...carteira.valores).all();
       return Response.json({ tests:result.results });
     }
-    const result = await env.DB.prepare("SELECT * FROM performance_tests WHERE athlete_name = ? ORDER BY test_date DESC, created_at DESC LIMIT 20").bind(athleteName).all();
+    const result = await env.DB.prepare(`SELECT * FROM performance_tests WHERE athlete_name = ? AND ${carteira.clausula} ORDER BY test_date DESC, created_at DESC LIMIT 20`).bind(athleteName, ...carteira.valores).all();
     return Response.json({ tests:result.results });
   }
   if (request.method === "POST") {
     const input = await request.json() as Record<string,unknown>;
     const action = boundedText(input.action,20);
+
+    /* O teste passou a ter um começo: o treinador pede, o aluno realiza e
+       devolve o tempo, e só então o treinador revisa e libera as zonas. Antes
+       o treinador digitava o resultado inteiro sozinho, e não havia como o
+       aluno saber que precisava correr um teste. */
+    if (action === "request") {
+      const athleteName = boundedText(input.athleteName,120);
+      const distanceKm = Number(input.distanceKm);
+      const testDate = boundedText(input.testDate,10);
+      if (!athleteName) return Response.json({error:"athlete_required"},{status:400});
+      if (![3,5].includes(distanceKm)) return Response.json({error:"invalid_test_distance"},{status:400});
+      if (testDate && !isIsoDate(testDate)) return Response.json({error:"invalid_test_date"},{status:400});
+      const pendente = await env.DB.prepare("SELECT id FROM performance_tests WHERE athlete_name = ? AND status IN ('Solicitado','Aguardando revisão') LIMIT 1").bind(athleteName).first();
+      if (pendente) return Response.json({error:"test_already_pending", motivo:"Já existe um teste em aberto para este aluno.", saida:"Revise ou cancele o atual antes de pedir outro."},{status:409});
+      const id = crypto.randomUUID();
+      await env.DB.prepare(`INSERT INTO performance_tests
+        (id,athlete_name,test_date,distance_km,total_seconds,age,vam,vo2,fc_max,pace_seconds,zones,tempo_runs,status,created_at)
+        VALUES (?,?,?,?,0,0,'0','0',0,'0','[]','[]','Solicitado',?)`)
+        .bind(id, athleteName, testDate || new Date().toISOString().slice(0,10), distanceKm, Date.now()).run();
+      return Response.json({requested:true,id,athleteName,distanceKm},{status:201});
+    }
+
+    if (action === "cancel_request") {
+      const id = boundedText(input.id,80);
+      if (!id) return Response.json({error:"test_required"},{status:400});
+      await env.DB.prepare(`DELETE FROM performance_tests WHERE id = ? AND status IN ('Solicitado','Aguardando revisão') AND ${carteira.clausula}`).bind(id, ...carteira.valores).run();
+      return Response.json({cancelled:true});
+    }
+
     if (action === "review" || action === "approve") {
       const id = boundedText(input.id,80);
       const zones = Array.isArray(input.zones) ? input.zones : [];
@@ -1097,29 +1524,30 @@ async function performanceTestsApi(request: Request, env: Env): Promise<Response
 async function trainingWeeksApi(request: Request, env: Env): Promise<Response> {
   await ensureTables(env, schema.trainingWeeks, schema.trainingWeekAudit);
   const url = new URL(request.url);
+  const carteira = recorteDaCarteira(carteiraDe(request));
   if (request.method === "GET") {
     const athlete = url.searchParams.get("athlete");
     const weekStart = url.searchParams.get("weekStart");
     if (athlete && weekStart) {
       const [row, history] = await Promise.all([
-        env.DB.prepare("SELECT * FROM training_weeks WHERE athlete_name = ? AND week_start = ? LIMIT 1").bind(athlete, weekStart).first(),
-        env.DB.prepare("SELECT id, actor_email, action, changed_fields, created_at FROM training_week_audit WHERE athlete_name = ? AND week_start = ? ORDER BY created_at DESC LIMIT 20").bind(athlete, weekStart).all(),
+        env.DB.prepare(`SELECT * FROM training_weeks WHERE athlete_name = ? AND week_start = ? AND ${carteira.clausula} LIMIT 1`).bind(athlete, weekStart, ...carteira.valores).first(),
+        env.DB.prepare(`SELECT id, actor_email, action, changed_fields, created_at FROM training_week_audit WHERE athlete_name = ? AND week_start = ? AND ${carteira.clausula} ORDER BY created_at DESC LIMIT 20`).bind(athlete, weekStart, ...carteira.valores).all(),
       ]);
       return Response.json({ week: row ?? null, history: history.results });
     }
     if (weekStart) {
       if (!isIsoDate(weekStart)) return Response.json({ error: "invalid_week_start" }, { status: 400 });
-      const result = await env.DB.prepare("SELECT athlete_name, week_start, status, updated_at FROM training_weeks WHERE week_start = ? ORDER BY updated_at DESC").bind(weekStart).all();
+      const result = await env.DB.prepare(`SELECT athlete_name, week_start, status, updated_at FROM training_weeks WHERE week_start = ? AND ${carteira.clausula} ORDER BY updated_at DESC`).bind(weekStart, ...carteira.valores).all();
       return Response.json({ weeks: result.results });
     }
     // Só o atleta, sem semana: antes este caso caía no SELECT sem filtro abaixo
     // e devolvia as semanas de todos os alunos. Quem consultasse pelo primeiro
     // resultado acabaria lendo — ou sobrescrevendo — o treino de outra pessoa.
     if (athlete) {
-      const result = await env.DB.prepare("SELECT * FROM training_weeks WHERE athlete_name = ? ORDER BY week_start DESC").bind(athlete).all();
+      const result = await env.DB.prepare(`SELECT * FROM training_weeks WHERE athlete_name = ? AND ${carteira.clausula} ORDER BY week_start DESC`).bind(athlete, ...carteira.valores).all();
       return Response.json({ weeks: result.results });
     }
-    const result = await env.DB.prepare("SELECT * FROM training_weeks ORDER BY updated_at DESC").all();
+    const result = await env.DB.prepare(`SELECT * FROM training_weeks WHERE ${carteira.clausula} ORDER BY updated_at DESC`).bind(...carteira.valores).all();
     return Response.json({ weeks: result.results });
   }
   if (request.method === "POST") {
@@ -1128,12 +1556,16 @@ async function trainingWeeksApi(request: Request, env: Env): Promise<Response> {
     const weekStart = boundedText(input.weekStart, 10);
     if (!athleteName || !weekStart) return Response.json({ error: "athlete_and_week_required" }, { status: 400 });
     if (!isIsoDate(weekStart)) return Response.json({ error: "invalid_week_start" }, { status: 400 });
+    /* Ler a semana de outro treinador já estava barrado acima; gravar também
+       precisa estar, senão o recorte só valeria de olhar e não de agir. */
+    const fora = await foraDaCarteira(env, request, athleteName);
+    if (fora) return fora;
     const expectedUpdatedAt = Number(input.expectedUpdatedAt ?? 0);
     if (expectedUpdatedAt) {
       const stored = await env.DB.prepare("SELECT updated_at FROM training_weeks WHERE athlete_name = ? AND week_start = ? LIMIT 1").bind(athleteName, weekStart).first() as { updated_at?: number } | null;
       if (stored?.updated_at && Number(stored.updated_at) !== expectedUpdatedAt) return Response.json({ error: "week_changed", message: "A semana foi alterada em outra tela. Atualize antes de salvar novamente." }, { status: 409 });
     }
-    const trainingDays = Array.isArray(input.trainingDays) ? input.trainingDays.map(day => boundedText(day, 12)).filter(Boolean).slice(0, 7) : [];
+    const trainingDays = diasDeTreino(input.trainingDays);
     if (!input.sessions || Array.isArray(input.sessions) || typeof input.sessions !== "object") return Response.json({ error: "invalid_sessions" }, { status: 400 });
     if (boundedText(input.status ?? "Rascunho", 30) === "Liberada") {
       const sessions = input.sessions as Record<string, unknown>;
@@ -1180,6 +1612,14 @@ async function ensurePainReports(env: Env) {
 /** Estados pelos quais um relato caminha, do aviso do aluno até a alta. */
 const PAIN_STATUSES = ["Novo", "Em análise", "Verificado", "Resolvido"] as const;
 
+/** Condutas possíveis depois de avaliar uma queixa. */
+const CONDUTAS_DE_LESAO = [
+  "Segue treinando normalmente",
+  "Reduzir carga nesta semana",
+  "Pausar e reavaliar",
+  "Encaminhar para profissional de saúde",
+];
+
 async function registraMovimentoDor(env: Env, reportId: string, actor: string, action: string, note: string | null) {
   await env.DB.prepare(
     "INSERT INTO pain_report_updates (id, report_id, actor_email, action, note, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -1189,21 +1629,27 @@ async function registraMovimentoDor(env: Env, reportId: string, actor: string, a
 async function painReportsApi(request: Request, env: Env): Promise<Response> {
   await ensurePainReports(env);
   const url = new URL(request.url);
+  const carteira = recorteDaCarteira(carteiraDe(request));
 
   if (request.method === "GET") {
     const reportId = boundedText(url.searchParams.get("id"), 60);
     if (reportId) {
+      /* Buscar por id também precisa do recorte: sem ele, um id conhecido abria
+         o relato de um aluno de outro treinador, com todo o histórico junto. */
       const [relato, historico] = await Promise.all([
-        env.DB.prepare("SELECT * FROM pain_reports WHERE id = ? LIMIT 1").bind(reportId).first(),
-        env.DB.prepare("SELECT id, actor_email, action, note, created_at FROM pain_report_updates WHERE report_id = ? ORDER BY created_at DESC").bind(reportId).all(),
+        env.DB.prepare(`SELECT * FROM pain_reports WHERE id = ? AND ${carteira.clausula} LIMIT 1`).bind(reportId, ...carteira.valores).first(),
+        env.DB.prepare(`SELECT pain_report_updates.id, actor_email, action, note, pain_report_updates.created_at
+                          FROM pain_report_updates JOIN pain_reports ON pain_reports.id = pain_report_updates.report_id
+                         WHERE report_id = ? AND ${carteira.clausula}
+                         ORDER BY pain_report_updates.created_at DESC`).bind(reportId, ...carteira.valores).all(),
       ]);
       if (!relato) return Response.json({ error: "report_not_found" }, { status: 404 });
       return Response.json({ report: relato, history: historico.results });
     }
     const athlete = boundedText(url.searchParams.get("athlete"), 120);
     const result = athlete
-      ? await env.DB.prepare("SELECT * FROM pain_reports WHERE athlete_name = ? ORDER BY created_at DESC LIMIT 50").bind(athlete).all()
-      : await env.DB.prepare("SELECT * FROM pain_reports ORDER BY created_at DESC LIMIT 50").all();
+      ? await env.DB.prepare(`SELECT * FROM pain_reports WHERE athlete_name = ? AND ${carteira.clausula} ORDER BY created_at DESC LIMIT 50`).bind(athlete, ...carteira.valores).all()
+      : await env.DB.prepare(`SELECT * FROM pain_reports WHERE ${carteira.clausula} ORDER BY created_at DESC LIMIT 50`).bind(...carteira.valores).all();
     return Response.json({ reports: result.results, statuses: PAIN_STATUSES });
   }
 
@@ -1234,7 +1680,10 @@ async function painReportsApi(request: Request, env: Env): Promise<Response> {
 
   const reportId = boundedText(input.id, 60);
   if (!reportId) return Response.json({ error: "report_required" }, { status: 400 });
-  const existente = await env.DB.prepare("SELECT id, athlete_name, status, reviewed_at FROM pain_reports WHERE id = ? LIMIT 1").bind(reportId).first() as { id?: string; athlete_name?: string; status?: string; reviewed_at?: number | null } | null;
+  /* Toda ação por id passa por aqui, então o recorte cabe neste ponto só: sem
+     ele, um id conhecido deixaria o treinador agir sobre o relato de um aluno
+     de outro — avaliar, encerrar, reabrir. */
+  const existente = await env.DB.prepare(`SELECT id, athlete_name, status, reviewed_at FROM pain_reports WHERE id = ? AND ${carteira.clausula} LIMIT 1`).bind(reportId, ...carteira.valores).first() as { id?: string; athlete_name?: string; status?: string; reviewed_at?: number | null } | null;
   if (!existente?.id) return Response.json({ error: "report_not_found" }, { status: 404 });
   const note = boundedText(input.note, 1000);
   const agora = Date.now();
@@ -1263,6 +1712,24 @@ async function painReportsApi(request: Request, env: Env): Promise<Response> {
     await env.DB.prepare(`UPDATE pain_reports SET ${campos.join(", ")} WHERE id = ?`).bind(...valores, reportId).run();
     await registraMovimentoDor(env, reportId, actor, `Situação: ${novoStatus}`, note || null);
     return Response.json({ status: novoStatus, updatedAt: agora });
+  }
+
+  /* A avaliação era só um texto escrito de passagem ao trocar a situação. Como
+     passo próprio, ela carimba quem avaliou e quando, e registra a conduta —
+     que é o que muda o treino da semana. */
+  if (acao === "assess") {
+    const conduta = boundedText(input.conduct, 60);
+    if (!CONDUTAS_DE_LESAO.includes(conduta)) {
+      return Response.json({ error: "invalid_conduct", allowed: CONDUTAS_DE_LESAO }, { status: 400 });
+    }
+    await env.DB.prepare(`UPDATE pain_reports SET
+        status = CASE WHEN status = 'Resolvido' THEN status ELSE 'Verificado' END,
+        reviewed_by = ?, reviewed_at = ?, assessment_conduct = ?, coach_note = COALESCE(?, coach_note)
+      WHERE id = ?`)
+      .bind(actor, agora, conduta, note || null, reportId).run();
+    await registraMovimentoDor(env, reportId, actor, `Avaliação: ${conduta}`, note || null);
+    const depois = await env.DB.prepare("SELECT status FROM pain_reports WHERE id = ? LIMIT 1").bind(reportId).first() as { status?: string } | null;
+    return Response.json({ status: depois?.status ?? "Verificado", reviewedAt: agora, conduct: conduta });
   }
 
   if (acao === "review") {
@@ -1335,15 +1802,16 @@ async function studentFeedbacksApi(request: Request, env: Env, athleteName: stri
 }
 
 async function feedbacksApi(request: Request, env: Env): Promise<Response> {
+  const carteira = recorteDaCarteira(carteiraDe(request));
   await ensureTrainingFeedbacks(env);
   if(request.method==="GET"){
-    const result=await env.DB.prepare("SELECT * FROM training_feedbacks ORDER BY CASE status WHEN 'Novo' THEN 0 ELSE 1 END, created_at DESC LIMIT 100").all();
+    const result=await env.DB.prepare(`SELECT * FROM training_feedbacks WHERE ${carteira.clausula} ORDER BY CASE status WHEN 'Novo' THEN 0 ELSE 1 END, created_at DESC LIMIT 100`).bind(...carteira.valores).all();
     return Response.json({feedbacks:result.results});
   }
   if(request.method==="POST"){
     const input=await request.json() as Record<string,unknown>;const id=boundedText(input.id,80);const status=boundedText(input.status,20);
     if(!id||status!=="Revisado")return Response.json({error:"invalid_review"},{status:400});
-    const result=await env.DB.prepare("UPDATE training_feedbacks SET status='Revisado', reviewed_at=? WHERE id=? AND status='Novo'").bind(Date.now(),id).run();
+    const result=await env.DB.prepare(`UPDATE training_feedbacks SET status='Revisado', reviewed_at=? WHERE id=? AND status='Novo' AND ${carteira.clausula}`).bind(Date.now(),id,...carteira.valores).run();
     return Response.json({id,status:"Revisado",updated:result.success!==false});
   }
   return new Response("Method not allowed",{status:405});
@@ -1487,15 +1955,17 @@ async function studentWorkoutExecutionsApi(request: Request, env: Env, athleteNa
 }
 
 async function workoutExecutionsApi(request: Request, env: Env): Promise<Response> {
+  const carteira = recorteDaCarteira(carteiraDe(request));
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
   await ensureWorkoutExecutions(env);
-  const result = await env.DB.prepare("SELECT * FROM workout_executions ORDER BY created_at DESC LIMIT 100").all();
+  const result = await env.DB.prepare(`SELECT * FROM workout_executions WHERE ${carteira.clausula} ORDER BY created_at DESC LIMIT 100`).bind(...carteira.valores).all();
   return Response.json({ executions: result.results });
 }
 
 async function integrationOverviewApi(request: Request, env: Env): Promise<Response> {
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
   await ensureTables(env, schema.athletes, schema.athleteProfiles, schema.athleteAccess, schema.workoutExecutions);
+  const alunos = recorteDeAlunos(carteiraDe(request));
   const result = await env.DB.prepare(`SELECT athletes.name AS athlete_name,
     COALESCE(athlete_profiles.integration, athletes.integration, 'Sem integração') AS integration,
     COALESCE(athlete_access.status, 'Não liberado') AS access_status,
@@ -1504,7 +1974,8 @@ async function integrationOverviewApi(request: Request, env: Env): Promise<Respo
     FROM athletes
     LEFT JOIN athlete_profiles ON athlete_profiles.athlete_name = athletes.name
     LEFT JOIN athlete_access ON athlete_access.athlete_name = athletes.name
-    ORDER BY athletes.name ASC`).all();
+    WHERE ${alunos.clausula || "1=1"}
+    ORDER BY athletes.name ASC`).bind(...alunos.valores).all();
   const integrations = result.results.map((row:any) => ({...row, connection_status: row.integration === "Sem integração" ? "Sem integração" : row.last_source && row.last_source !== "Manual" ? "Sincronizado" : "Aguardando conexão oficial"}));
   return Response.json({ integrations });
 }
@@ -1522,14 +1993,27 @@ async function integrationReadinessApi(request:Request,env:Env):Promise<Response
 const currentReferenceMonth = () => new Date().toISOString().slice(0, 7);
 
 async function ensureFinancial(env: Env) {
-  await ensureTables(env, schema.financialSettings, schema.studentPayments);
+  await ensureTables(env, schema.financialSettings, schema.studentPayments, schema.priceClasses, schema.athletes);
 }
 
 async function financialApi(request:Request,env:Env):Promise<Response>{
+  const alunos = recorteDeAlunos(carteiraDe(request));
+  const carteira = recorteDaCarteira(carteiraDe(request));
   await ensureFinancial(env);const url=new URL(request.url);const month=boundedText(url.searchParams.get("month"),7)||currentReferenceMonth();
   if(request.method==="GET"){
-    const [settings,payments]=await Promise.all([env.DB.prepare("SELECT * FROM financial_settings WHERE id='default' LIMIT 1").first(),env.DB.prepare(`SELECT athletes.name AS athlete_name,athlete_access.status AS access_status,student_payments.id,student_payments.reference_month,student_payments.amount_cents,student_payments.due_date,student_payments.status,student_payments.paid_at FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name=athletes.name LEFT JOIN student_payments ON student_payments.athlete_name=athletes.name AND student_payments.reference_month=? WHERE COALESCE(athlete_access.status,'Ativo')<>'Bloqueado' ORDER BY athletes.name`).bind(month).all()]);
-    return Response.json({month,settings:settings??null,payments:payments.results});
+    const comprovante=boundedText(url.searchParams.get("receipt"),120);
+    if(comprovante){
+      const linha=await env.DB.prepare(`SELECT receipt_image,receipt_note,receipt_added_at FROM student_payments WHERE athlete_name=? AND reference_month=? AND ${carteira.clausula} LIMIT 1`).bind(comprovante,month).first();
+      return Response.json({receipt:linha??null});
+    }
+    const [settings,payments,classes]=await Promise.all([
+      env.DB.prepare("SELECT * FROM financial_settings WHERE id='default' LIMIT 1").first(),
+      /* `receipt_image` fica de fora da lista: são centenas de KB por linha e a
+         tela só precisa saber que existe. A imagem vem quando for aberta. */
+      env.DB.prepare(`SELECT athletes.name AS athlete_name,athletes.price_class,athlete_access.status AS access_status,student_payments.id,student_payments.reference_month,student_payments.amount_cents,student_payments.due_date,student_payments.status,student_payments.paid_at,student_payments.receipt_note,student_payments.receipt_added_at,(student_payments.receipt_image IS NOT NULL) AS has_receipt FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name=athletes.name LEFT JOIN student_payments ON student_payments.athlete_name=athletes.name AND student_payments.reference_month=? WHERE ${alunos.clausula ? `${alunos.clausula} AND ` : ''}COALESCE(athlete_access.status,'Ativo')<>'Bloqueado' AND athletes.archived_at IS NULL ORDER BY athletes.name`).bind(month, ...alunos.valores).all(),
+      env.DB.prepare("SELECT id,name,amount_cents,due_day FROM price_classes ORDER BY amount_cents DESC,name").all(),
+    ]);
+    return Response.json({month,settings:settings??null,payments:payments.results,classes:classes.results});
   }
   if(request.method!=="POST")return new Response("Method not allowed",{status:405});const input=await request.json() as Record<string,unknown>;const action=boundedText(input.action,30);const now=Date.now();
   if(action==="save_settings"){
@@ -1538,7 +2022,41 @@ async function financialApi(request:Request,env:Env):Promise<Response>{
     await env.DB.prepare("INSERT INTO financial_settings (id,pix_key,pix_name,default_amount_cents,due_day,updated_at) VALUES ('default',?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET pix_key=excluded.pix_key,pix_name=excluded.pix_name,default_amount_cents=excluded.default_amount_cents,due_day=excluded.due_day,updated_at=excluded.updated_at").bind(pixKey||null,pixName||null,Math.round(amount*100),dueDay,now).run();return Response.json({saved:true});
   }
   if(action==="generate_month"){
-    const settings=await env.DB.prepare("SELECT default_amount_cents,due_day FROM financial_settings WHERE id='default'").first() as {default_amount_cents?:number;due_day?:number}|null;if(!settings)return Response.json({error:"settings_required"},{status:409});const referenceMonth=boundedText(input.referenceMonth,7)||month;if(!/^\d{4}-\d{2}$/.test(referenceMonth))return Response.json({error:"invalid_month"},{status:400});const dueDate=`${referenceMonth}-${String(settings.due_day).padStart(2,"0")}`;const athletes=await env.DB.prepare("SELECT athletes.name FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name=athletes.name WHERE COALESCE(athlete_access.status,'Ativo')<>'Bloqueado'").all();await env.DB.batch((athletes.results as any[]).map(row=>env.DB.prepare("INSERT OR IGNORE INTO student_payments (id,athlete_name,reference_month,amount_cents,due_date,status,paid_at,updated_at) VALUES (?,?,?,?,?,'Pendente',NULL,?)").bind(crypto.randomUUID(),row.name,referenceMonth,settings.default_amount_cents,dueDate,now)));return Response.json({generated:athletes.results.length});
+    const settings=await env.DB.prepare("SELECT default_amount_cents,due_day FROM financial_settings WHERE id='default'").first() as {default_amount_cents?:number;due_day?:number}|null;
+    if(!settings)return Response.json({error:"settings_required"},{status:409});
+    const referenceMonth=boundedText(input.referenceMonth,7)||month;
+    if(!/^\d{4}-\d{2}$/.test(referenceMonth))return Response.json({error:"invalid_month"},{status:400});
+
+    /* Três alcances, uma geração só. O valor raramente é igual para todo mundo:
+       cada aluno recebe o da sua classe e, sem classe, o padrão. Cobrança que
+       já existe no mês nunca é tocada — é lá que mora a negociação individual. */
+    const alcance=boundedText(input.scope,20)||"all";
+    const classeAlvo=boundedText(input.className,60);
+    const escolhidos=Array.isArray(input.athletes)?input.athletes.map(nome=>boundedText(nome,120)).filter(Boolean):[];
+    if(alcance==="class"&&!classeAlvo)return Response.json({error:"class_required"},{status:400});
+    if(alcance==="athletes"&&!escolhidos.length)return Response.json({error:"athletes_required"},{status:400});
+
+    /* Gerar cobrança para o aluno de outro treinador seria pior que apenas
+       vê-lo: cria dívida no nome dele, na carteira errada. */
+    const filtros=["COALESCE(athlete_access.status,'Ativo')<>'Bloqueado'","athletes.archived_at IS NULL"];
+    const valores:string[]=[];
+    if(alunos.clausula){filtros.push(alunos.clausula);valores.push(...alunos.valores)}
+    if(alcance==="class"){filtros.push("athletes.price_class = ?");valores.push(classeAlvo)}
+    if(alcance==="athletes"){filtros.push(`athletes.name IN (${escolhidos.map(()=>"?").join(",")})`);valores.push(...escolhidos)}
+    const alvos=await env.DB.prepare(`SELECT athletes.name, athletes.price_class FROM athletes LEFT JOIN athlete_access ON athlete_access.athlete_name=athletes.name WHERE ${filtros.join(" AND ")}`).bind(...valores).all();
+
+    const classes=await env.DB.prepare("SELECT name, amount_cents, due_day FROM price_classes").all();
+    const porClasse=new Map((classes.results as Array<{name:string;amount_cents:number;due_day:number}>).map(item=>[item.name,item]));
+    const aGerar=(alvos.results as Array<{name:string;price_class?:string|null}>).map(aluno=>{
+      const classe=aluno.price_class?porClasse.get(aluno.price_class):undefined;
+      const valor=classe?classe.amount_cents:Number(settings.default_amount_cents);
+      const dia=classe?classe.due_day:Number(settings.due_day);
+      return {nome:aluno.name,valor,vencimento:`${referenceMonth}-${String(dia).padStart(2,"0")}`};
+    });
+    if(!aGerar.length)return Response.json({generated:0,scope:alcance});
+    await env.DB.batch(aGerar.map(linha=>env.DB.prepare("INSERT OR IGNORE INTO student_payments (id,athlete_name,reference_month,amount_cents,due_date,status,paid_at,updated_at) VALUES (?,?,?,?,?,'Pendente',NULL,?)")
+      .bind(crypto.randomUUID(),linha.nome,referenceMonth,linha.valor,linha.vencimento,now)));
+    return Response.json({generated:aGerar.length,scope:alcance});
   }
   if(action==="update_payment"){
     const athleteName=boundedText(input.athleteName,120);const referenceMonth=boundedText(input.referenceMonth,7);const status=boundedText(input.status,20);const amount=Number(input.amount);const dueDate=boundedText(input.dueDate,10);if(!athleteName||!/^\d{4}-\d{2}$/.test(referenceMonth)||!["Pendente","Pago"].includes(status)||!Number.isFinite(amount)||amount<=0||!isIsoDate(dueDate))return Response.json({error:"invalid_payment"},{status:400});await env.DB.prepare("INSERT INTO student_payments (id,athlete_name,reference_month,amount_cents,due_date,status,paid_at,updated_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(athlete_name,reference_month) DO UPDATE SET amount_cents=excluded.amount_cents,due_date=excluded.due_date,status=excluded.status,paid_at=excluded.paid_at,updated_at=excluded.updated_at").bind(crypto.randomUUID(),athleteName,referenceMonth,Math.round(amount*100),dueDate,status,status==="Pago"?now:null,now).run();return Response.json({saved:true});
@@ -1548,6 +2066,60 @@ async function financialApi(request:Request,env:Env):Promise<Response>{
     if(!athleteName||!/^\d{4}-\d{2}$/.test(referenceMonth))return Response.json({error:"invalid_payment"},{status:400});
     await env.DB.prepare("DELETE FROM student_payments WHERE athlete_name=? AND reference_month=?").bind(athleteName,referenceMonth).run();
     return Response.json({deleted:true});
+  }
+  if(action==="save_class"){
+    const id=boundedText(input.classId,40)||crypto.randomUUID();
+    const name=boundedText(input.name,60);const amount=Number(input.amount);const dueDay=Number(input.dueDay);
+    if(name.length<2)return Response.json({error:"class_name_too_short"},{status:400});
+    if(!Number.isFinite(amount)||amount<=0||amount>10000||!Number.isInteger(dueDay)||dueDay<1||dueDay>28)return Response.json({error:"invalid_financial_settings"},{status:400});
+    const conflito=await env.DB.prepare("SELECT id FROM price_classes WHERE name=? AND id<>? LIMIT 1").bind(name,id).first();
+    if(conflito)return Response.json({error:"class_name_already_used"},{status:409});
+    await env.DB.prepare("INSERT INTO price_classes (id,name,amount_cents,due_day,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,amount_cents=excluded.amount_cents,due_day=excluded.due_day,updated_at=excluded.updated_at")
+      .bind(id,name,Math.round(amount*100),dueDay,now).run();
+    return Response.json({saved:true,id,name});
+  }
+  if(action==="delete_class"){
+    const id=boundedText(input.classId,40);
+    if(!id)return Response.json({error:"class_required"},{status:400});
+    const classe=await env.DB.prepare("SELECT name FROM price_classes WHERE id=? LIMIT 1").bind(id).first() as {name?:string}|null;
+    if(!classe?.name)return Response.json({error:"class_not_found"},{status:404});
+    /* Apagar a classe não pode deixar aluno apontando para o vazio: quem estava
+       nela volta ao valor padrão, e isso é dito na tela antes de confirmar. */
+    const usando=await env.DB.prepare("SELECT COUNT(*) AS total FROM athletes WHERE price_class=?").bind(classe.name).first() as {total?:number}|null;
+    await env.DB.batch([
+      env.DB.prepare("UPDATE athletes SET price_class=NULL WHERE price_class=?").bind(classe.name),
+      env.DB.prepare("DELETE FROM price_classes WHERE id=?").bind(id),
+    ]);
+    return Response.json({deleted:true,alunosAfetados:Number(usando?.total??0)});
+  }
+  if(action==="assign_class"){
+    const athleteName=boundedText(input.athleteName,120);const name=boundedText(input.name,60);
+    if(!athleteName)return Response.json({error:"athlete_required"},{status:400});
+    if(name){
+      const existe=await env.DB.prepare("SELECT id FROM price_classes WHERE name=? LIMIT 1").bind(name).first();
+      if(!existe)return Response.json({error:"class_not_found"},{status:404});
+    }
+    await env.DB.prepare("UPDATE athletes SET price_class=? WHERE name=?").bind(name||null,athleteName).run();
+    return Response.json({assigned:true,athleteName,name:name||null});
+  }
+  if(action==="save_receipt"||action==="remove_receipt"){
+    const athleteName=boundedText(input.athleteName,120);const referenceMonth=boundedText(input.referenceMonth,7);
+    if(!athleteName||!/^\d{4}-\d{2}$/.test(referenceMonth))return Response.json({error:"invalid_payment"},{status:400});
+    if(action==="remove_receipt"){
+      await env.DB.prepare("UPDATE student_payments SET receipt_image=NULL,receipt_note=NULL,receipt_added_at=NULL,updated_at=? WHERE athlete_name=? AND reference_month=?").bind(now,athleteName,referenceMonth).run();
+      return Response.json({removed:true});
+    }
+    /* A imagem chega já reduzida pelo navegador. O teto aqui é a última linha
+       de defesa: uma linha do D1 não comporta um arquivo grande, e sem limite
+       um comprovante mal comprimido derrubaria a gravação inteira. */
+    const imagem=typeof input.image==="string"?input.image:"";
+    if(!imagem.startsWith("data:image/")||imagem.length>420_000)return Response.json({error:"invalid_receipt"},{status:400});
+    const nota=boundedText(input.note,200);
+    const alvo=await env.DB.prepare("SELECT id FROM student_payments WHERE athlete_name=? AND reference_month=? LIMIT 1").bind(athleteName,referenceMonth).first();
+    if(!alvo)return Response.json({error:"payment_not_found"},{status:404});
+    await env.DB.prepare("UPDATE student_payments SET receipt_image=?,receipt_note=?,receipt_added_at=?,updated_at=? WHERE athlete_name=? AND reference_month=?")
+      .bind(imagem,nota||null,now,now,athleteName,referenceMonth).run();
+    return Response.json({saved:true});
   }
   return Response.json({error:"invalid_action"},{status:400});
 }
@@ -2199,15 +2771,18 @@ async function enviarTreinoParaGarmin(
 /** Visão do treinador: quem conectou o quê, e o que ainda depende de cadastro. */
 async function integrationsCoachApi(request: Request, env: Env): Promise<Response> {
   await ensureIntegrationTables(env);
+  const carteira = recorteDaCarteira(carteiraDe(request));
   if (request.method === "GET") {
+    /* Conexão de relógio diz de quem é a conta no Strava ou no Garmin e quando
+       a pessoa treinou. Sem recorte, isso aparecia para qualquer treinador. */
     const connections = await env.DB.prepare(
       `SELECT athlete_name, provider, status, external_athlete_id, last_sync_at, updated_at
-         FROM external_integrations ORDER BY athlete_name, provider`,
-    ).all();
+         FROM external_integrations WHERE ${carteira.clausula} ORDER BY athlete_name, provider`,
+    ).bind(...carteira.valores).all();
     const activities = await env.DB.prepare(
       `SELECT athlete_name, provider, COUNT(*) AS total, MAX(started_at) AS last_activity_at
-         FROM external_activities GROUP BY athlete_name, provider`,
-    ).all();
+         FROM external_activities WHERE ${carteira.clausula} GROUP BY athlete_name, provider`,
+    ).bind(...carteira.valores).all();
     return Response.json({
       providers: Object.values(PROVIDERS).map(provider => ({
         id: provider.id,
@@ -2297,11 +2872,23 @@ async function devOverviewApi(request: Request, env: Env): Promise<Response> {
                            user_sessions.expires_at, user_accounts.role
                       FROM user_sessions LEFT JOIN user_accounts ON user_accounts.id = user_sessions.user_id
                      WHERE user_sessions.expires_at > ? ORDER BY user_sessions.last_seen_at DESC LIMIT 40`).bind(agora).all(),
-    env.DB.prepare("SELECT id, area, error_code, method, status_code, created_at FROM application_errors ORDER BY created_at DESC LIMIT 80").all(),
+    env.DB.prepare("SELECT id, area, error_code, method, status_code, route, message, stack, actor_role, created_at FROM application_errors ORDER BY created_at DESC LIMIT 80").all(),
     env.DB.prepare("SELECT id, actor_email, event_type, route, details, created_at FROM security_events ORDER BY created_at DESC LIMIT 60").all(),
     env.DB.prepare("SELECT actor_email, route, method, request_count, window_start FROM request_rate_limits WHERE window_start > ? ORDER BY request_count DESC LIMIT 25").bind(agora - 3_600_000).all(),
     env.DB.prepare("SELECT provider, COUNT(*) AS total, MAX(started_at) AS ultima FROM external_activities GROUP BY provider").all(),
   ]);
+
+  /* Os três números do resumo precisam de contagem própria.
+     As listas acima são recortes para exibir em tabela — 80 erros, 40 sessões —
+     e usar o tamanho delas como total fazia o cartão travar no limite do
+     recorte: "erros nas últimas 24 h" parava de crescer em 80 justamente
+     quando havia muitos erros. E "integrações" contava provedores com alguma
+     atividade importada, não conexões: no máximo quatro, por definição. */
+  const [totalErros24h, totalSessoes, totalConexoes] = await Promise.all([
+    env.DB.prepare("SELECT COUNT(*) AS total FROM application_errors WHERE created_at > ?").bind(agora - 86_400_000).first(),
+    env.DB.prepare("SELECT COUNT(*) AS total FROM user_sessions WHERE expires_at > ?").bind(agora).first(),
+    env.DB.prepare("SELECT COUNT(*) AS total FROM external_integrations WHERE status = 'Conectado'").first(),
+  ]) as Array<{ total?: number } | null>;
 
   // Volume de cada tabela, uma consulta por tabela porque o SQLite não expõe
   // contagem de linhas em metadado confiável.
@@ -2315,20 +2902,20 @@ async function devOverviewApi(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  const errosRecentes = (erros.results as Array<{ created_at: number }>).filter(e => Number(e.created_at) > agora - 86_400_000);
-
   return Response.json({
     generatedAt: agora,
     saude: {
-      errosUltimas24h: errosRecentes.length,
+      errosUltimas24h: Number(totalErros24h?.total ?? 0),
       contasBloqueadas: (contas.results as Array<{ status?: string }>).filter(c => c.status === "Bloqueado").length,
-      sessoesAtivas: sessoes.results.length,
-      integracoesConectadas: (atividades.results as unknown[]).length,
+      sessoesAtivas: Number(totalSessoes?.total ?? 0),
+      integracoesConectadas: Number(totalConexoes?.total ?? 0),
     },
     ambiente: {
       // Só a presença das variáveis, nunca o valor.
       coachEmailConfigurado: Boolean(env.COACH_EMAIL),
-      devLoginConfigurado: Boolean(env.DEV_LOGIN),
+      // Presença não basta: um DEV_LOGIN inválido não cria conta nenhuma, e
+      // marcar "configurado" nesse caso esconderia justamente a falha.
+      devLoginConfigurado: Boolean(env.DEV_LOGIN) && isValidDevLogin(String(env.DEV_LOGIN)),
       chaveDeCifraConfigurada: Boolean(env.STRAVA_TOKEN_ENCRYPTION_KEY),
       provedores: Object.values(PROVIDERS).map(p => ({ id: p.id, label: p.label, disponivel: providerIsReady(env, p), estado: providerStatusLabel(env, p) })),
     },
@@ -2350,21 +2937,29 @@ async function devOverviewApi(request: Request, env: Env): Promise<Response> {
  * servidor que decide o recorte dos dados, e não a interface. Quem age continua
  * sendo a conta de manutenção, e é o e-mail dela que vai para a auditoria.
  */
-async function devCoachesApi(request: Request, env: Env): Promise<Response> {
+async function equipeApi(request: Request, env: Env): Promise<Response> {
   await ensureTables(env, schema.userAccounts, schema.userSessions, schema.athletes);
   await atribuiAlunosSemDono(env);
 
+  const quemPede = resolvedIdentities.get(request) ?? null;
+  /* A manutenção enxerga a equipe inteira, proprietário incluído, porque ela
+     responde pelo sistema. O proprietário enxerga só os treinadores: listar os
+     pares dele — ou a manutenção — não é supervisão, é vazamento de estrutura. */
+  const papeisVisiveis = quemPede?.role === "dev" ? ["coach", "owner"] : ["coach"];
+  const marcadores = papeisVisiveis.map(() => "?").join(",");
+
   if (request.method === "GET") {
     const treinadores = await env.DB.prepare(
-      `SELECT user_accounts.id, user_accounts.email, user_accounts.name, user_accounts.status, user_accounts.last_login_at,
-              (SELECT COUNT(*) FROM athletes WHERE athletes.coach_email = user_accounts.email AND athletes.archived_at IS NULL) AS alunos_ativos
-         FROM user_accounts WHERE role = 'coach' ORDER BY name`,
-    ).all();
+      `SELECT user_accounts.id, user_accounts.email, user_accounts.name, user_accounts.role, user_accounts.status, user_accounts.last_login_at,
+              (SELECT COUNT(*) FROM athletes WHERE athletes.coach_email = user_accounts.email AND athletes.archived_at IS NULL) AS alunos_ativos,
+              (SELECT COUNT(*) FROM custom_plans WHERE custom_plans.coach_email = user_accounts.email) AS planilhas
+         FROM user_accounts WHERE role IN (${marcadores}) ORDER BY name`,
+    ).bind(...papeisVisiveis).all();
     const semDono = await env.DB.prepare("SELECT COUNT(*) AS total FROM athletes WHERE coach_email IS NULL").first() as { total?: number } | null;
     const sessao = await identityFromRequest(env.DB, request);
     return Response.json({
       coaches: treinadores.results,
-      visitando: sessao?.role === "dev" ? sessao.visitando ?? null : null,
+      visitando: sessao && (sessao.role === "dev" || sessao.role === "owner") ? sessao.visitando ?? null : null,
       alunosSemDono: Number(semDono?.total ?? 0),
     });
   }
@@ -2390,34 +2985,241 @@ async function devCoachesApi(request: Request, env: Env): Promise<Response> {
     const senhaFinal = senha || `${generateTemporaryPassword()}a1`;
     if (senha && problema) return Response.json({ error: problema, minLength: MIN_PASSWORD_LENGTH }, { status: 400 });
     if (await accountByEmail(env.DB, email)) return Response.json({ error: "email_already_registered" }, { status: 409 });
+    /* Sempre "coach": nem o proprietário nem a manutenção criam um par por esta
+       porta. Promover alguém é outro ato, e deve ser deliberado. O treinador
+       nasce sem aluno e sem planilha — a carteira e a biblioteca dele são dele,
+       e começam vazias. */
     await createAccount(env.DB, { email, name, role: "coach", password: senhaFinal, mustChangePassword: true, status: "Ativo" });
+    await registraNaSeguranca(env, request, "Nova conta de treinador", `Criada por quem tinha permissão: ${email}`, "/api/equipe");
     return Response.json({ created: true, email, name, temporaryPassword: senhaFinal }, { status: 201 });
   }
 
   if (acao === "visit") {
     const email = boundedText(input.email, 254).toLowerCase();
-    const alvo = await env.DB.prepare("SELECT id, email, name FROM user_accounts WHERE email = ? AND role = 'coach' LIMIT 1").bind(email).first() as { id?: string; email?: string; name?: string } | null;
+    /* O alvo tem de estar entre os papéis que quem pede pode ver. Sem isto, o
+       proprietário poderia entrar na área de outro proprietário informando o
+       e-mail direto, sem passar pela lista — subir na hierarquia por um campo
+       de formulário. */
+    const alvo = await env.DB.prepare(`SELECT id, email, name FROM user_accounts WHERE email = ? AND role IN (${marcadores}) LIMIT 1`)
+      .bind(email, ...papeisVisiveis).first() as { id?: string; email?: string; name?: string } | null;
     if (!alvo?.id) return Response.json({ error: "coach_not_found" }, { status: 404 });
+    if (alvo.email === quemPede?.email) return Response.json({ error: "cannot_visit_self" }, { status: 400 });
     await setImpersonation(env.DB, token, alvo.id);
     // Visitar a área de outra pessoa é um ato que precisa deixar rastro.
-    await ensureTables(env, schema.securityEvents);
-    await env.DB.prepare("INSERT INTO security_events (id, actor_email, event_type, route, details, created_at) VALUES (?, ?, 'Manutenção visitou um treinador', '/api/dev/coaches', ?, ?)")
-      .bind(crypto.randomUUID(), normalizedAuthenticatedEmail(request) ?? "manutenção", `Área de ${alvo.email}`, Date.now()).run();
+    await registraNaSeguranca(env, request, quemPede?.role === "owner" ? "Proprietário conferiu um treinador" : "Manutenção visitou um treinador", `Área de ${alvo.email}`, "/api/equipe");
     return Response.json({ visitando: { email: alvo.email, name: alvo.name, userId: alvo.id } });
   }
 
   return Response.json({ error: "unknown_action" }, { status: 400 });
 }
 
+/**
+ * Contas vistas pela manutenção.
+ *
+ * O `/api/accounts` do treinador cuida apenas dos alunos da carteira dele: cria
+ * sempre com papel de aluno e recusa bloquear um treinador. A manutenção
+ * precisa alcançar qualquer conta, e por isso a autorização é outra — daí um
+ * caminho próprio, e não um ramo dentro daquele.
+ *
+ * Excluir é a única ação sem volta, e por isso é a mais restrita: só sai de
+ * cena quem não é dono de nada. Um treinador com alunos, a conta configurada no
+ * ambiente e a própria sessão de quem está agindo continuam de pé — para esses
+ * existe bloquear, que derruba as sessões e pode ser desfeito.
+ */
+async function devAccountsApi(request: Request, env: Env): Promise<Response> {
+  await ensureTables(env, schema.userAccounts, schema.userSessions, schema.athletes, schema.securityEvents);
+  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+
+  const input = await request.json() as Record<string, unknown>;
+  const acao = boundedText(input.action, 20);
+  const email = boundedText(input.email, 254).toLowerCase();
+  const conta = await accountByEmail(env.DB, email);
+  if (!conta) return Response.json({ error: "account_not_found" }, { status: 404 });
+
+  const autor = normalizedAuthenticatedEmail(request) ?? "manutenção";
+  const registra = (evento: string, detalhe: string) => env.DB.prepare(
+    "INSERT INTO security_events (id, actor_email, event_type, route, details, created_at) VALUES (?, ?, ?, '/api/dev/accounts', ?, ?)",
+  ).bind(crypto.randomUUID(), autor, evento, detalhe, Date.now()).run();
+
+  if (acao === "set_role") {
+    /* Promover é ato do dev, e só dele: quem promove define quem manda. O papel
+       aceito é curto de propósito — "owner" e "coach" e mais nada. Criar outra
+       manutenção por aqui daria a qualquer proprietário promovido o caminho
+       para virar dev, que é exatamente o que a hierarquia existe para impedir. */
+    const papel = boundedText(input.role, 10);
+    if (papel !== "owner" && papel !== "coach") return Response.json({ error: "invalid_role" }, { status: 400 });
+    if (conta.role === "dev") return Response.json({ error: "cannot_change_dev_role" }, { status: 403 });
+    if (conta.role === papel) return Response.json({ changed: false, email: conta.email, role: papel });
+    await env.DB.prepare("UPDATE user_accounts SET role = ? WHERE id = ?").bind(papel, conta.id).run();
+    /* A sessão aberta carrega o papel antigo. Derrubá-la é o que faz a mudança
+       valer agora, em vez de na próxima vez que a pessoa entrar. */
+    await destroySessionsForUser(env.DB, conta.id);
+    await registra(papel === "owner" ? "Conta promovida a proprietário" : "Proprietário voltou a treinador", `Conta ${conta.email}`);
+    return Response.json({ changed: true, email: conta.email, role: papel });
+  }
+
+  if (acao === "reset_password") {
+    const senhaTemporaria = generateTemporaryPassword();
+    await setPassword(env.DB, conta.id, senhaTemporaria, true);
+    await destroySessionsForUser(env.DB, conta.id);
+    await registra("Manutenção redefiniu uma senha", `Conta ${conta.email}`);
+    return Response.json({ reset: true, email: conta.email, temporaryPassword: senhaTemporaria });
+  }
+
+  if (acao === "block" || acao === "unblock") {
+    if (acao === "block" && conta.email === autor) {
+      return Response.json({ error: "cannot_block_self" }, { status: 400 });
+    }
+    if (acao === "block" && conta.role === "dev" && await ehUltimaManutencaoAtiva(env, conta.id)) {
+      return Response.json({ error: "last_dev_account" }, { status: 400 });
+    }
+    const status = acao === "block" ? "Bloqueado" : "Ativo";
+    await env.DB.prepare("UPDATE user_accounts SET status = ?, updated_at = ? WHERE id = ?")
+      .bind(status, Date.now(), conta.id).run();
+    if (acao === "block") await destroySessionsForUser(env.DB, conta.id);
+    if (conta.athlete_name) {
+      await linkAthleteAccess(env, conta.athlete_name, conta.email, status, autor);
+    }
+    await registra(acao === "block" ? "Manutenção bloqueou uma conta" : "Manutenção liberou uma conta", `Conta ${conta.email}`);
+    return Response.json({ status });
+  }
+
+  if (acao === "delete") {
+    const impedimento = await impedimentoParaExcluir(env, request, conta, autor);
+    if (impedimento) return Response.json(impedimento, { status: 409 });
+    await destroySessionsForUser(env.DB, conta.id);
+    await env.DB.prepare("DELETE FROM user_accounts WHERE id = ?").bind(conta.id).run();
+    await registra("Manutenção excluiu uma conta", `Conta ${conta.email} · papel ${conta.role}`);
+    return Response.json({ deleted: true, email: conta.email });
+  }
+
+  return Response.json({ error: "unknown_action" }, { status: 400 });
+}
+
+/** A última conta de manutenção ativa não pode ser fechada: ninguém reabriria. */
+async function ehUltimaManutencaoAtiva(env: Env, id: string): Promise<boolean> {
+  const restantes = await env.DB.prepare(
+    "SELECT COUNT(*) AS total FROM user_accounts WHERE role = 'dev' AND status = 'Ativo' AND id <> ?",
+  ).bind(id).first() as { total?: number } | null;
+  return Number(restantes?.total ?? 0) === 0;
+}
+
+/**
+ * Por que esta conta não pode ser excluída.
+ *
+ * Devolve `null` quando a exclusão é segura. Cada recusa diz o motivo e o que
+ * fazer antes, porque "não foi possível excluir" sem explicação obriga a
+ * adivinhar.
+ */
+async function impedimentoParaExcluir(
+  env: Env,
+  request: Request,
+  conta: { id: string; email: string; role: string },
+  autor: string,
+): Promise<{ error: string; motivo: string; saida: string } | null> {
+  if (conta.email === autor) {
+    return { error: "cannot_delete_self", motivo: "Esta é a conta com que você está usando o painel agora.", saida: "Entre com outra conta de manutenção para excluir esta." };
+  }
+  if (conta.email === coachEmailOf(env)) {
+    return { error: "configured_coach", motivo: "Esta é a conta definida em COACH_EMAIL.", saida: "A aplicação a recriaria na próxima chamada. Troque a variável de ambiente antes." };
+  }
+  if (conta.role === "dev" && await ehUltimaManutencaoAtiva(env, conta.id)) {
+    return { error: "last_dev_account", motivo: "É a última conta de manutenção ativa.", saida: "Crie outra conta de manutenção antes de excluir esta." };
+  }
+  if (conta.role === "coach") {
+    const alunos = await env.DB.prepare("SELECT COUNT(*) AS total FROM athletes WHERE coach_email = ?").bind(conta.email).first() as { total?: number } | null;
+    const total = Number(alunos?.total ?? 0);
+    if (total > 0) {
+      return {
+        error: "coach_has_athletes",
+        motivo: `Este treinador ainda é dono de ${total === 1 ? "1 aluno" : `${total} alunos`}.`,
+        saida: "Sem dono, esses alunos sumiriam de todas as listas. Transfira a carteira ou bloqueie a conta em vez de excluir.",
+      };
+    }
+  }
+  void request;
+  return null;
+}
+
+/**
+ * Planilhas-base criadas pelo treinador.
+ *
+ * As semanas de cada uma continuam em `plan_template_overrides`, o mesmo lugar
+ * que já guarda as edições das planilhas de fábrica: uma planilha própria é uma
+ * planilha sem versão original, não um mecanismo à parte.
+ */
+async function customPlansApi(request: Request, env: Env): Promise<Response> {
+  await separaBibliotecasDePlanilhas(env);
+  /* Toda consulta daqui é recortada pelo dono. Um treinador criado agora vê
+     zero planilhas, e é assim que tem de ser: a biblioteca dele é dele. */
+  const dono = carteiraDe(request);
+  if (!dono) return Response.json({ error: "coach_scope_required" }, { status: 403 });
+
+  if (request.method === "GET") {
+    const planos = await env.DB.prepare("SELECT id,name,distance,weeks,frequency,level,goal,phases,updated_at FROM custom_plans WHERE coach_email = ? ORDER BY name").bind(dono).all();
+    return Response.json({ plans: planos.results });
+  }
+  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+
+  const input = await request.json() as Record<string, unknown>;
+  const acao = boundedText(input.action, 20) || "save";
+  const now = Date.now();
+
+  if (acao === "delete") {
+    const id = boundedText(input.planId, 40);
+    const plano = await env.DB.prepare("SELECT name FROM custom_plans WHERE id = ? AND coach_email = ? LIMIT 1").bind(id, dono).first() as { name?: string } | null;
+    if (!plano?.name) return Response.json({ error: "plan_not_found" }, { status: 404 });
+    /* Aluno apontando para uma planilha que sumiu ficaria sem base nenhuma. */
+    const emUso = await env.DB.prepare(
+      "SELECT COUNT(*) AS total FROM athlete_planning JOIN athletes ON athletes.name = athlete_planning.athlete_name WHERE athlete_planning.plan = ? AND athletes.coach_email = ?",
+    ).bind(plano.name, dono).first() as { total?: number } | null;
+    if (Number(emUso?.total ?? 0) > 0) {
+      return Response.json({
+        error: "plan_in_use",
+        motivo: `${Number(emUso?.total)} aluno(s) usam esta planilha.`,
+        saida: "Mude a base desses alunos antes de excluir.",
+      }, { status: 409 });
+    }
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM plan_template_overrides WHERE plan_name = ? AND coach_email = ?").bind(plano.name, dono),
+      env.DB.prepare("DELETE FROM custom_plans WHERE id = ?").bind(id),
+    ]);
+    return Response.json({ deleted: true });
+  }
+
+  const id = boundedText(input.planId, 40) || crypto.randomUUID();
+  const name = boundedText(input.name, 60);
+  const weeks = Number(input.weeks);
+  if (name.length < 3) return Response.json({ error: "plan_name_too_short" }, { status: 400 });
+  if (!Number.isInteger(weeks) || weeks < 1 || weeks > 52) return Response.json({ error: "invalid_week_count" }, { status: 400 });
+  const conflito = await env.DB.prepare("SELECT id FROM custom_plans WHERE name = ? AND coach_email = ? AND id <> ? LIMIT 1").bind(name, dono, id).first();
+  if (conflito) return Response.json({ error: "plan_name_already_used" }, { status: 409 });
+  const fases = Array.isArray(input.phases) ? input.phases.map(fase => boundedText(fase, 30)).filter(Boolean).slice(0, 8) : [];
+
+  /* O WHERE no ON CONFLICT é o que impede tomar a planilha de outro treinador
+     mandando o id dela: sem ele, o UPDATE gravaria por cima de uma linha alheia. */
+  await env.DB.prepare(`INSERT INTO custom_plans (id,name,distance,weeks,frequency,level,goal,phases,created_by,coach_email,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(id) DO UPDATE SET name=excluded.name,distance=excluded.distance,weeks=excluded.weeks,frequency=excluded.frequency,level=excluded.level,goal=excluded.goal,phases=excluded.phases,updated_at=excluded.updated_at
+    WHERE custom_plans.coach_email = excluded.coach_email`)
+    .bind(id, name, boundedText(input.distance, 30) || "Livre", weeks, boundedText(input.frequency, 40) || `${weeks} semanas`,
+      boundedText(input.level, 30) || "Personalizada", boundedText(input.goal, 160) || "Planilha do treinador",
+      JSON.stringify(fases.length ? fases : ["Base", "Desenvolvimento", "Específica"]),
+      normalizedAuthenticatedEmail(request) ?? "treinador", dono, now)
+    .run();
+  return Response.json({ saved: true, id, name });
+}
+
 async function racesRecordsApi(request: Request, env: Env): Promise<Response> {
+  const carteira = recorteDaCarteira(carteiraDe(request));
   await ensureTables(env, schema.athleteRaces, schema.personalRecords);
   const url=new URL(request.url);
   if(request.method==="GET"){
     const athlete=String(url.searchParams.get("athlete")||"");
-    if(!athlete){const races=await env.DB.prepare("SELECT * FROM athlete_races ORDER BY race_date ASC,created_at DESC").all();return Response.json({races:races.results,records:[]})}
+    if(!athlete){const races=await env.DB.prepare(`SELECT * FROM athlete_races WHERE ${carteira.clausula} ORDER BY race_date ASC,created_at DESC`).bind(...carteira.valores).all();return Response.json({races:races.results,records:[]})}
     const [races,records]=await Promise.all([
-      env.DB.prepare("SELECT * FROM athlete_races WHERE athlete_name = ? ORDER BY race_date ASC").bind(athlete).all(),
-      env.DB.prepare("SELECT * FROM personal_records WHERE athlete_name = ? ORDER BY updated_at DESC").bind(athlete).all(),
+      env.DB.prepare(`SELECT * FROM athlete_races WHERE athlete_name = ? AND ${carteira.clausula} ORDER BY race_date ASC`).bind(athlete,...carteira.valores).all(),
+      env.DB.prepare(`SELECT * FROM personal_records WHERE athlete_name = ? AND ${carteira.clausula} ORDER BY updated_at DESC`).bind(athlete,...carteira.valores).all(),
     ]);
     return Response.json({races:races.results,records:records.results});
   }
@@ -2427,7 +3229,7 @@ async function racesRecordsApi(request: Request, env: Env): Promise<Response> {
     if(action==="review_race"){
       const id=boundedText(input.id,80);const status=boundedText(input.status,30);const priority=boundedText(input.priority,30);
       if(!id||!["Aprovada","Aguardando análise","Descartada"].includes(status)||!["Prova A","Prova B","Treino"].includes(priority))return Response.json({error:"invalid_race_review"},{status:400});
-      await env.DB.prepare("UPDATE athlete_races SET status = ?, priority = ? WHERE id = ?").bind(status,priority,id).run();
+      await env.DB.prepare(`UPDATE athlete_races SET status = ?, priority = ? WHERE id = ? AND ${carteira.clausula}`).bind(status,priority,id,...carteira.valores).run();
       return Response.json({id,status,priority});
     }
     if(!athlete)return Response.json({error:"athlete_required"},{status:400});
@@ -2513,7 +3315,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
             message: "Defina COACH_EMAIL e COACH_INITIAL_PASSWORD no ambiente para criar a conta do treinador.",
           }, { status: 503 });
         }
-        const invalid = await validateApiEnvelope(request, url); if (invalid) return invalid;
+        const invalid = await validateApiEnvelope(request, env, url); if (invalid) return invalid;
         if (url.pathname === "/api/auth/login") {
           const limited = await enforceAuthThrottle(request, url, env); if (limited) return limited;
           return await authLoginApi(request, url, env);
@@ -2525,7 +3327,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
         }
         if (url.pathname === "/api/auth/password") return await authPasswordApi(request, env);
         return Response.json({ error: "not_found" }, { status: 404 });
-      } catch { return await applicationFailure(env, request, "autenticação", "auth_unavailable"); }
+      } catch (falha) { return await applicationFailure(env, request, "autenticação", "auth_unavailable", falha); }
     }
 
     // A partir daqui toda rota precisa saber quem está falando.
@@ -2535,7 +3337,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
         await ensureCoachAccount(env.DB, coachEmailOf(env), env.COACH_INITIAL_PASSWORD);
         await ensureDevAccount(env.DB, env.DEV_LOGIN, env.DEV_INITIAL_PASSWORD);
         resolvedIdentities.set(request, await resolveApiIdentity(request, env));
-      } catch { return await applicationFailure(env, request, "sessão", "database_unavailable"); }
+      } catch (falha) { return await applicationFailure(env, request, "sessão", "database_unavailable", falha); }
     }
 
     if (url.pathname === "/api/session") {
@@ -2544,25 +3346,25 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
         if (email) { const limited = await enforceTrafficProtection(request, url, env, email); if (limited) return limited; }
         return await sessionApi(request, env);
       }
-      catch { return await applicationFailure(env, request, "sessão", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "sessão", "database_unavailable", falha); }
     }
 
     // Chamado pelo Strava, não pelo navegador: autentica-se pelo token de
     // verificação combinado, não por sessão.
     if (url.pathname === "/api/integrations/strava/webhook") {
       try { return await stravaWebhookApi(request, url, env, ctx); }
-      catch { return await applicationFailure(env, request, "webhook do Strava", "strava_webhook_failed"); }
+      catch (falha) { return await applicationFailure(env, request, "webhook do Strava", "strava_webhook_failed", falha); }
     }
 
     if (url.pathname.startsWith("/api/integrations/callback/")) {
       try { return await integrationCallbackApi(request, url, env, url.pathname.split("/").pop() || ""); }
-      catch { return await applicationFailure(env, request, "conexão com o aplicativo", "integration_connection_failed"); }
+      catch (falha) { return await applicationFailure(env, request, "conexão com o aplicativo", "integration_connection_failed", falha); }
     }
 
     // Chamado pelo Atalho do iOS, autenticado por token de ingestão.
     if (url.pathname === "/api/ingest/device") {
       try { return await deviceIngestApi(request, env); }
-      catch { return await applicationFailure(env, request, "envio do Apple Saúde", "device_ingest_failed"); }
+      catch (falha) { return await applicationFailure(env, request, "envio do Apple Saúde", "device_ingest_failed", falha); }
     }
 
     if (url.pathname.startsWith("/api/student/")) {
@@ -2571,7 +3373,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
         if (!identity) return Response.json({ error: "authentication_required" }, { status: 401 });
         if (identity.role !== "student") return Response.json({ error: "student_access_required" }, { status: 403 });
         const limited = await enforceTrafficProtection(request, url, env, identity.email); if (limited) return limited;
-        const invalid = await validateApiEnvelope(request, url); if (invalid) return invalid;
+        const invalid = await validateApiEnvelope(request, env, url); if (invalid) return invalid;
         const duplicate = await preventDuplicateSubmission(request, url, env, identity.email); if (duplicate) return duplicate;
         if (url.pathname === "/api/student/dashboard") return await studentDashboardApi(request, env, identity.athleteName);
         if (url.pathname === "/api/student/profile") return await studentProfileApi(request, env, identity.athleteName);
@@ -2584,7 +3386,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
         if (url.pathname === "/api/student/financial") return await studentFinancialApi(request, env, identity.athleteName);
         if (url.pathname === "/api/student/races-records") return await studentRacesRecordsApi(request, env, identity.athleteName);
         return Response.json({ error: "not_found" }, { status: 404 });
-      } catch { return await applicationFailure(env, request, "área do aluno", "database_unavailable"); }
+      } catch (falha) { return await applicationFailure(env, request, "área do aluno", "database_unavailable", falha); }
     }
 
     // Quem acabou de se cadastrar tem sessão mas ainda não é um aluno ativo,
@@ -2594,10 +3396,10 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
         const session = await identityFromRequest(env.DB, request);
         if (!session) return Response.json({ error:"authentication_required" }, { status:401 });
         const limited = await enforceTrafficProtection(request,url,env,session.email); if(limited)return limited;
-        const invalid = await validateApiEnvelope(request,url); if(invalid)return invalid;
+        const invalid = await validateApiEnvelope(request, env, url); if(invalid)return invalid;
         const duplicate = await preventDuplicateSubmission(request,url,env,session.email); if(duplicate)return duplicate;
         return await accessRequestApi(request,env,session.email,session.name);
-      } catch { return await applicationFailure(env,request,"solicitação de cadastro","database_unavailable"); }
+      } catch (falha) { return await applicationFailure(env,request,"solicitação de cadastro","database_unavailable",falha); }
     }
 
     if (url.pathname.startsWith("/api/")) {
@@ -2606,80 +3408,95 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
       const actorEmail = normalizedAuthenticatedEmail(request) as string;
       const limited = await enforceTrafficProtection(request, url, env, actorEmail);
       if (limited) return limited;
-      const invalid = await validateApiEnvelope(request, url); if (invalid) return invalid;
+      const invalid = await validateApiEnvelope(request, env, url); if (invalid) return invalid;
       const duplicate = await preventDuplicateSubmission(request, url, env, actorEmail); if (duplicate) return duplicate;
     }
 
-    if (url.pathname === "/api/dev/coaches") {
+    if (url.pathname === "/api/dev/accounts") {
       const negado = requireDevApiAccess(request);
       if (negado) return negado;
+      try { return await devAccountsApi(request, env); }
+      catch (falha) { return await applicationFailure(env, request, "contas de manutenção", "dev_accounts_unavailable", falha); }
+    }
+
+    /* Dois caminhos, um handler. A manutenção chega por /api/dev/coaches, que já
+       existia; o proprietário chega por /api/equipe, que é o nome do que ele vê.
+       Quem separa o que cada um enxerga é o papel, não a rota. */
+    if (url.pathname === "/api/dev/coaches" || url.pathname === "/api/equipe") {
+      const negado = requireOwnerApiAccess(request);
+      if (negado) return negado;
       try {
-        const invalido = await validateApiEnvelope(request, url); if (invalido) return invalido;
-        return await devCoachesApi(request, env);
-      } catch { return await applicationFailure(env, request, "treinadores", "dev_coaches_unavailable"); }
+        const invalido = await validateApiEnvelope(request, env, url); if (invalido) return invalido;
+        return await equipeApi(request, env);
+      } catch (falha) { return await applicationFailure(env, request, "equipe", "team_unavailable", falha); }
     }
 
     if (url.pathname === "/api/dev/overview") {
       const negado = requireDevApiAccess(request);
       if (negado) return negado;
       try { return await devOverviewApi(request, env); }
-      catch { return await applicationFailure(env, request, "diagnóstico", "dev_overview_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "diagnóstico", "dev_overview_unavailable", falha); }
     }
 
     if (url.pathname === "/api/integrations/strava/subscription") {
       try { return await stravaSubscriptionApi(request, url, env); }
-      catch { return await applicationFailure(env, request, "inscrição do Strava", "strava_subscription_failed"); }
+      catch (falha) { return await applicationFailure(env, request, "inscrição do Strava", "strava_subscription_failed", falha); }
     }
 
     if (url.pathname === "/api/integrations") {
       try { return await integrationsCoachApi(request, env); }
-      catch { return await applicationFailure(env, request, "integrações", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "integrações", "database_unavailable", falha); }
     }
 
     if (url.pathname === "/api/accounts") {
       try { return await coachAccountsApi(request, env); }
-      catch { return await applicationFailure(env, request, "contas de acesso", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "contas de acesso", "database_unavailable", falha); }
+    }
+
+    if (url.pathname === "/api/plans") {
+      try { return await customPlansApi(request, env); }
+      catch (falha) { return await applicationFailure(env, request, "planilhas-base", "plans_unavailable", falha); }
     }
 
     if (url.pathname === "/api/athletes") {
       try { return await athletesApi(request, env); }
-      catch { return await applicationFailure(env, request, "alunos", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "alunos", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/athlete-profile") {
       try { return await athleteProfileApi(request, env); }
-      catch { return await applicationFailure(env, request, "cadastro do aluno", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "cadastro do aluno", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/athlete-planning") {
       try { return await athletePlanningApi(request, env); }
-      catch { return await applicationFailure(env, request, "planejamento do aluno", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "planejamento do aluno", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/plan-template-overrides") {
       try { return await planTemplateOverridesApi(request, env); }
-      catch { return await applicationFailure(env, request, "biblioteca de treinos", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "biblioteca de treinos", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/performance-tests") {
       try { return await performanceTestsApi(request, env); }
-      catch { return await applicationFailure(env, request, "testes de desempenho", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "testes de desempenho", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/training-weeks") {
       try { return await trainingWeeksApi(request, env); }
-      catch { return await applicationFailure(env, request, "semanas de treino", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "semanas de treino", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/pain-reports") {
       try { return await painReportsApi(request, env); }
-      catch { return await applicationFailure(env, request, "relatos de dor", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "relatos de dor", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/feedbacks") {
       try { return await feedbacksApi(request, env); }
-      catch { return await applicationFailure(env, request, "feedbacks", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "feedbacks", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/workout-executions") {
       try { return await workoutExecutionsApi(request, env); }
-      catch { return await applicationFailure(env, request, "análise dos treinos", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "análise dos treinos", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/integration-overview") {
       try { return await integrationOverviewApi(request, env); }
-      catch { return await applicationFailure(env, request, "integrações dos alunos", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "integrações dos alunos", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/integration-readiness") {
       try { return await integrationReadinessApi(request, env); }
@@ -2687,23 +3504,23 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
     }
     if (url.pathname === "/api/financial") {
       try { return await financialApi(request, env); }
-      catch { return await applicationFailure(env, request, "financeiro", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "financeiro", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/races-records") {
       try { return await racesRecordsApi(request, env); }
-      catch { return await applicationFailure(env, request, "provas e recordes", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "provas e recordes", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/athlete-access") {
       try { return await athleteAccessApi(request, env); }
-      catch { return await applicationFailure(env, request, "acesso dos alunos", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "acesso dos alunos", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/access-requests") {
       try { return await accessRequestsCoachApi(request, env); }
-      catch { return await applicationFailure(env, request, "solicitações de cadastro", "database_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "solicitações de cadastro", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/backups") {
       try { return await backupsApi(request, env); }
-      catch { return await applicationFailure(env, request, "backup", "backup_unavailable"); }
+      catch (falha) { return await applicationFailure(env, request, "backup", "backup_unavailable", falha); }
     }
     if (url.pathname === "/api/security-events") {
       try { return await securityEventsApi(request, env); }

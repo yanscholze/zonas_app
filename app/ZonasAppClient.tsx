@@ -1,12 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { signOut, type Session } from "./AuthGate";
-import { api, copyText, describeError } from "./api-client";
+import { api, copyText, describeError, definePreviaDoTreinador, PreviaDoTreinador } from "./api-client";
+import { NavIcon, IconMais, IconTrocarVisao, IconSair, IconAviso } from "./icons";
+import { avise, pergunte, CentralDeAvisos } from "./avisos";
+import { leArquivoDeAtividade, ArquivoInvalido } from "./atividade-arquivo";
+import { reduzComprovante, ComprovanteInvalido } from "./comprovante";
 
 type Athlete = { name: string; initials: string; distance: string; plan?: string; phase: string; week: string; next: string; flag?: string; archivedAt?: number | null; archivedReason?: string | null };
-type TrainingPlan = { name:string; distance:string; weeks:number; frequency:string; level:string; goal:string; phases:string[]; pending?:boolean; complete?:boolean };
-type StructuredSession = { type:string; description:string; title?:string; tempoRun?:string; durationMinutes?:number; estimatedKm?:number; steps?:Array<any>; removed?:boolean };
+import type { TrainingPlan, StructuredSession } from "@/db/planilhas-de-fabrica";
 type ParsedWorkoutBlock = { kind:"simple"; amount:number; unit:"s"|"min"|"m"; zone:string; label:string } | { kind:"repeat"; repetitions:number; effort:number; effortUnit:"s"|"min"|"m"; effortZone:string; recovery:number; recoveryUnit:"s"|"min"; recoveryZone:string };
 function parseWrittenWorkout(value:string):{blocks:ParsedWorkoutBlock[];error?:string}{
   const clean=value.replace(/\u00d7/g,"x").replace(/,/g,".").replace(/\s+/g," ").trim();
@@ -22,213 +25,33 @@ function parseWrittenWorkout(value:string):{blocks:ParsedWorkoutBlock[];error?:s
   if(!blocks.length)return{blocks:[],error:"Não reconheci as etapas. Use exemplos como: 15 min Z1 + 6 x 1 min Z4 / 1 min Z1 + 10 min Z1."};
   return{blocks};
 }
-const trainingPlans: TrainingPlan[] = [
-  {name:"Iniciantes",distance:"Começar",weeks:10,frequency:"3x por semana",level:"Entrada",goal:"Correr 5 km com segurança",phases:["Adaptação","Base","Evolução","Desafio 5 km"],complete:true},
-  {name:"5 km Bronze",distance:"5 km",weeks:10,frequency:"3x por semana",level:"Bronze",goal:"Concluir e evoluir nos 5 km",phases:["Base","Desenvolvimento","Específica","Pré-prova"],complete:true},
-  {name:"5 km Prata",distance:"5 km",weeks:13,frequency:"até 6x por semana",level:"Prata",goal:"Evolução de ritmo e resistência",phases:["Base","Limiar e VO₂","Específica","Polimento"],complete:true},
-  {name:"5 km Ouro",distance:"5 km",weeks:14,frequency:"até 6x por semana",level:"Ouro",goal:"Performance avançada nos 5 km",phases:["Base","Desenvolvimento","Específica","Polimento"],complete:true},
-  {name:"5 km Elite",distance:"5 km",weeks:15,frequency:"até 6x por semana",level:"Elite",goal:"Alto rendimento nos 5 km",phases:["Base","Carga 3:1","Específica","Polimento"],complete:true},
-  {name:"10 km Lion",distance:"10 km",weeks:16,frequency:"4x por semana",level:"Lion",goal:"Evoluir dos 5 km para os 10 km",phases:["Base","Desenvolvimento","Específica","Pré-prova"],complete:true},
-  {name:"Meia Start",distance:"21,1 km",weeks:14,frequency:"3–4x por semana",level:"Start",goal:"Primeira meia maratona",phases:["Base Z2","Evolução","Específica","Pré-prova"],complete:true},
-  {name:"Meia Finish",distance:"21,1 km",weeks:18,frequency:"4–6x por semana",level:"Finish",goal:"Performance na meia maratona",phases:["Base","VO₂ e limiar","Ritmo específico","Pré-prova"],complete:true},
-  {name:"One Marathon",distance:"42,2 km",weeks:20,frequency:"4–5x por semana",level:"One",goal:"Construção para a primeira maratona",phases:["Base","Desenvolvimento","Específica","Pré-prova"],complete:true},
-  {name:"Full Marathon",distance:"42,2 km",weeks:25,frequency:"5–6x por semana",level:"Full",goal:"Evolução e performance na maratona",phases:["Base","Desenvolvimento","Específica","Pré-prova"],complete:true},
-];
-const simpleSession=(title:string,minutes:number,steps:Array<any>):StructuredSession=>({type:"Treino estruturado",title,description:`Treino contínuo · ${minutes} min`,durationMinutes:minutes,steps});
-const walkRun=(title:string,repetitions:number,runMinutes:number,walkMinutes:number,warmup=5,cooldown=5):StructuredSession=>({type:"Treino estruturado",title,description:`${repetitions} repetições · corrida e caminhada`,durationMinutes:warmup+cooldown+repetitions*(runMinutes+walkMinutes),steps:[{kind:"simple",label:"Aquecimento",minutes:warmup,zone:"Z1"},{kind:"repeat",label:"Série principal",repetitions,effortMinutes:runMinutes,effortZone:"Z2",recoveryMinutes:walkMinutes,recoveryZone:"Z1"},{kind:"simple",label:"Desaquecimento",minutes:cooldown,zone:"Z1"}]});
-const beginnerPlanWeeks:Record<number,StructuredSession[]>={
-  1:[walkRun("Primeiros passos",8,0.5,1.5),walkRun("Adaptação à corrida",10,0.5,1.5),walkRun("Caminhada e corrida longa",10,1,2)],
-  2:[walkRun("Corrida leve fracionada",8,1,1.5),walkRun("Construindo constância",10,1,1),walkRun("Treino contínuo alternado",10,1.5,1.5)],
-  3:[walkRun("Blocos de 2 minutos",8,2,1.5),walkRun("Corrida controlada",7,3,1.5),walkRun("Resistência inicial",6,4,2)],
-  4:[walkRun("Corrida de 4 minutos",6,4,1.5),walkRun("Blocos progressivos",5,5,2),walkRun("Primeiro bloco longo",4,7,2)],
-  5:[walkRun("Corrida de 6 minutos",5,6,1.5),walkRun("Controle da respiração",4,8,2),walkRun("Resistência de 10 minutos",3,10,2)],
-  6:[walkRun("Blocos de 10 minutos",3,10,1.5),walkRun("Corrida de 12 minutos",3,12,2),simpleSession("Corrida contínua leve",30,[{kind:"simple",label:"Aquecimento",minutes:5,zone:"Z1"},{kind:"simple",label:"Corrida contínua",minutes:20,zone:"Z2"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}])],
-  7:[simpleSession("Corrida contínua 25 minutos",35,[{kind:"simple",label:"Aquecimento",minutes:5,zone:"Z1"},{kind:"simple",label:"Corrida contínua",minutes:25,zone:"Z2"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]),walkRun("Variações leves",6,3,1),simpleSession("Corrida contínua 30 minutos",40,[{kind:"simple",label:"Aquecimento",minutes:5,zone:"Z1"},{kind:"simple",label:"Corrida contínua",minutes:30,zone:"Z2"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}])],
-  8:[simpleSession("Corrida leve com acelerações",35,[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"repeat",label:"Acelerações controladas",repetitions:6,effortMinutes:1,effortZone:"Z3",recoveryMinutes:2,recoveryZone:"Z1"},{kind:"simple",label:"Desaquecimento",minutes:7,zone:"Z1"}]),simpleSession("Corrida contínua 35 minutos",45,[{kind:"simple",label:"Aquecimento",minutes:5,zone:"Z1"},{kind:"simple",label:"Corrida contínua",minutes:35,zone:"Z2"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]),simpleSession("Resistência para os 5 km",45,[{kind:"simple",label:"Aquecimento",minutes:5,zone:"Z1"},{kind:"simple",label:"Corrida contínua",minutes:35,zone:"Z2"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}])],
-  9:[simpleSession("Corrida leve",35,[{kind:"simple",label:"Aquecimento",minutes:5,zone:"Z1"},{kind:"simple",label:"Corrida contínua",minutes:25,zone:"Z2"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]),simpleSession("Ritmo controlado",38,[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"repeat",label:"Ritmo controlado",repetitions:4,effortMinutes:3,effortZone:"Z3",recoveryMinutes:2,recoveryZone:"Z1"},{kind:"simple",label:"Desaquecimento",minutes:8,zone:"Z1"}]),simpleSession("Simulado leve de 5 km",45,[{kind:"simple",label:"Aquecimento",minutes:5,zone:"Z1"},{kind:"simple",label:"Corrida contínua",minutes:35,zone:"Z2"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}])],
-  10:[simpleSession("Corrida leve pré-desafio",25,[{kind:"simple",label:"Aquecimento",minutes:5,zone:"Z1"},{kind:"simple",label:"Corrida leve",minutes:15,zone:"Z2"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]),simpleSession("Ativação para os 5 km",24,[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"repeat",label:"Acelerações",repetitions:4,effortMinutes:0.5,effortZone:"Z3",recoveryMinutes:1.5,recoveryZone:"Z1"},{kind:"simple",label:"Desaquecimento",minutes:6,zone:"Z1"}]),{type:"Desafio",title:"Desafio 5 km",description:"Correr 5 km de forma confortável e controlada",estimatedKm:5,steps:[{kind:"simple",label:"Desafio",distanceMeters:5000,zone:"Z2"}]}],
-};
-const repeatSession=(title:string,repetitions:number,effortMinutes:number,effortZone:string,recoveryMinutes:number,warmup=8,cooldown=8):StructuredSession=>({type:"Treino estruturado",title,description:`${repetitions} repetições · ${warmup+cooldown+repetitions*(effortMinutes+recoveryMinutes)} min`,durationMinutes:warmup+cooldown+repetitions*(effortMinutes+recoveryMinutes),steps:[{kind:"simple",label:"Aquecimento",minutes:warmup,zone:"Z1"},{kind:"repeat",label:"Série principal",repetitions,effortMinutes,effortZone,recoveryMinutes,recoveryZone:"Z1"},{kind:"simple",label:"Desaquecimento",minutes:cooldown,zone:"Z1"}]});
-const steady=(title:string,total:number,mainZone="Z2"):StructuredSession=>simpleSession(title,total,[{kind:"simple",label:"Aquecimento",minutes:5,zone:"Z1"},{kind:"simple",label:"Corrida contínua",minutes:total-10,zone:mainZone},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]);
-const bronzePlanWeeks:Record<number,StructuredSession[]>={
-  1:[steady("Rodagem leve",30),repeatSession("Fartlek de 1 minuto",8,1,"Z3",2),steady("Resistência leve",35)],
-  2:[steady("Rodagem leve",35),repeatSession("Fartlek de 2 minutos",6,2,"Z3",2),steady("Corrida contínua",40)],
-  3:[steady("Regenerativo",30,"Z1"),repeatSession("Blocos de 3 minutos",5,3,"Z3",2,8,7),simpleSession("Progressivo controlado",40,[{kind:"simple",label:"Início leve",minutes:10,zone:"Z1"},{kind:"simple",label:"Parte principal",minutes:20,zone:"Z2"},{kind:"simple",label:"Final controlado",minutes:10,zone:"Z3"}])],
-  4:[steady("Semana leve",30),repeatSession("Acelerações curtas",8,1,"Z4",2),steady("Rodagem confortável",35)],
-  5:[steady("Rodagem leve com técnica",35),repeatSession("Tempo fracionado",3,5,"Z3",2),steady("Resistência aeróbia",40)],
-  6:[steady("Regenerativo",30,"Z1"),repeatSession("Intervalado de 2 minutos",6,2,"Z4",2),simpleSession("Progressivo de 40 minutos",40,[{kind:"simple",label:"Início",minutes:10,zone:"Z1"},{kind:"simple",label:"Meio",minutes:20,zone:"Z2"},{kind:"simple",label:"Final",minutes:10,zone:"Z3"}])],
-  7:[steady("Rodagem leve",35),repeatSession("Intervalado de 3 minutos",5,3,"Z4",2,8,7),repeatSession("Ritmo controlado",4,4,"Z3",2)],
-  8:[steady("Semana de recuperação",30,"Z1"),repeatSession("Velocidade controlada",10,1,"Z4",1),steady("Rodagem confortável",35)],
-  9:[steady("Rodagem leve",30),repeatSession("Blocos específicos",4,4,"Z4",2),simpleSession("Ritmo sustentável",35,[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"simple",label:"Ritmo controlado",minutes:15,zone:"Z3"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  10:[steady("Corrida leve pré-desafio",25),repeatSession("Ativação curta",6,0.5,"Z4",1.5),{type:"Desafio",title:"Desafio ou prova de 5 km",description:"Correr 5 km com controle e evolução de ritmo",estimatedKm:5,steps:[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"simple",label:"Prova ou desafio",distanceMeters:5000,zone:"Tempo Run 5 km"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}],tempoRun:"5 km"}],
-};
-const meterSession=(title:string,repetitions:number,effortMeters:number,effortZone:string,recoveryMinutes:number,warmup=10,cooldown=8):StructuredSession=>({type:"Treino estruturado",title,description:`${repetitions} × ${effortMeters} m · recuperação entre cada série`,durationMinutes:Math.round(warmup+cooldown+repetitions*(effortMeters/200+recoveryMinutes)),estimatedKm:Number(((warmup+cooldown)/6+repetitions*(effortMeters/1000+recoveryMinutes/6)).toFixed(1)),steps:[{kind:"simple",label:"Aquecimento",minutes:warmup,zone:"Z1"},{kind:"repeat",label:"Série principal",repetitions,effortMeters,effortZone,recoveryMinutes,recoveryZone:"Z1"},{kind:"simple",label:"Desaquecimento",minutes:cooldown,zone:"Z1"}]});
-const tempoBlock=(title:string,minutes:number,zone="Z3"):StructuredSession=>simpleSession(title,minutes+20,[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"simple",label:"Ritmo sustentado",minutes,zone},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}]);
-const prataPlanWeeks:Record<number,StructuredSession[]>={
-  1:[steady("Rodagem leve",30),repeatSession("Fartlek 8 × 1 minuto",8,1,"Z3",1.5),steady("Corrida leve",25),repeatSession("Limiar fracionado",2,8,"Z3",3),steady("Regenerativo",20,"Z1"),steady("Longão leve",45)],
-  2:[steady("Rodagem leve",35),meterSession("Velocidade 10 × 200 m",10,200,"Z4",1.5),steady("Corrida leve",25),tempoBlock("Tempo Run controlado",20),steady("Regenerativo",20,"Z1"),steady("Longão leve",50)],
-  3:[steady("Rodagem leve",35),meterSession("Intervalado 8 × 300 m",8,300,"Z4",1.5),steady("Corrida leve",30),repeatSession("Limiar 3 × 8 minutos",3,8,"Z3",2),steady("Regenerativo",20,"Z1"),steady("Longão progressivo",55)],
-  4:[steady("Rodagem leve de recuperação",30),meterSession("Técnica e velocidade 6 × 200 m",6,200,"Z4",1.5),steady("Corrida muito leve",20,"Z1"),tempoBlock("Ritmo contínuo curto",15),steady("Regenerativo",20,"Z1"),steady("Longão reduzido",45)],
-  5:[steady("Rodagem leve",35),meterSession("Intervalado 6 × 400 m",6,400,"Z4",2),steady("Corrida leve",25),repeatSession("Limiar 2 × 10 minutos",2,10,"Z3",3),steady("Regenerativo",20,"Z1"),steady("Longão leve",55)],
-  6:[steady("Rodagem aeróbia",40),meterSession("Intervalado 5 × 600 m",5,600,"Z4",2),steady("Corrida leve",25),repeatSession("Limiar 3 × 8 minutos",3,8,"Z3",2),steady("Regenerativo",20,"Z1"),steady("Longão progressivo",60)],
-  7:[steady("Rodagem leve de recuperação",30),meterSession("Velocidade 8 × 200 m",8,200,"Z5",1.5),steady("Corrida muito leve",20,"Z1"),repeatSession("Fartlek 6 × 2 minutos",6,2,"Z3",2),steady("Regenerativo",20,"Z1"),steady("Longão reduzido",50)],
-  8:[steady("Rodagem leve",35),meterSession("Intervalado 5 × 800 m",5,800,"Z4",2.5),steady("Corrida leve",25),tempoBlock("Tempo Run contínuo",20),steady("Regenerativo",20,"Z1"),steady("Longão aeróbio",60)],
-  9:[steady("Rodagem aeróbia",40),meterSession("Intervalado 4 × 1000 m",4,1000,"Z4",3),steady("Corrida leve",25),repeatSession("Limiar 2 × 12 minutos",2,12,"Z3",3),steady("Regenerativo",20,"Z1"),steady("Longão progressivo",55)],
-  10:[steady("Rodagem leve",35),meterSession("Intervalado específico 3 × 1000 m",3,1000,"Z4",3),steady("Corrida leve",25),simpleSession("Fartlek pirâmide",40,[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"repeat",label:"Pirâmide 1–2–3–2–1 min",repetitions:1,effortMinutes:9,effortZone:"Z3",recoveryMinutes:3,recoveryZone:"Z1"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}]),steady("Regenerativo",20,"Z1"),steady("Longão leve",50)],
-  11:[steady("Rodagem leve",30),meterSession("Ritmo 6 × 400 m",6,400,"Z4",2),steady("Corrida muito leve",20,"Z1"),tempoBlock("Ritmo específico curto",12,"Tempo Run 5 km"),steady("Regenerativo",20,"Z1"),steady("Longão reduzido",45)],
-  12:[steady("Rodagem leve",25),meterSession("Ativação 4 × 400 m",4,400,"Z4",2),steady("Corrida muito leve",20,"Z1"),meterSession("Velocidade 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Regenerativo",20,"Z1"),steady("Corrida contínua leve",35)],
-  13:[steady("Corrida leve",25),meterSession("Ativação 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Regenerativo",20,"Z1"),steady("Corrida leve curta",20),simpleSession("Soltura pré-prova",15,[{kind:"simple",label:"Corrida muito leve",minutes:15,zone:"Z1"}]),{type:"Prova",title:"Prova-alvo de 5 km",description:"Executar a estratégia definida pelo treinador",estimatedKm:5,tempoRun:"5 km",steps:[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"simple",label:"Prova",distanceMeters:5000,zone:"Tempo Run 5 km"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]}],
-};
-const ouroPlanWeeks:Record<number,StructuredSession[]>={
-  1:[steady("Rodagem aeróbia",40),meterSession("Velocidade 12 × 200 m",12,200,"Z4",1.25),steady("Corrida leve",30),repeatSession("Limiar 3 × 8 minutos",3,8,"Z3",2),steady("Regenerativo",25,"Z1"),steady("Longão progressivo",60)],
-  2:[steady("Rodagem leve",45),meterSession("Intervalado 10 × 300 m",10,300,"Z4",1.5),steady("Corrida leve",30),repeatSession("Limiar 2 × 12 minutos",2,12,"Z3",3),steady("Regenerativo",25,"Z1"),steady("Longão aeróbio",65)],
-  3:[steady("Rodagem aeróbia",45),meterSession("Intervalado 8 × 400 m",8,400,"Z4",1.5),steady("Corrida leve",30),tempoBlock("Tempo Run contínuo",25),steady("Regenerativo",25,"Z1"),steady("Longão progressivo",70)],
-  4:[steady("Rodagem leve de recuperação",35),meterSession("Técnica 8 × 200 m",8,200,"Z4",1.5),steady("Corrida muito leve",25,"Z1"),tempoBlock("Limiar curto",15),steady("Regenerativo",20,"Z1"),steady("Longão reduzido",55)],
-  5:[steady("Rodagem aeróbia",45),meterSession("VO₂ 6 × 500 m",6,500,"Z5",2),steady("Corrida leve",30),repeatSession("Limiar 3 × 10 minutos",3,10,"Z3",2),steady("Regenerativo",25,"Z1"),steady("Longão progressivo",70)],
-  6:[steady("Rodagem leve",45),meterSession("Intervalado 6 × 600 m",6,600,"Z4",2),steady("Corrida leve",30),tempoBlock("Tempo Run de 30 minutos",30),steady("Regenerativo",25,"Z1"),steady("Longão aeróbio",75)],
-  7:[steady("Rodagem aeróbia",45),meterSession("VO₂ 5 × 800 m",5,800,"Z5",2.5),steady("Corrida leve",30),repeatSession("Limiar 2 × 15 minutos",2,15,"Z3",3),steady("Regenerativo",25,"Z1"),steady("Longão progressivo",70)],
-  8:[steady("Rodagem leve de recuperação",35),meterSession("Velocidade 10 × 200 m",10,200,"Z5",1.5),steady("Corrida muito leve",25,"Z1"),repeatSession("Fartlek 6 × 2 minutos",6,2,"Z3",2),steady("Regenerativo",20,"Z1"),steady("Longão reduzido",55)],
-  9:[steady("Rodagem aeróbia",45),meterSession("Específico 5 × 1000 m",5,1000,"Z4",2.5),steady("Corrida leve",30),repeatSession("Ritmo de prova fracionado",3,8,"Tempo Run 5 km",3),steady("Regenerativo",25,"Z1"),simpleSession("Longão com final em Z3",70,[{kind:"simple",label:"Início leve",minutes:15,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:45,zone:"Z2"},{kind:"simple",label:"Final controlado",minutes:10,zone:"Z3"}])],
-  10:[steady("Rodagem leve",40),meterSession("VO₂ 12 × 400 m",12,400,"Z5",1.5),steady("Corrida leve",30),repeatSession("Limiar longo",2,15,"Z3",3),steady("Regenerativo",25,"Z1"),steady("Longão aeróbio",65)],
-  11:[steady("Rodagem aeróbia",40),meterSession("Específico 4 × 1200 m",4,1200,"Tempo Run 5 km",3),steady("Corrida leve",25),simpleSession("Pirâmide de velocidade",45,[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"repeat",label:"Pirâmide 200–400–600–400–200 m",repetitions:1,effortMinutes:12,effortZone:"Z5",recoveryMinutes:5,recoveryZone:"Z1"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}]),steady("Regenerativo",20,"Z1"),steady("Longão progressivo",60)],
-  12:[steady("Rodagem leve",35),meterSession("Ritmo 6 × 600 m",6,600,"Z4",2),steady("Corrida muito leve",25,"Z1"),tempoBlock("Ritmo específico curto",15,"Tempo Run 5 km"),steady("Regenerativo",20,"Z1"),steady("Longão reduzido",50)],
-  13:[steady("Rodagem leve",30),meterSession("Ativação 5 × 400 m",5,400,"Z4",2),steady("Corrida muito leve",20,"Z1"),meterSession("Velocidade 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Regenerativo",20,"Z1"),steady("Corrida contínua curta",40)],
-  14:[steady("Corrida leve",25),meterSession("Ativação 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Regenerativo",20,"Z1"),steady("Corrida leve curta",20),simpleSession("Soltura pré-prova",15,[{kind:"simple",label:"Corrida muito leve",minutes:15,zone:"Z1"}]),{type:"Prova",title:"Prova-alvo de 5 km Ouro",description:"Executar ritmo individual e estratégia aprovada",estimatedKm:5,tempoRun:"5 km",steps:[{kind:"simple",label:"Aquecimento",minutes:12,zone:"Z1"},{kind:"simple",label:"Prova",distanceMeters:5000,zone:"Tempo Run 5 km"},{kind:"simple",label:"Desaquecimento",minutes:8,zone:"Z1"}]}],
-};
-const elitePlanWeeks:Record<number,StructuredSession[]>={
-  1:[steady("Rodagem aeróbia",45),meterSession("Velocidade 15 × 200 m",15,200,"Z5",1),steady("Corrida leve",35),repeatSession("Limiar 3 × 10 minutos",3,10,"Z3",2),steady("Regenerativo",25,"Z1"),steady("Longão progressivo",70)],
-  2:[steady("Rodagem aeróbia",50),meterSession("Intervalado 12 × 300 m",12,300,"Z5",1.25),steady("Corrida leve",35),repeatSession("Limiar 2 × 15 minutos",2,15,"Z3",3),steady("Regenerativo",25,"Z1"),steady("Longão aeróbio",75)],
-  3:[steady("Rodagem leve",45),meterSession("VO₂ 10 × 400 m",10,400,"Z5",1.5),steady("Corrida leve",35),tempoBlock("Tempo Run forte",30),steady("Regenerativo",25,"Z1"),steady("Longão progressivo",80)],
-  4:[steady("Rodagem leve de recuperação",35),meterSession("Técnica 10 × 200 m",10,200,"Z4",1.25),steady("Corrida muito leve",25,"Z1"),tempoBlock("Limiar curto",18),steady("Regenerativo",20,"Z1"),steady("Longão reduzido",60)],
-  5:[steady("Rodagem aeróbia",50),meterSession("VO₂ 8 × 500 m",8,500,"Z5",1.75),steady("Corrida leve",35),repeatSession("Limiar 4 × 8 minutos",4,8,"Z3",2),steady("Regenerativo",25,"Z1"),steady("Longão progressivo",80)],
-  6:[steady("Rodagem leve",45),meterSession("Intervalado 7 × 600 m",7,600,"Z5",2),steady("Corrida leve",35),tempoBlock("Tempo Run de 35 minutos",35),steady("Regenerativo",25,"Z1"),steady("Longão aeróbio",85)],
-  7:[steady("Rodagem aeróbia",50),meterSession("VO₂ 6 × 800 m",6,800,"Z5",2.25),steady("Corrida leve",30),repeatSession("Subidas fortes 10 × 1 minuto",10,1,"Z4",1.5),steady("Regenerativo",25,"Z1"),steady("Longão progressivo",80)],
-  8:[steady("Rodagem leve de recuperação",35),meterSession("Velocidade 12 × 200 m",12,200,"Z5",1.25),steady("Corrida muito leve",25,"Z1"),repeatSession("Fartlek 8 × 2 minutos",8,2,"Z3",1.5),steady("Regenerativo",20,"Z1"),steady("Longão reduzido",60)],
-  9:[steady("Rodagem aeróbia",50),meterSession("Específico 6 × 1000 m",6,1000,"Z4",2.5),steady("Corrida leve",35),repeatSession("Ritmo de prova 4 × 6 minutos",4,6,"Tempo Run 5 km",3),steady("Regenerativo",25,"Z1"),simpleSession("Longão com final controlado",75,[{kind:"simple",label:"Início",minutes:15,zone:"Z1"},{kind:"simple",label:"Aeróbio",minutes:45,zone:"Z2"},{kind:"simple",label:"Final",minutes:15,zone:"Z3"}])],
-  10:[steady("Rodagem leve",45),meterSession("VO₂ 15 × 400 m",15,400,"Z5",1.25),steady("Corrida leve",30),repeatSession("Limiar 3 × 12 minutos",3,12,"Z3",2.5),steady("Regenerativo",25,"Z1"),steady("Longão aeróbio",70)],
-  11:[steady("Rodagem aeróbia",45),meterSession("Específico 5 × 1200 m",5,1200,"Tempo Run 5 km",3),steady("Corrida leve",30),meterSession("Velocidade 8 × 300 m",8,300,"Z5",1.5),steady("Regenerativo",25,"Z1"),steady("Longão progressivo",70)],
-  12:[steady("Rodagem leve de recuperação",35),meterSession("Intervalado 6 × 400 m",6,400,"Z4",1.75),steady("Corrida muito leve",25,"Z1"),tempoBlock("Ritmo específico curto",18,"Tempo Run 5 km"),steady("Regenerativo",20,"Z1"),steady("Longão reduzido",55)],
-  13:[steady("Rodagem leve",35),meterSession("Específico 4 × 1000 m",4,1000,"Tempo Run 5 km",3),steady("Corrida muito leve",25,"Z1"),meterSession("VO₂ 8 × 400 m",8,400,"Z5",1.5),steady("Regenerativo",20,"Z1"),steady("Corrida contínua",50)],
-  14:[steady("Rodagem leve",30),meterSession("Ativação 5 × 400 m",5,400,"Z4",2),steady("Corrida muito leve",20,"Z1"),meterSession("Velocidade 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Regenerativo",20,"Z1"),steady("Corrida contínua curta",40)],
-  15:[steady("Corrida leve",25),meterSession("Ativação 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Regenerativo",20,"Z1"),steady("Corrida leve curta",20),simpleSession("Soltura pré-prova",15,[{kind:"simple",label:"Corrida muito leve",minutes:15,zone:"Z1"}]),{type:"Prova",title:"Prova-alvo de 5 km Elite",description:"Executar estratégia de alto rendimento aprovada pelo treinador",estimatedKm:5,tempoRun:"5 km",steps:[{kind:"simple",label:"Aquecimento",minutes:15,zone:"Z1"},{kind:"simple",label:"Prova",distanceMeters:5000,zone:"Tempo Run 5 km"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}]}],
-};
-const lion10kPlanWeeks:Record<number,StructuredSession[]>={
-  1:[steady("Rodagem leve",40),repeatSession("Fartlek 8 × 1 minuto",8,1,"Z3",2),tempoBlock("Ritmo contínuo",15),steady("Longão leve",60)],
-  2:[steady("Rodagem aeróbia",45),meterSession("Intervalado 10 × 300 m",10,300,"Z4",1.5),repeatSession("Limiar 2 × 10 minutos",2,10,"Z3",3),steady("Longão progressivo",65)],
-  3:[steady("Rodagem leve",45),meterSession("Intervalado 8 × 400 m",8,400,"Z4",1.5),tempoBlock("Tempo Run controlado",22),steady("Longão aeróbio",70)],
-  4:[steady("Rodagem leve de recuperação",35),meterSession("Técnica 8 × 200 m",8,200,"Z4",1.5),steady("Regenerativo",30,"Z1"),steady("Longão reduzido",55)],
-  5:[steady("Rodagem aeróbia",45),meterSession("Intervalado 6 × 600 m",6,600,"Z4",2),repeatSession("Limiar 3 × 8 minutos",3,8,"Z3",2),steady("Longão progressivo",70)],
-  6:[steady("Rodagem leve",50),meterSession("Intervalado 5 × 800 m",5,800,"Z4",2.5),tempoBlock("Tempo Run de 25 minutos",25),steady("Longão aeróbio",75)],
-  7:[steady("Rodagem aeróbia",50),meterSession("VO₂ 4 × 1000 m",4,1000,"Z5",3),repeatSession("Limiar 2 × 15 minutos",2,15,"Z3",3),steady("Longão progressivo",80)],
-  8:[steady("Rodagem leve de recuperação",35),meterSession("Velocidade 10 × 200 m",10,200,"Z5",1.5),steady("Regenerativo",30,"Z1"),steady("Longão reduzido",60)],
-  9:[steady("Rodagem aeróbia",50),meterSession("Específico 5 × 1000 m",5,1000,"Z4",2.5),repeatSession("Ritmo de 10 km fracionado",3,8,"Tempo Run 10 km",3),steady("Longão progressivo",80)],
-  10:[steady("Rodagem leve",45),meterSession("Intervalado 4 × 1200 m",4,1200,"Z4",3),tempoBlock("Tempo Run de 30 minutos",30),simpleSession("Longão com final em Z3",80,[{kind:"simple",label:"Início",minutes:15,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:50,zone:"Z2"},{kind:"simple",label:"Final",minutes:15,zone:"Z3"}])],
-  11:[steady("Rodagem aeróbia",50),meterSession("Específico 3 × 1600 m",3,1600,"Tempo Run 10 km",3),repeatSession("Limiar 3 × 10 minutos",3,10,"Z3",2),steady("Longão aeróbio",75)],
-  12:[steady("Rodagem leve de recuperação",35),meterSession("Intervalado 6 × 400 m",6,400,"Z4",2),steady("Regenerativo",30,"Z1"),steady("Longão reduzido",60)],
-  13:[steady("Rodagem leve",45),meterSession("Específico 4 × 1200 m",4,1200,"Tempo Run 10 km",3),tempoBlock("Ritmo específico contínuo",20,"Tempo Run 10 km"),steady("Longão progressivo",70)],
-  14:[steady("Rodagem leve",40),meterSession("Ritmo 5 × 800 m",5,800,"Z4",2.5),steady("Regenerativo",30,"Z1"),steady("Longão reduzido",55)],
-  15:[steady("Rodagem leve",35),meterSession("Ativação 5 × 400 m",5,400,"Z4",2),steady("Corrida muito leve",25,"Z1"),steady("Corrida contínua curta",45)],
-  16:[steady("Corrida leve",30),meterSession("Ativação 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Soltura pré-prova",20,"Z1"),{type:"Prova",title:"Prova-alvo de 10 km",description:"Executar a estratégia e o ritmo individual de 10 km",estimatedKm:10,tempoRun:"10 km",steps:[{kind:"simple",label:"Aquecimento",minutes:12,zone:"Z1"},{kind:"simple",label:"Prova",distanceMeters:10000,zone:"Tempo Run 10 km"},{kind:"simple",label:"Desaquecimento",minutes:8,zone:"Z1"}]}],
-};
-const meiaStartPlanWeeks:Record<number,StructuredSession[]>={
-  1:[steady("Rodagem leve",40),repeatSession("Fartlek 6 × 2 minutos",6,2,"Z3",2),steady("Corrida complementar",30,"Z1"),steady("Longão leve",70)],
-  2:[steady("Rodagem aeróbia",45),meterSession("Intervalado 6 × 400 m",6,400,"Z4",2),steady("Corrida complementar",30),steady("Longão progressivo",75)],
-  3:[steady("Rodagem leve",45),repeatSession("Limiar 3 × 8 minutos",3,8,"Z3",2),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",80)],
-  4:[steady("Rodagem leve de recuperação",35),meterSession("Técnica 6 × 200 m",6,200,"Z4",1.5),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",65)],
-  5:[steady("Rodagem aeróbia",45),meterSession("Intervalado 5 × 600 m",5,600,"Z4",2),tempoBlock("Ritmo contínuo",20),steady("Longão progressivo",85)],
-  6:[steady("Rodagem leve",50),repeatSession("Limiar 2 × 12 minutos",2,12,"Z3",3),steady("Corrida complementar",30),steady("Longão aeróbio",90)],
-  7:[steady("Rodagem aeróbia",50),meterSession("Intervalado 4 × 800 m",4,800,"Z4",2.5),tempoBlock("Tempo Run controlado",25),steady("Longão progressivo",100)],
-  8:[steady("Rodagem leve de recuperação",40),repeatSession("Fartlek 6 × 2 minutos",6,2,"Z3",2),steady("Regenerativo",30,"Z1"),steady("Longão reduzido",80)],
-  9:[steady("Rodagem aeróbia",50),meterSession("Intervalado 4 × 1000 m",4,1000,"Z4",3),repeatSession("Limiar 3 × 10 minutos",3,10,"Z3",2),steady("Longão aeróbio",105)],
-  10:[steady("Rodagem leve",50),repeatSession("Ritmo de meia fracionado",3,8,"Tempo Run Meia maratona",3),steady("Corrida complementar",35),simpleSession("Longão com final em Z3",110,[{kind:"simple",label:"Início",minutes:20,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:70,zone:"Z2"},{kind:"simple",label:"Final",minutes:20,zone:"Z3"}])],
-  11:[steady("Rodagem aeróbia",50),meterSession("Intervalado 3 × 1600 m",3,1600,"Z4",3),tempoBlock("Ritmo específico",25,"Tempo Run Meia maratona"),steady("Longão progressivo",120)],
-  12:[steady("Rodagem leve de recuperação",40),meterSession("Ritmo 5 × 600 m",5,600,"Z4",2),steady("Regenerativo",30,"Z1"),steady("Longão reduzido",90)],
-  13:[steady("Rodagem leve",40),meterSession("Ativação 5 × 400 m",5,400,"Z4",2),tempoBlock("Ritmo de meia curto",15,"Tempo Run Meia maratona"),steady("Longão leve",70)],
-  14:[steady("Corrida leve",30),meterSession("Ativação 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Soltura pré-prova",20,"Z1"),{type:"Prova",title:"Primeira meia maratona",description:"Completar 21,1 km com estratégia e ritmo individual aprovados",estimatedKm:21.1,tempoRun:"Meia maratona",steps:[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"simple",label:"Prova",distanceMeters:21100,zone:"Tempo Run Meia maratona"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]}],
-};
-const meiaFinishPlanWeeks:Record<number,StructuredSession[]>={
-  1:[steady("Rodagem aeróbia",45),meterSession("Velocidade 12 × 200 m",12,200,"Z5",1),steady("Corrida leve",35),repeatSession("Limiar 3 × 10 minutos",3,10,"Z3",2),steady("Regenerativo",30,"Z1"),steady("Longão progressivo",90)],
-  2:[steady("Rodagem leve",50),meterSession("Intervalado 10 × 400 m",10,400,"Z4",1.5),steady("Corrida complementar",35),tempoBlock("Tempo Run contínuo",30,"Z3"),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",100)],
-  3:[steady("Rodagem aeróbia",50),meterSession("VO₂ 8 × 600 m",8,600,"Z5",2),steady("Corrida leve",35),repeatSession("Limiar 2 × 15 minutos",2,15,"Z3",3),steady("Regenerativo",30,"Z1"),simpleSession("Longão com final em Z3",105,[{kind:"simple",label:"Início leve",minutes:20,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:70,zone:"Z2"},{kind:"simple",label:"Final controlado",minutes:15,zone:"Z3"}])],
-  4:[steady("Rodagem de recuperação",40),meterSession("Técnica 10 × 200 m",10,200,"Z4",1.25),steady("Corrida muito leve",30,"Z1"),repeatSession("Fartlek 8 × 2 minutos",8,2,"Z3",1.5),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",80)],
-  5:[steady("Rodagem aeróbia",50),meterSession("VO₂ 6 × 800 m",6,800,"Z5",2.5),steady("Corrida leve",35),repeatSession("Limiar 3 × 12 minutos",3,12,"Z3",2.5),steady("Regenerativo",30,"Z1"),steady("Longão progressivo",110)],
-  6:[steady("Rodagem leve",55),meterSession("Intervalado 5 × 1000 m",5,1000,"Z4",2.5),steady("Corrida complementar",35),tempoBlock("Tempo Run de 35 minutos",35,"Z3"),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",115)],
-  7:[steady("Rodagem aeróbia",55),meterSession("VO₂ 12 × 400 m",12,400,"Z5",1.5),steady("Corrida leve",35),repeatSession("Limiar 2 × 18 minutos",2,18,"Z3",3),steady("Regenerativo",30,"Z1"),simpleSession("Longão progressivo com ritmo",120,[{kind:"simple",label:"Início leve",minutes:20,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:80,zone:"Z2"},{kind:"simple",label:"Final progressivo",minutes:20,zone:"Z3"}])],
-  8:[steady("Rodagem de recuperação",40),meterSession("Velocidade 12 × 200 m",12,200,"Z5",1.25),steady("Corrida muito leve",30,"Z1"),repeatSession("Fartlek 10 × 1 minuto",10,1,"Z4",1.5),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",90)],
-  9:[steady("Rodagem aeróbia",55),meterSession("Específico 4 × 1600 m",4,1600,"Z4",3),steady("Corrida leve",35),repeatSession("Ritmo de meia 3 × 12 minutos",3,12,"Tempo Run Meia maratona",3),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",125)],
-  10:[steady("Rodagem leve",50),meterSession("VO₂ 8 × 600 m",8,600,"Z5",2),steady("Corrida complementar",35),simpleSession("Tempo Run combinado 5 km e meia",45,[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"simple",label:"Tempo Run 5 km",minutes:10,zone:"Tempo Run 5 km"},{kind:"simple",label:"Recuperação",minutes:3,zone:"Z1"},{kind:"simple",label:"Tempo Run meia maratona",minutes:5,zone:"Tempo Run Meia maratona"},{kind:"simple",label:"Desaquecimento",minutes:17,zone:"Z1"}]),steady("Regenerativo",30,"Z1"),simpleSession("Longão com final em ritmo de meia",130,[{kind:"simple",label:"Início leve",minutes:20,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:85,zone:"Z2"},{kind:"simple",label:"Ritmo de meia",minutes:15,zone:"Tempo Run Meia maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  11:[steady("Rodagem aeróbia",55),meterSession("Específico 3 × 2000 m",3,2000,"Tempo Run 10 km",3),steady("Corrida leve",35),repeatSession("Limiar 3 × 15 minutos",3,15,"Z3",2.5),steady("Regenerativo",30,"Z1"),steady("Longão progressivo",135)],
-  12:[steady("Rodagem de recuperação",40),meterSession("Técnica 8 × 300 m",8,300,"Z4",1.5),steady("Corrida muito leve",30,"Z1"),tempoBlock("Ritmo específico curto",20,"Tempo Run Meia maratona"),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",100)],
-  13:[steady("Rodagem aeróbia",55),meterSession("VO₂ 10 × 500 m",10,500,"Z5",1.75),steady("Corrida leve",35),repeatSession("Ritmo de meia 4 × 10 minutos",4,10,"Tempo Run Meia maratona",3),steady("Regenerativo",30,"Z1"),simpleSession("Longão específico",140,[{kind:"simple",label:"Início leve",minutes:20,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:85,zone:"Z2"},{kind:"repeat",label:"Blocos em ritmo de meia",repetitions:3,effortMinutes:8,effortZone:"Tempo Run Meia maratona",recoveryMinutes:3,recoveryZone:"Z1"},{kind:"simple",label:"Desaquecimento",minutes:2,zone:"Z1"}])],
-  14:[steady("Rodagem leve",50),meterSession("Específico 4 × 2000 m",4,2000,"Tempo Run 10 km",3),steady("Corrida complementar",35),tempoBlock("Tempo Run meia maratona",35,"Tempo Run Meia maratona"),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",130)],
-  15:[steady("Rodagem aeróbia",50),meterSession("VO₂ 6 × 800 m",6,800,"Z5",2.5),steady("Corrida leve",30),repeatSession("Limiar 2 × 15 minutos",2,15,"Z3",3),steady("Regenerativo",25,"Z1"),simpleSession("Último longão com ritmo",120,[{kind:"simple",label:"Início leve",minutes:20,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:75,zone:"Z2"},{kind:"simple",label:"Ritmo de meia",minutes:15,zone:"Tempo Run Meia maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  16:[steady("Rodagem de recuperação",40),meterSession("Ritmo 6 × 600 m",6,600,"Z4",2),steady("Corrida muito leve",25,"Z1"),tempoBlock("Ritmo de meia curto",20,"Tempo Run Meia maratona"),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",90)],
-  17:[steady("Rodagem leve",40),meterSession("Específico 4 × 1000 m",4,1000,"Tempo Run 10 km",2.5),steady("Corrida muito leve",25,"Z1"),tempoBlock("Ritmo de meia controlado",15,"Tempo Run Meia maratona"),steady("Regenerativo",20,"Z1"),steady("Longão leve pré-prova",65)],
-  18:[steady("Corrida leve",25),meterSession("Ativação 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Regenerativo",20,"Z1"),steady("Corrida leve curta",20,"Z1"),simpleSession("Soltura pré-prova",15,[{kind:"simple",label:"Corrida muito leve",minutes:15,zone:"Z1"}]),{type:"Prova",title:"Prova-alvo de meia maratona",description:"Executar a estratégia de performance aprovada pelo treinador",estimatedKm:21.1,tempoRun:"Meia maratona",steps:[{kind:"simple",label:"Aquecimento",minutes:10,zone:"Z1"},{kind:"simple",label:"Prova",distanceMeters:21100,zone:"Tempo Run Meia maratona"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]}],
-};
-const oneMarathonPlanWeeks:Record<number,StructuredSession[]>={
-  1:[steady("Rodagem leve",45),repeatSession("Fartlek 8 × 2 minutos",8,2,"Z3",2),steady("Corrida complementar",35),tempoBlock("Ritmo contínuo",20,"Z3"),steady("Longão leve",100)],
-  2:[steady("Rodagem aeróbia",50),meterSession("Intervalado 8 × 400 m",8,400,"Z4",2),steady("Regenerativo",35,"Z1"),repeatSession("Limiar 2 × 12 minutos",2,12,"Z3",3),steady("Longão progressivo",110)],
-  3:[steady("Rodagem leve",50),meterSession("Intervalado 6 × 600 m",6,600,"Z4",2),steady("Corrida complementar",35),tempoBlock("Tempo Run controlado",25,"Z3"),steady("Longão aeróbio",120)],
-  4:[steady("Rodagem de recuperação",40),meterSession("Técnica 8 × 200 m",8,200,"Z4",1.5),steady("Regenerativo",30,"Z1"),repeatSession("Fartlek leve 6 × 2 minutos",6,2,"Z3",2),steady("Longão reduzido",90)],
-  5:[steady("Rodagem aeróbia",55),meterSession("Intervalado 5 × 800 m",5,800,"Z4",2.5),steady("Corrida complementar",40),repeatSession("Limiar 3 × 10 minutos",3,10,"Z3",2),steady("Longão progressivo",130)],
-  6:[steady("Rodagem leve",55),meterSession("Intervalado 4 × 1000 m",4,1000,"Z4",3),steady("Regenerativo",35,"Z1"),tempoBlock("Tempo Run de 30 minutos",30,"Z3"),steady("Longão aeróbio",140)],
-  7:[steady("Rodagem aeróbia",55),repeatSession("Subidas 10 × 2 minutos",10,2,"Z4",2),steady("Corrida complementar",40),repeatSession("Limiar 2 × 15 minutos",2,15,"Z3",3),simpleSession("Longão com final em Z3",150,[{kind:"simple",label:"Início leve",minutes:25,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:105,zone:"Z2"},{kind:"simple",label:"Final controlado",minutes:20,zone:"Z3"}])],
-  8:[steady("Rodagem de recuperação",40),meterSession("Velocidade 10 × 200 m",10,200,"Z4",1.5),steady("Regenerativo",30,"Z1"),tempoBlock("Ritmo contínuo curto",20,"Z3"),steady("Longão reduzido",110)],
-  9:[steady("Rodagem aeróbia",60),meterSession("Intervalado 5 × 1000 m",5,1000,"Z4",3),steady("Corrida complementar",40),repeatSession("Limiar 3 × 12 minutos",3,12,"Z3",2.5),steady("Longão progressivo",160)],
-  10:[steady("Rodagem leve",55),meterSession("Intervalado 3 × 1600 m",3,1600,"Z4",3),steady("Regenerativo",35,"Z1"),tempoBlock("Ritmo de maratona",30,"Tempo Run Maratona"),simpleSession("Longão com ritmo de maratona",170,[{kind:"simple",label:"Início leve",minutes:25,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:110,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:25,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  11:[steady("Rodagem aeróbia",60),meterSession("Intervalado 6 × 800 m",6,800,"Z4",2.5),steady("Corrida complementar",40),repeatSession("Ritmo de maratona 3 × 15 minutos",3,15,"Tempo Run Maratona",3),steady("Longão aeróbio",180)],
-  12:[steady("Rodagem de recuperação",45),meterSession("Técnica 8 × 300 m",8,300,"Z4",1.5),steady("Regenerativo",30,"Z1"),tempoBlock("Ritmo de maratona curto",20,"Tempo Run Maratona"),steady("Longão reduzido",130)],
-  13:[steady("Rodagem aeróbia",60),meterSession("Intervalado 4 × 1200 m",4,1200,"Z4",3),steady("Corrida complementar",40),repeatSession("Limiar 2 × 18 minutos",2,18,"Z3",3),simpleSession("Longão específico",185,[{kind:"simple",label:"Início leve",minutes:25,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:125,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:25,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  14:[steady("Rodagem leve",60),meterSession("Intervalado 3 × 2000 m",3,2000,"Tempo Run Meia maratona",3),steady("Regenerativo",35,"Z1"),tempoBlock("Tempo Run maratona",40,"Tempo Run Maratona"),steady("Longão aeróbio",190)],
-  15:[steady("Rodagem aeróbia",60),meterSession("VO₂ 8 × 600 m",8,600,"Z5",2),steady("Corrida complementar",40),repeatSession("Ritmo de maratona 4 × 12 minutos",4,12,"Tempo Run Maratona",3),simpleSession("Longão principal com ritmo",200,[{kind:"simple",label:"Início leve",minutes:30,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:125,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:35,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  16:[steady("Rodagem de recuperação",45),meterSession("Ritmo 6 × 600 m",6,600,"Z4",2),steady("Regenerativo",30,"Z1"),tempoBlock("Ritmo de maratona curto",25,"Tempo Run Maratona"),steady("Longão reduzido",145)],
-  17:[steady("Rodagem aeróbia",55),meterSession("Específico 4 × 1600 m",4,1600,"Tempo Run Meia maratona",3),steady("Corrida complementar",35),repeatSession("Ritmo de maratona 3 × 15 minutos",3,15,"Tempo Run Maratona",3),simpleSession("Último longão específico",180,[{kind:"simple",label:"Início leve",minutes:25,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:115,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:30,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  18:[steady("Rodagem leve",50),meterSession("Intervalado 5 × 800 m",5,800,"Z4",2.5),steady("Regenerativo",30,"Z1"),tempoBlock("Ritmo de maratona",25,"Tempo Run Maratona"),steady("Longão reduzido",120)],
-  19:[steady("Rodagem leve",40),meterSession("Ativação 5 × 400 m",5,400,"Z4",2),steady("Regenerativo",25,"Z1"),tempoBlock("Ritmo de maratona curto",15,"Tempo Run Maratona"),steady("Longão leve pré-prova",70)],
-  20:[steady("Corrida leve",25),meterSession("Ativação 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Regenerativo",20,"Z1"),simpleSession("Soltura pré-prova",15,[{kind:"simple",label:"Corrida muito leve",minutes:15,zone:"Z1"}]),{type:"Prova",title:"Primeira maratona",description:"Completar 42,2 km com estratégia, hidratação e ritmo aprovados pelo treinador",estimatedKm:42.2,tempoRun:"Maratona",steps:[{kind:"simple",label:"Aquecimento",minutes:8,zone:"Z1"},{kind:"simple",label:"Prova",distanceMeters:42195,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]}],
-};
-const fullMarathonPlanWeeks:Record<number,StructuredSession[]>={
-  1:[steady("Rodagem aeróbia",55),meterSession("Velocidade 12 × 200 m",12,200,"Z5",1),steady("Corrida leve",40),repeatSession("Limiar 3 × 10 minutos",3,10,"Z3",2),steady("Regenerativo",30,"Z1"),steady("Longão progressivo",120)],
-  2:[steady("Rodagem leve",60),meterSession("Intervalado 10 × 400 m",10,400,"Z4",1.5),steady("Corrida complementar",40),tempoBlock("Tempo Run contínuo",30,"Z3"),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",130)],
-  3:[steady("Rodagem aeróbia",60),meterSession("VO₂ 8 × 600 m",8,600,"Z5",2),steady("Corrida leve",40),repeatSession("Limiar 2 × 18 minutos",2,18,"Z3",3),steady("Regenerativo",30,"Z1"),simpleSession("Longão com final em Z3",140,[{kind:"simple",label:"Início leve",minutes:25,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:95,zone:"Z2"},{kind:"simple",label:"Final controlado",minutes:20,zone:"Z3"}])],
-  4:[steady("Rodagem de recuperação",45),meterSession("Técnica 10 × 200 m",10,200,"Z4",1.25),steady("Corrida muito leve",30,"Z1"),repeatSession("Fartlek 8 × 2 minutos",8,2,"Z3",1.5),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",105)],
-  5:[steady("Rodagem aeróbia",60),meterSession("VO₂ 6 × 800 m",6,800,"Z5",2.5),steady("Corrida leve",40),repeatSession("Limiar 3 × 12 minutos",3,12,"Z3",2.5),steady("Regenerativo",30,"Z1"),steady("Longão progressivo",150)],
-  6:[steady("Rodagem leve",60),meterSession("Intervalado 5 × 1000 m",5,1000,"Z4",2.5),steady("Corrida complementar",40),tempoBlock("Tempo Run de 35 minutos",35,"Z3"),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",160)],
-  7:[steady("Rodagem aeróbia",65),repeatSession("Subidas 12 × 2 minutos",12,2,"Z4",2),steady("Corrida leve",40),repeatSession("Limiar 2 × 20 minutos",2,20,"Z3",3),steady("Regenerativo",30,"Z1"),simpleSession("Longão progressivo",170,[{kind:"simple",label:"Início leve",minutes:25,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:120,zone:"Z2"},{kind:"simple",label:"Final controlado",minutes:25,zone:"Z3"}])],
-  8:[steady("Rodagem de recuperação",45),meterSession("Velocidade 12 × 200 m",12,200,"Z5",1.25),steady("Corrida muito leve",30,"Z1"),repeatSession("Fartlek 10 × 1 minuto",10,1,"Z4",1.5),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",120)],
-  9:[steady("Rodagem aeróbia",65),meterSession("Específico 5 × 1200 m",5,1200,"Z4",3),steady("Corrida leve",40),repeatSession("Limiar 3 × 15 minutos",3,15,"Z3",2.5),steady("Regenerativo",30,"Z1"),steady("Longão progressivo",180)],
-  10:[steady("Rodagem leve",60),meterSession("Intervalado 4 × 1600 m",4,1600,"Z4",3),steady("Corrida complementar",40),tempoBlock("Ritmo de maratona",35,"Tempo Run Maratona"),steady("Regenerativo",30,"Z1"),simpleSession("Longão com ritmo de maratona",185,[{kind:"simple",label:"Início leve",minutes:25,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:120,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:30,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  11:[steady("Rodagem aeróbia",65),meterSession("VO₂ 10 × 600 m",10,600,"Z5",2),steady("Corrida leve",40),repeatSession("Ritmo de maratona 3 × 18 minutos",3,18,"Tempo Run Maratona",3),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",190)],
-  12:[steady("Rodagem de recuperação",45),meterSession("Técnica 8 × 300 m",8,300,"Z4",1.5),steady("Corrida muito leve",30,"Z1"),tempoBlock("Ritmo de maratona curto",25,"Tempo Run Maratona"),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",135)],
-  13:[steady("Rodagem aeróbia",65),meterSession("Específico 4 × 2000 m",4,2000,"Tempo Run Meia maratona",3),steady("Corrida leve",40),repeatSession("Limiar 2 × 20 minutos",2,20,"Z3",3),steady("Regenerativo",30,"Z1"),simpleSession("Longão específico",195,[{kind:"simple",label:"Início leve",minutes:25,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:125,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:35,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  14:[steady("Rodagem leve",65),meterSession("VO₂ 8 × 800 m",8,800,"Z5",2.5),steady("Corrida complementar",40),tempoBlock("Tempo Run maratona",45,"Tempo Run Maratona"),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",200)],
-  15:[steady("Rodagem aeróbia",65),meterSession("Específico 3 × 3000 m",3,3000,"Tempo Run Meia maratona",4),steady("Corrida leve",40),repeatSession("Ritmo de maratona 4 × 15 minutos",4,15,"Tempo Run Maratona",3),steady("Regenerativo",30,"Z1"),simpleSession("Longão principal com ritmo",210,[{kind:"simple",label:"Início leve",minutes:30,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:125,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:45,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  16:[steady("Rodagem de recuperação",50),meterSession("Ritmo 8 × 600 m",8,600,"Z4",2),steady("Corrida muito leve",30,"Z1"),tempoBlock("Ritmo de maratona curto",30,"Tempo Run Maratona"),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",150)],
-  17:[steady("Rodagem aeróbia",65),meterSession("VO₂ 12 × 500 m",12,500,"Z5",1.75),steady("Corrida leve",40),repeatSession("Limiar 3 × 15 minutos",3,15,"Z3",2.5),steady("Regenerativo",30,"Z1"),simpleSession("Longão específico progressivo",215,[{kind:"simple",label:"Início leve",minutes:30,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:130,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:45,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  18:[steady("Rodagem leve",65),meterSession("Específico 5 × 2000 m",5,2000,"Tempo Run Meia maratona",3),steady("Corrida complementar",40),tempoBlock("Tempo Run maratona",50,"Tempo Run Maratona"),steady("Regenerativo",30,"Z1"),steady("Longão aeróbio",205)],
-  19:[steady("Rodagem aeróbia",65),meterSession("VO₂ 6 × 1000 m",6,1000,"Z5",3),steady("Corrida leve",40),repeatSession("Ritmo de maratona 3 × 20 minutos",3,20,"Tempo Run Maratona",4),steady("Regenerativo",30,"Z1"),simpleSession("Maior longão específico",220,[{kind:"simple",label:"Início leve",minutes:30,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:130,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:50,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  20:[steady("Rodagem de recuperação",50),meterSession("Técnica 10 × 300 m",10,300,"Z4",1.5),steady("Corrida muito leve",30,"Z1"),tempoBlock("Ritmo de maratona controlado",30,"Tempo Run Maratona"),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",155)],
-  21:[steady("Rodagem aeróbia",60),meterSession("Específico 4 × 2000 m",4,2000,"Tempo Run Meia maratona",3),steady("Corrida leve",35),repeatSession("Ritmo de maratona 3 × 18 minutos",3,18,"Tempo Run Maratona",3),steady("Regenerativo",30,"Z1"),simpleSession("Último longão específico",190,[{kind:"simple",label:"Início leve",minutes:25,zone:"Z1"},{kind:"simple",label:"Parte aeróbia",minutes:120,zone:"Z2"},{kind:"simple",label:"Ritmo de maratona",minutes:35,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:10,zone:"Z1"}])],
-  22:[steady("Rodagem leve",55),meterSession("VO₂ 6 × 800 m",6,800,"Z5",2.5),steady("Corrida complementar",35),tempoBlock("Tempo Run maratona",35,"Tempo Run Maratona"),steady("Regenerativo",25,"Z1"),steady("Longão aeróbio",145)],
-  23:[steady("Rodagem leve",50),meterSession("Ritmo 5 × 1000 m",5,1000,"Z4",3),steady("Corrida muito leve",30,"Z1"),tempoBlock("Ritmo de maratona curto",25,"Tempo Run Maratona"),steady("Regenerativo",25,"Z1"),steady("Longão reduzido",105)],
-  24:[steady("Rodagem leve",40),meterSession("Ativação 5 × 400 m",5,400,"Z4",2),steady("Regenerativo",25,"Z1"),tempoBlock("Ritmo de maratona leve",15,"Tempo Run Maratona"),steady("Corrida muito leve",20,"Z1"),steady("Soltura pré-prova",45)],
-  25:[steady("Corrida leve",25),meterSession("Ativação 8 × 100 m",8,100,"Z5",1.5,8,6),steady("Regenerativo",20,"Z1"),steady("Corrida leve curta",20,"Z1"),simpleSession("Soltura pré-prova",15,[{kind:"simple",label:"Corrida muito leve",minutes:15,zone:"Z1"}]),{type:"Prova",title:"Maratona-alvo Full",description:"Executar a estratégia de performance, hidratação e ritmo aprovada pelo treinador",estimatedKm:42.2,tempoRun:"Maratona",steps:[{kind:"simple",label:"Aquecimento",minutes:8,zone:"Z1"},{kind:"simple",label:"Prova",distanceMeters:42195,zone:"Tempo Run Maratona"},{kind:"simple",label:"Desaquecimento",minutes:5,zone:"Z1"}]}],
-};
-const planWeekTemplates:Record<string,Record<number,StructuredSession[]>>={"Iniciantes":beginnerPlanWeeks,"5 km Bronze":bronzePlanWeeks,"5 km Prata":prataPlanWeeks,"5 km Ouro":ouroPlanWeeks,"5 km Elite":elitePlanWeeks,"10 km Lion":lion10kPlanWeeks,"Meia Start":meiaStartPlanWeeks,"Meia Finish":meiaFinishPlanWeeks,"One Marathon":oneMarathonPlanWeeks,"Full Marathon":fullMarathonPlanWeeks};
-const sessionPriority=(session:StructuredSession)=>{const text=`${session.type} ${session.title||""}`.toLowerCase();if(/prova|desafio|longão/.test(text))return 100;if(/tempo|limiar|específico|intervalado|fartlek|vo₂|ritmo|ativação/.test(text))return 80;if(/rodagem|aeróbia|contínua/.test(text))return 40;return 20};
-const sessionsForPlanWeek=(planName:string,weekNumber:number,days:string[])=>{const template=planWeekTemplates[planName]?.[weekNumber]||[];if(!template.length)return{};const chosen=template.map((session,index)=>({session,index})).sort((a,b)=>sessionPriority(b.session)-sessionPriority(a.session)).slice(0,days.length).sort((a,b)=>a.index-b.index).map(item=>item.session);return Object.fromEntries(days.slice(0,chosen.length).map((day,index)=>[day,chosen[index]]))};
-const sessionsForSavedPlanWeek=async(planName:string,weekNumber:number,days:string[])=>{let template=planWeekTemplates[planName]?.[weekNumber]||[];try{const response=await fetch(`/api/plan-template-overrides?plan=${encodeURIComponent(planName)}&week=${weekNumber}`);if(response.ok){const data=await response.json();if(Array.isArray(data.override?.sessions)&&data.override.sessions.length)template=data.override.sessions}}catch{}if(!template.length)return{};const chosen=template.map((session,index)=>({session,index})).sort((a,b)=>sessionPriority(b.session)-sessionPriority(a.session)).slice(0,days.length).sort((a,b)=>a.index-b.index).map(item=>item.session);return Object.fromEntries(days.slice(0,chosen.length).map((day,index)=>[day,chosen[index]]))};
+/* As dez planilhas de fábrica moraram aqui até a equipe existir. Agora são
+   dados do treinador principal, e o worker precisa lê-las para semear — por
+   isso vivem num módulo que os dois lados importam. */
+import { trainingPlans, sessionPriority } from "@/db/planilhas-de-fabrica";
+/* As semanas vêm do servidor, e só de lá. Havia um retorno para o conteúdo de
+   fábrica guardado no cliente: depois que cada treinador passou a ter a própria
+   biblioteca, esse retorno vazaria os treinos das dez planilhas originais para
+   quem apenas usasse o mesmo nome numa planilha dele. */
+const sessionsForSavedPlanWeek=async(planName:string,weekNumber:number,days:string[])=>{let template:StructuredSession[]=[];try{const response=await fetch(`/api/plan-template-overrides?plan=${encodeURIComponent(planName)}&week=${weekNumber}`);if(response.ok){const data=await response.json();if(Array.isArray(data.override?.sessions)&&data.override.sessions.length)template=data.override.sessions}}catch{}if(!template.length)return{};const chosen=template.map((session,index)=>({session,index})).sort((a,b)=>sessionPriority(b.session)-sessionPriority(a.session)).slice(0,days.length).sort((a,b)=>a.index-b.index).map(item=>item.session);return Object.fromEntries(days.slice(0,chosen.length).map((day,index)=>[day,chosen[index]]))};
 const phaseForPlanWeek=(planName:string,weekNumber:number)=>{const plan=trainingPlans.find(item=>item.name===planName);if(!plan)return"Base";const value=plan.phases[Math.min(plan.phases.length-1,Math.floor((weekNumber-1)/(plan.weeks/plan.phases.length)))];if(value.includes("Adaptação"))return"Adaptação";if(value.includes("Base"))return"Base";if(value.includes("Pré")||value.includes("Polimento")||value.includes("Desafio"))return"Pré-prova";if(value.includes("Específica")||value.includes("Ritmo específico"))return"Específica";return"Desenvolvimento"};
 /** A lista de alunos vem sempre do banco. Não há dados de demonstração. */
 const athletes: Athlete[] = [];
 
 const distances = ["Todos", "Iniciantes", "5 km", "10 km", "Meia", "Maratona"];
 const phases = ["Todas", "Adaptação", "Base", "Desenvolvimento", "Específica", "Pré-prova"];
-const planNames = ["Todas","Iniciantes","5 km Bronze","5 km Prata","5 km Ouro","5 km Elite","10 km Lion","Meia Start","Meia Finish","One Marathon","Full Marathon"];
+/* O filtro de planilha era uma lista fixa com as dez de fábrica. Como cada
+   treinador tem a própria biblioteca, a lista passa a sair dos alunos que ele
+   realmente tem: filtrar por uma planilha sem aluno nenhum não filtra nada, e
+   ver o nome da planilha de outro treinador não deveria acontecer. */
+const planNamesDe = (atletas: Athlete[]) => ["Todas", ...Array.from(new Set(atletas.map(athletePlan))).filter(Boolean).sort()];
 const defaultPlanForDistance = (distance:string) => distance === "Iniciantes" ? "Iniciantes" : distance === "5 km" ? "5 km Bronze" : distance === "10 km" ? "10 km Lion" : distance === "Meia" ? "Meia Start" : distance === "Maratona" ? "One Marathon" : "Sem base";
 const athletePlan = (athlete:Athlete) => athlete.plan || defaultPlanForDistance(athlete.distance);
 const nav = ["Painel", "Cadastros", "Alunos", "Calendário", "Planilhas", "Testes e zonas", "Provas", "Financeiro", "Integrações", "Contas", "Segurança"];
+/* "Equipe" só existe para o proprietário. É a única diferença de navegação
+   entre ele e um treinador comum — o resto do painel é o mesmo, porque ele
+   também treina alunos. */
+const navDoProprietario = [...nav, "Equipe"];
 
 /** Um provedor de integração como a área do aluno o exibe. */
 type ProviderCard = {
@@ -250,6 +73,19 @@ const PROVIDER_PREVIEW = [
 ];
 
 /** Iniciais para o avatar do treinador, a partir do nome da conta. */
+/**
+ * "1 aluno" / "2 alunos". O produto escrevia "aluno(s)" em toda contagem, o que
+ * lê mal e ainda quebrava no meio da palavra quando o rótulo era estreito.
+ */
+const plural = (quantidade: number, singular: string, plural = `${singular}s`) =>
+  `${quantidade} ${quantidade === 1 ? singular : plural}`;
+
+/** Concorda o verbo com a quantidade: `plural()` flexiona o substantivo, este
+    resolve o verbo que o acompanha. Sem ele saía "1 situação precisam". */
+const concordar = (quantidade: number, singular: string, plural: string) =>
+  quantidade === 1 ? singular : plural;
+
+
 const initialsOf = (name: string) => name.trim().split(/\s+/).slice(0, 2).map(p => p[0] ?? "").join("").toUpperCase() || "ZA";
 
 /** Saudação conforme a hora em Brasília, onde o treinador usa o sistema. */
@@ -260,7 +96,6 @@ function greeting(): string {
 
 /** No celular a barra inferior mostra apenas os quatro primeiros itens de `nav`. */
 const MOBILE_VISIBLE_NAV = 4;
-const navIcon = (item: string) => item === "Painel" ? "⌂" : item === "Alunos" ? "◉" : item === "Calendário" ? "□" : item === "Planilhas" ? "▤" : item === "Provas" ? "⚑" : item === "Financeiro" ? "$" : item === "Integrações" ? "⌚" : item === "Contas" ? "☰" : item === "Segurança" ? "◇" : "↗";
 
 function pace(seconds: number) {
   if (!Number.isFinite(seconds) || seconds <= 0) return "—";
@@ -288,6 +123,8 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
   const [active, setActive] = useState("Painel");
   const [mobileMenu, setMobileMenu] = useState(false);
   const coachInitials = initialsOf(session.name);
+  const ehProprietario = session.role === "owner";
+  const itensDeNavegacao = ehProprietario ? navDoProprietario : nav;
   const [distanceFilter, setDistanceFilter] = useState("Todos");
   const [phaseFilter, setPhaseFilter] = useState("Todas");
   const [planFilter, setPlanFilter] = useState("Todas");
@@ -381,13 +218,13 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
     <div className={`shell${visitando ? " com-visita" : ""}`}>
       <aside className="sidebar">
         <div className="brand"><span>Z</span><div><strong>ZONASAPP</strong><small>PLATAFORMA DE TREINO</small></div></div>
-        <nav>{nav.map(item => <button key={item} className={active === item ? "active" : ""} onClick={() => setActive(item)}><i>{navIcon(item)}</i>{item}</button>)}
+        <nav>{itensDeNavegacao.map(item => <button key={item} className={active === item ? "active" : ""} onClick={() => setActive(item)}><i><NavIcon item={item} /></i>{item}</button>)}
           {/* No celular a barra inferior só comporta quatro atalhos; este botão
               abre as demais seções, que de outro modo ficariam inalcançáveis. */}
-          <button className="coach-nav-more" aria-expanded={mobileMenu} onClick={() => setMobileMenu(value => !value)}><i>⋯</i>Mais</button>
+          <button className="coach-nav-more" aria-expanded={mobileMenu} onClick={() => setMobileMenu(value => !value)}><i><IconMais /></i>Mais</button>
         </nav>
-        <button className="student-switch" onClick={() => setStudent(true)}>↔ Ver como aluno</button>
-        <div className="coach"><b>{coachInitials}</b><span><strong>{session.name}</strong><small>Treinador</small></span></div>
+        <button className="student-switch" onClick={() => setStudent(true)}><IconTrocarVisao />Ver como aluno</button>
+        <div className="coach"><b>{coachInitials}</b><span><strong>{session.name}</strong><small>{session.email}</small></span><button className="coach-exit" onClick={()=>void signOut()} title="Sair e entrar com outra conta" aria-label="Sair e entrar com outra conta"><IconSair /></button></div>
       </aside>
 
       {visitando && <div className="dev-visiting-banner">
@@ -397,18 +234,18 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
       {mobileMenu && <div className="coach-more-sheet" onClick={() => setMobileMenu(false)}>
         <section onClick={event => event.stopPropagation()}>
           <header><b>Outras seções</b><button aria-label="Fechar" onClick={() => setMobileMenu(false)}>×</button></header>
-          {nav.slice(MOBILE_VISIBLE_NAV).map(item =>
+          {itensDeNavegacao.slice(MOBILE_VISIBLE_NAV).map(item =>
             <button key={item} className={active === item ? "active" : ""} onClick={() => { setActive(item); setMobileMenu(false); }}>
-              <i>{navIcon(item)}</i><span>{item}</span><em>›</em>
+              <i><NavIcon item={item} /></i><span>{item}</span><em>›</em>
             </button>)}
-          <button className="coach-more-preview" onClick={() => { setStudent(true); setMobileMenu(false); }}><i>↔</i><span>Ver como aluno</span><em>›</em></button>
-          <button className="coach-more-signout" onClick={() => void signOut()}><i>⏻</i><span>Sair da conta</span><em>›</em></button>
+          <button className="coach-more-preview" onClick={() => { setStudent(true); setMobileMenu(false); }}><i><IconTrocarVisao /></i><span>Ver como aluno</span><em>›</em></button>
+          <button className="coach-more-signout" onClick={() => void signOut()}><i><IconSair /></i><span>Sair da conta</span><em>›</em></button>
         </section>
       </div>}
 
       <main className="content">
-        <header className="top"><div><small>{brazilCalendar().label.toUpperCase()}</small><h1>{active === "Painel" ? `${greeting()}, ${session.name.split(" ")[0]}` : active}</h1></div><div className="top-actions">{active === "Alunos" && <button className="gold" onClick={() => setNewAthlete(true)}>+ Novo aluno</button>}<button className="coach-alert-button" onClick={()=>setActive("Painel")} aria-label="Abrir avisos do professor">🔔 <b>{painReports.length+pendingRaces.filter(race=>race.status==="Aguardando análise").length+pendingTests.filter(test=>test.status!=="Aprovado").length+pendingAccess.length}</b><span>avisos</span></button>{onLeaveDev&&<button className="coach-signout" onClick={onLeaveDev}>← Diagnóstico</button>}<button className="coach-signout" onClick={()=>void signOut()} title={session.email}>Sair</button></div></header>
-        {active === "Painel" && <><CoachNotificationCenter go={setActive} openPain={setPainCase} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests} pendingAccess={pendingAccess}/><Dashboard go={setActive} openPain={setPainCase} chooseDistance={(d) => { setDistanceFilter(d); setActive("Alunos"); }} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests}/><PendingTestShortcut tests={pendingTests} open={()=>setActive("Testes e zonas")}/><WorkoutAccuracy/><TrainingFeedbacks/></>}
+        <header className="top"><div><small>{brazilCalendar().label.toUpperCase()}</small><h1>{active === "Painel" ? `${greeting()}, ${session.name.split(" ")[0]}` : active}</h1></div><div className="top-actions">{active === "Alunos" && <button className="gold" onClick={() => setNewAthlete(true)}>+ Novo aluno</button>}<button className="coach-alert-button" onClick={()=>setActive("Painel")} aria-label="Abrir avisos do professor"><IconAviso /><b>{painReports.length+pendingRaces.filter(race=>race.status==="Aguardando análise").length+pendingTests.filter(test=>test.status!=="Aprovado").length+pendingAccess.length}</b><span>avisos</span></button>{onLeaveDev&&<button className="coach-signout" onClick={onLeaveDev}>← Diagnóstico</button>}<button className="coach-signout" onClick={()=>void signOut()} title={session.email}>Sair</button></div></header>
+        {active === "Painel" && <><CoachWeekSummary go={setActive} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests}/><CoachNotificationCenter go={setActive} openPain={setPainCase} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests} pendingAccess={pendingAccess}/><CoachGroups go={setActive} chooseDistance={(d) => { setDistanceFilter(d); setActive("Alunos"); }} athletes={athleteRecords}/><WorkoutAccuracy/><TrainingFeedbacks/></>}
         {active === "Cadastros" && <><InviteLink/><AccessRequests onApproved={()=>{setPendingAccess(current=>current.slice(1));fetch("/api/athletes").then(r=>r.ok?r.json():{athletes:[]}).then(data=>{const saved=(data.athletes||[]).map((a:any)=>({name:a.name,initials:a.initials,distance:a.distance,plan:a.saved_plan||defaultPlanForDistance(a.distance),phase:a.planning_phase||a.phase,week:a.planning_week_number?`${a.planning_week_number} de ${a.planning_total_weeks}`:a.week,next:a.next_workout,flag:a.status||undefined}));setAthleteRecords(current=>[...saved,...current.filter(a=>!saved.some((s:Athlete)=>s.name===a.name))])})}}/></>} 
         {active === "Alunos" && <Athletes filtered={filtered} allAthletes={athleteRecords} distance={distanceFilter} phase={phaseFilter} plan={planFilter} setDistance={setDistanceFilter} setPhase={setPhaseFilter} setPlan={setPlanFilter} openProfile={setSelectedAthlete} situation={situationFilter} setSituation={setSituationFilter} counts={athleteCounts} onArchiveChange={()=>refreshAthleteRecords()} />}
         {active === "Testes e zonas" && <PendingTestCenter athletes={athleteRecords} openCalendar={(name)=>{sessionStorage.setItem("zonasapp:calendar-athlete",name);setActive("Calendário")}} />}
@@ -420,38 +257,166 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
         {active === "Integrações" && <CoachIntegrations />}
         {active === "Contas" && <AccountsCenter athletes={athleteRecords} />}
         {active === "Segurança" && <><SecurityCenter /><ErrorMonitor /></>}
+        {active === "Equipe" && ehProprietario && <TeamCenter />}
       </main>
       {selectedAthlete && <AthleteProfile athlete={selectedAthlete} close={() => setSelectedAthlete(null)} onOpenPain={id => setPainCase({ id, athleteName: selectedAthlete.name })} />}
       {painCase && <PainCaseScreen reportId={painCase.id} athleteName={painCase.athleteName} close={() => { setPainCase(null); window.dispatchEvent(new Event("zonasapp:athletes-refresh")); }} />}
-      {newAthlete && <NewAthlete close={() => setNewAthlete(false)} save={async (athlete, details) => { const response = await fetch("/api/athletes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...athlete, nextWorkout: athlete.next, status: athlete.flag, ...details }) }); if (!response.ok) throw new Error("save_failed");const totalWeeks=Number(athlete.week.match(/de (\d+)/)?.[1]||12);const planning=await fetch("/api/athlete-planning",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({athleteName:athlete.name,plan:athletePlan(athlete),phase:athlete.phase,weekNumber:1,totalWeeks})});if(!planning.ok)throw new Error("planning_failed"); setAthleteRecords(current => [athlete, ...current]); setNewAthlete(false); }} />}
+      {newAthlete && <NewAthlete close={() => setNewAthlete(false)} save={async (athlete, details) => { /* Campos explícitos, não `...athlete`: o objeto da tela carrega `plan`, `next` e `flag`, que existem só aqui. O envelope da API recusa campo desconhecido, e era isso que devolvia "Não foi possível salvar agora" no cadastro. */
+        const response = await fetch("/api/athletes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: athlete.name, initials: athlete.initials, distance: athlete.distance, phase: athlete.phase, week: athlete.week, nextWorkout: athlete.next, status: athlete.flag, ...details }) }); if (!response.ok) throw new Error("save_failed");const totalWeeks=Number(athlete.week.match(/de (\d+)/)?.[1]||12);const planning=await fetch("/api/athlete-planning",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({athleteName:athlete.name,plan:athletePlan(athlete),phase:athlete.phase,weekNumber:1,totalWeeks})});if(!planning.ok)throw new Error("planning_failed"); setAthleteRecords(current => [athlete, ...current]); setNewAthlete(false); }} />}
       {selectedTemplate && <PlanDetails plan={selectedTemplate} close={()=>setSelectedTemplate(null)} />}
+      <CentralDeAvisos />
     </div>
   );
 }
 
+/**
+ * Preparar e gerar as cobranças do mês, em um lugar só.
+ *
+ * A geração chegou a existir aqui e num cartão próprio logo abaixo, com o
+ * mesmo botão. Duas portas para a mesma ação convidam a gerar duas vezes sem
+ * perceber, então o alcance passou a ser escolhido aqui, junto do padrão.
+ */
 function FinancialQuickSetup(){
+  type ClasseDePreco={id:string;name:string;amount_cents:number;due_day:number};
   const [month,setMonth]=useState(new Date().toISOString().slice(0,7));const [pixKey,setPixKey]=useState("");const [pixName,setPixName]=useState("");const [amount,setAmount]=useState("110,00");const [dueDay,setDueDay]=useState(15);const [configured,setConfigured]=useState(false);const [state,setState]=useState("");
+  const [classes,setClasses]=useState<ClasseDePreco[]>([]);
+  const [alunos,setAlunos]=useState<string[]>([]);
+  const [alcance,setAlcance]=useState<"all"|"class"|"athletes">("all");
+  const [classeAlvo,setClasseAlvo]=useState("");
+  const [escolhidos,setEscolhidos]=useState<string[]>([]);
   const money=(value:string)=>Number(value.replace(/R\$|\s/g,"").replace(/\./g,"").replace(",","."));
-  useEffect(()=>{fetch(`/api/financial?month=${month}`).then(response=>response.ok?response.json():Promise.reject()).then(data=>{if(data.settings){setPixKey(data.settings.pix_key||"");setPixName(data.settings.pix_name||"");setAmount((Number(data.settings.default_amount_cents||11000)/100).toLocaleString("pt-BR",{minimumFractionDigits:2}));setDueDay(Number(data.settings.due_day)||15);setConfigured(true)}}).catch(()=>setState("error"))},[month]);
+  useEffect(()=>{fetch(`/api/financial?month=${month}`).then(response=>response.ok?response.json():Promise.reject()).then(data=>{if(data.settings){setPixKey(data.settings.pix_key||"");setPixName(data.settings.pix_name||"");setAmount((Number(data.settings.default_amount_cents||11000)/100).toLocaleString("pt-BR",{minimumFractionDigits:2}));setDueDay(Number(data.settings.due_day)||15);setConfigured(true)}setClasses(data.classes||[]);setAlunos((data.payments||[]).map((linha:{athlete_name:string})=>linha.athlete_name))}).catch(()=>setState("error"))},[month]);
   const save=async()=>{const value=money(amount);if(!Number.isFinite(value)||value<=0){setState("invalid");return}setState("saving");try{await api.post("/api/financial",{action:"save_settings",pixKey,pixName,defaultAmount:value,dueDay});setConfigured(true);setState("saved")}catch{setState("error")}};
-  const generate=async()=>{if(!configured)return;setState("generating");try{await api.post("/api/financial",{action:"generate_month",referenceMonth:month});setState("generated");window.location.reload()}catch{setState("error")}};
-  return <section className="financial-quick-setup"><header><div><span className="overline">PASSO A PASSO FINANCEIRO</span><h2>Prepare as cobranças do mês</h2><p>Defina o padrão, salve e gere. Valores individuais existentes não serão substituídos.</p></div><label>Mês<input type="month" value={month} onChange={event=>setMonth(event.target.value)}/></label></header><div><label>Valor padrão (R$)<input inputMode="decimal" value={amount} onChange={event=>setAmount(event.target.value.replace(/[^0-9.,]/g,""))}/></label><label>Vencimento<input type="number" min="1" max="28" value={dueDay} onChange={event=>setDueDay(Math.min(28,Math.max(1,Number(event.target.value)||1)))}/></label><label>Chave Pix<input value={pixKey} onChange={event=>setPixKey(event.target.value)}/></label><label>Recebedor<input value={pixName} onChange={event=>setPixName(event.target.value)}/></label></div><footer><button className="outline" disabled={state==="saving"} onClick={save}>{state==="saving"?"Salvando…":"1. Salvar padrão"}</button><button className="gold" disabled={!configured||state==="generating"} onClick={generate}>{state==="generating"?"Gerando…":"2. Gerar cobranças do mês"}</button></footer>{state==="saved"&&<p className="request-success">Padrão salvo. Agora gere as cobranças do mês →</p>}{state==="invalid"&&<p className="registration-error">Digite um valor válido, por exemplo 110,00.</p>}{state==="error"&&<p className="registration-error">Não foi possível concluir agora.</p>}</section>;
+  const generate=async()=>{
+    if(!configured)return;
+    const rotulo=alcance==="all"?"todos os alunos ativos":alcance==="class"?`a classe ${classeAlvo}`:plural(escolhidos.length,"aluno marcado","alunos marcados");
+    if(!await pergunte({titulo:`Gerar cobranças de ${month.split("-").reverse().join("/")}?`,descricao:`Alcance: ${rotulo}. Cada aluno recebe o valor da classe dele; sem classe, o padrão. Quem já tem cobrança no mês não é tocado — é lá que fica a negociação individual.`,confirmar:"Gerar cobranças"}))return;
+    setState("generating");
+    try{
+      const r=await api.post<{generated?:number}>("/api/financial",{action:"generate_month",referenceMonth:month,scope:alcance,className:alcance==="class"?classeAlvo:undefined,athletes:alcance==="athletes"?escolhidos:undefined});
+      setState("generated");
+      avise("ok","Cobranças geradas",`${plural(Number(r.generated??0),"aluno alcançado","alunos alcançados")}. Quem já tinha cobrança continuou como estava.`);
+      window.dispatchEvent(new Event("zonasapp:financeiro-refresh"));
+    }catch(erro){setState("error");avise("erro","Não foi possível gerar as cobranças",describeError(erro))}
+  };
+  return <section className="financial-quick-setup"><header><div><span className="overline">PASSO A PASSO FINANCEIRO</span><h2>Prepare as cobranças do mês</h2><p>Defina o padrão, salve e gere. Valores individuais existentes não serão substituídos.</p></div><label>Mês<input type="month" value={month} onChange={event=>setMonth(event.target.value)}/></label></header><div><label>Valor padrão (R$)<input inputMode="decimal" value={amount} onChange={event=>setAmount(event.target.value.replace(/[^0-9.,]/g,""))}/></label><label>Vencimento<input type="number" min="1" max="28" value={dueDay} onChange={event=>setDueDay(Math.min(28,Math.max(1,Number(event.target.value)||1)))}/></label><label>Chave Pix<input value={pixKey} onChange={event=>setPixKey(event.target.value)}/></label><label>Recebedor<input value={pixName} onChange={event=>setPixName(event.target.value)}/></label></div><div className="financial-scope"><span className="overline">2. QUEM RECEBE A COBRANÇA</span><div>{([["all","Todos os alunos ativos"],["class","Uma classe"],["athletes","Alunos marcados"]] as const).map(([chave,rotulo])=><button key={chave} className={alcance===chave?"selected":""} onClick={()=>setAlcance(chave)}>{rotulo}</button>)}</div>
+    {alcance==="class"&&<label className="financial-scope-class">Classe<select value={classeAlvo} onChange={event=>setClasseAlvo(event.target.value)}><option value="">Escolha uma classe</option>{classes.map(classe=><option key={classe.id}>{classe.name}</option>)}</select></label>}
+    {alcance==="athletes"&&<div className="financial-scope-athletes">{alunos.map(nome=><button key={nome} className={escolhidos.includes(nome)?"selected":""} onClick={()=>setEscolhidos(atual=>atual.includes(nome)?atual.filter(item=>item!==nome):[...atual,nome])}>{nome}</button>)}</div>}</div>
+    <footer><button className="outline" disabled={state==="saving"} onClick={save}>{state==="saving"?"Salvando…":"1. Salvar padrão"}</button><button className="gold" disabled={!configured||state==="generating"||(alcance==="class"&&!classeAlvo)||(alcance==="athletes"&&!escolhidos.length)} onClick={()=>void generate()}>{state==="generating"?"Gerando…":"3. Gerar cobranças do mês"}</button></footer>{state==="saved"&&<p className="request-success">Padrão salvo. Agora gere as cobranças do mês →</p>}{state==="invalid"&&<p className="registration-error">Digite um valor válido, por exemplo 110,00.</p>}{state==="error"&&<p className="registration-error">Não foi possível concluir agora.</p>}</section>;
 }
 
 function FinancialCenter(){
-  type Row={athlete_name:string;reference_month?:string;amount_cents?:number;due_date?:string;status?:string};type Draft={amount:string;dueDate:string};
+  type Row={athlete_name:string;reference_month?:string;amount_cents?:number;due_date?:string;status?:string;price_class?:string|null;has_receipt?:number;receipt_note?:string|null;receipt_added_at?:number|null};
+  type Classe={id:string;name:string;amount_cents:number;due_day:number};type Draft={amount:string;dueDate:string};
   const [month,setMonth]=useState(new Date().toISOString().slice(0,7));
   const [paymentFilter,setPaymentFilter]=useState<"Todos"|"Vencidos"|"Pendentes"|"Pagos"|"Sem cobrança">("Todos");
   const shiftMonth=(delta:number)=>{const [year,value]=month.split("-").map(Number);const date=new Date(year,value-1+delta,1);setMonth(`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}`)};
   const parseMoney=(value:string)=>{const clean=value.replace(/R\$|\s/g,"");const normalized=clean.includes(",")?clean.replace(/\./g,"").replace(",","."):clean;return Number(normalized)};
   const formatMoneyInput=(value:number)=>value.toLocaleString("pt-BR",{minimumFractionDigits:2,maximumFractionDigits:2});
-  const [data,setData]=useState<any>({settings:null,payments:[]});const [pixKey,setPixKey]=useState("");const [pixName,setPixName]=useState("");const [defaultAmount,setDefaultAmount]=useState("110,00");const [dueDay,setDueDay]=useState(15);const [drafts,setDrafts]=useState<Record<string,Draft>>({});const [state,setState]=useState("");const [savingAthlete,setSavingAthlete]=useState("");const [deleteAthlete,setDeleteAthlete]=useState("");
-  const load=()=>fetch(`/api/financial?month=${month}`).then(r=>r.ok?r.json():Promise.reject()).then(value=>{setData({...value,payments:(value.payments||[]).map((row:Row)=>({...row,amount_cents:(row.amount_cents||0)/100}))});if(value.settings){setPixKey(value.settings.pix_key||"");setPixName(value.settings.pix_name||"");setDefaultAmount(formatMoneyInput(Number(value.settings.default_amount_cents||11000)/100));setDueDay(Number(value.settings.due_day)||15)}setDrafts(Object.fromEntries((value.payments||[]).map((row:Row)=>[row.athlete_name,{amount:row.amount_cents?formatMoneyInput(row.amount_cents/100):"",dueDate:row.due_date||`${month}-${String(value.settings?.due_day||15).padStart(2,"0")}`}])));setState("")}).catch(()=>setState("error"));useEffect(()=>{load()},[month]);
-  const saveSettings=async()=>{const amount=parseMoney(defaultAmount);if(!Number.isFinite(amount)||amount<=0){setState("invalid-money");return}setState("saving");try{const r=await fetch("/api/financial",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"save_settings",pixKey,pixName,defaultAmount:amount,dueDay})});if(!r.ok)throw new Error();await load();setState("saved")}catch{setState("error")}};
-  const generateMonth=async()=>{if(!data.settings)return;setState("generating");try{await api.post("/api/financial",{action:"generate_month",referenceMonth:month});await load();setState("month-generated")}catch{setState("error")}};
+  const [data,setData]=useState<any>({settings:null,payments:[],classes:[]});
+  const [classeEditando,setClasseEditando]=useState<{id:string;name:string;amount:string;dueDay:number}|null>(null);
+  const [comprovanteAberto,setComprovanteAberto]=useState<{athlete:string;imagem:string;nota:string;quando:number}|null>(null);
+  const [enviandoComprovante,setEnviandoComprovante]=useState("");
+  const [drafts,setDrafts]=useState<Record<string,Draft>>({});const [state,setState]=useState("");const [savingAthlete,setSavingAthlete]=useState("");const [deleteAthlete,setDeleteAthlete]=useState("");
+  const load=()=>fetch(`/api/financial?month=${month}`).then(r=>r.ok?r.json():Promise.reject()).then(value=>{setData({...value,payments:(value.payments||[]).map((row:Row)=>({...row,amount_cents:(row.amount_cents||0)/100}))});setDrafts(Object.fromEntries((value.payments||[]).map((row:Row)=>[row.athlete_name,{amount:row.amount_cents?formatMoneyInput(row.amount_cents/100):"",dueDate:row.due_date||`${month}-${String(value.settings?.due_day||15).padStart(2,"0")}`}])));setState("")}).catch(()=>setState("error"));useEffect(()=>{load()},[month]);
+  /* A geração acontece no cartão do topo; a lista abaixo precisa saber que
+     algo mudou sem recarregar a página inteira, como fazia antes. */
+  useEffect(()=>{const recarrega=()=>{void load()};window.addEventListener("zonasapp:financeiro-refresh",recarrega);return()=>window.removeEventListener("zonasapp:financeiro-refresh",recarrega)},[month]);
   const savePayment=async(row:Row,status=row.status||"Pendente")=>{const draft=drafts[row.athlete_name];const amount=parseMoney(draft?.amount||"");if(!Number.isFinite(amount)||amount<=0||!draft?.dueDate){setState("invalid-money");return}setSavingAthlete(row.athlete_name);setState("");try{await api.post("/api/financial",{action:"update_payment",athleteName:row.athlete_name,referenceMonth:month,amount,dueDate:draft.dueDate,status});await load();setState("payment-saved")}catch{setState("error")}finally{setSavingAthlete("")}};
   const removePayment=async(row:Row)=>{setSavingAthlete(row.athlete_name);setState("");try{await api.post("/api/financial",{action:"delete_payment",athleteName:row.athlete_name,referenceMonth:month});setDeleteAthlete("");await load();setState("payment-deleted")}catch{setState("error")}finally{setSavingAthlete("")}};
-  const rows=data.payments as Row[];const todayKey=new Date().toISOString().slice(0,10);const paymentTiming=(row:Row)=>{if(row.status!=="Pendente"||!row.due_date)return row.status||"Sem cobrança";if(row.due_date<todayKey)return "Vencido";const days=Math.ceil((new Date(`${row.due_date}T12:00:00`).getTime()-new Date(`${todayKey}T12:00:00`).getTime())/86400000);return days<=5?"Vence em breve":"Pendente"};const pending=rows.filter(row=>row.status==="Pendente");const overdue=pending.filter(row=>paymentTiming(row)==="Vencido");const paid=rows.filter(row=>row.status==="Pago");const noCharge=rows.filter(row=>!row.status);const visibleRows=paymentFilter==="Vencidos"?overdue:paymentFilter==="Pendentes"?pending:paymentFilter==="Pagos"?paid:paymentFilter==="Sem cobrança"?noCharge:rows;const monthLabel=new Date(`${month}-01T12:00:00`).toLocaleDateString("pt-BR",{month:"long",year:"numeric"});const monthControls=<section className="financial-month-controls"><button onClick={()=>shiftMonth(-1)}>← Mês anterior</button><label>Mês das cobranças<input type="month" value={month} onChange={event=>setMonth(event.target.value)}/><b>{monthLabel}</b></label><button onClick={()=>shiftMonth(1)}>Próximo mês →</button><div>{(["Todos","Vencidos","Pendentes","Pagos","Sem cobrança"] as const).map(filter=><button key={filter} className={paymentFilter===filter?"selected":""} onClick={()=>setPaymentFilter(filter)}>{filter}</button>)}</div></section>;return <>{monthControls}<section className="financial-summary"><article className="urgent"><small>VENCIDOS</small><b>{overdue.length}</b><span>{overdue.reduce((sum,row)=>sum+(row.amount_cents||0),0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</span></article><article><small>PENDENTES</small><b>{pending.length}</b><span>{pending.reduce((sum,row)=>sum+(row.amount_cents||0),0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</span></article><article><small>PAGOS</small><b>{paid.length}</b><span>{paid.reduce((sum,row)=>sum+(row.amount_cents||0),0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</span></article><article><small>MÊS</small><b>{month.split("-").reverse().join("/")}</b><span>Valores individuais por aluno</span></article></section><section className="financial-settings"><header><div><span className="overline">DADOS PARA PAGAMENTO</span><h2>Chave Pix</h2><p>A chave aparece apenas para o aluno que possui uma pendência lançada.</p></div><button className="gold" onClick={saveSettings} disabled={state==="saving"}>Salvar Pix</button></header><div><label>Chave Pix<input value={pixKey} onChange={event=>setPixKey(event.target.value)} placeholder="CPF, e-mail, telefone ou chave aleatória"/></label><label>Nome do recebedor<input value={pixName} onChange={event=>setPixName(event.target.value)} placeholder="Nome que aparecerá ao aluno"/></label></div>{state==="saved"&&<p className="request-success">Dados do Pix salvos ✓</p>}</section><section className="financial-list individual"><header><div><span className="overline">COBRANÇAS INDIVIDUAIS</span><h2>Valor e vencimento de cada aluno</h2><p>Edite em poucos passos. Vencidos e próximos do vencimento são destacados automaticamente, sem bloquear os treinos.</p></div></header>{!data.settings&&<p className="financial-warning">Salve a chave Pix antes de lançar a primeira pendência.</p>}<div>{visibleRows.map(row=>{const draft=drafts[row.athlete_name]||{amount:"",dueDate:`${month}-15`};return <article key={row.athlete_name}><b>{row.athlete_name}</b><label>Valor (R$)<input type="text" inputMode="decimal" value={draft.amount} onChange={event=>setDrafts(current=>({...current,[row.athlete_name]:{...draft,amount:event.target.value.replace(/[^0-9.,]/g,"")}}))} onBlur={()=>{const parsed=parseMoney(draft.amount);if(Number.isFinite(parsed)&&parsed>0)setDrafts(current=>({...current,[row.athlete_name]:{...draft,amount:formatMoneyInput(parsed)}}))}} placeholder="Ex.: 95,00"/></label><label>Vencimento<input type="date" value={draft.dueDate} onChange={event=>setDrafts(current=>({...current,[row.athlete_name]:{...draft,dueDate:event.target.value}}))}/></label><em className={paymentTiming(row)==="Pago"?"paid":paymentTiming(row)==="Vencido"?"overdue":paymentTiming(row)==="Vence em breve"?"due-soon":paymentTiming(row)==="Pendente"?"pending":"empty"}>{paymentTiming(row)}</em><div><button disabled={!data.settings||!draft.amount||!draft.dueDate||savingAthlete===row.athlete_name} onClick={()=>savePayment(row,row.status||"Pendente")}>{savingAthlete===row.athlete_name?"Salvando…":row.status?"Atualizar cobrança":"Lançar pendência"}</button>{row.status&&<button className="payment-status-button" onClick={()=>savePayment(row,row.status==="Pago"?"Pendente":"Pago")}>{row.status==="Pago"?"Marcar pendente":"Marcar pago"}</button>}{row.status&&<button className="payment-delete-button" onClick={()=>setDeleteAthlete(row.athlete_name)}>Remover</button>}</div>{deleteAthlete===row.athlete_name&&<aside className="payment-delete-confirm"><span>Remover a cobrança de {row.athlete_name} em {month.split("-").reverse().join("/")}?</span><button onClick={()=>setDeleteAthlete("")}>Cancelar</button><button className="danger-confirm" disabled={savingAthlete===row.athlete_name} onClick={()=>removePayment(row)}>{savingAthlete===row.athlete_name?"Removendo…":"Sim, remover"}</button></aside>}</article>})}</div>{state==="payment-saved"&&<p className="request-success">Cobrança individual atualizada ✓</p>}{state==="payment-deleted"&&<p className="request-success">Cobrança removida. O aluno não verá mais essa pendência ✓</p>}{state==="invalid-money"&&<p className="registration-error">Digite o valor em reais. Exemplo: 95,00.</p>}{state==="error"&&<p className="registration-error">Não foi possível atualizar o financeiro.</p>}</section></>;
+  /* Classes de preço. Alterar o valor de uma classe vale da próxima geração em
+     diante: cobrança já lançada é compromisso combinado e não se reescreve. */
+  const salvarClasse=async()=>{
+    if(!classeEditando)return;
+    const valor=parseMoney(classeEditando.amount);
+    if(!Number.isFinite(valor)||valor<=0){avise("atencao","Valor inválido","Digite o valor em reais, por exemplo 150,00.");return}
+    try{
+      await api.post("/api/financial",{action:"save_class",classId:classeEditando.id||undefined,name:classeEditando.name,amount:valor,dueDay:classeEditando.dueDay});
+      setClasseEditando(null);await load();
+      avise("ok","Classe salva","Ela vale para as próximas gerações; cobranças já lançadas não mudam.");
+    }catch(erro){avise("erro","Não foi possível salvar a classe",describeError(erro,"Confira o nome e o valor."))}
+  };
+  const excluirClasse=async(classe:{id:string;name:string})=>{
+    const quantos=(data.payments||[]).filter((linha:Row)=>linha.price_class===classe.name).length;
+    if(!await pergunte({titulo:`Excluir a classe ${classe.name}?`,descricao:quantos?`${plural(quantos,"aluno volta","alunos voltam")} para o valor padrão.`:"Nenhum aluno está nesta classe.",confirmar:"Excluir classe",perigo:true}))return;
+    try{
+      const r=await api.post<{alunosAfetados?:number}>("/api/financial",{action:"delete_class",classId:classe.id});
+      await load();
+      avise("ok","Classe excluída",r.alunosAfetados?`${plural(r.alunosAfetados,"aluno voltou","alunos voltaram")} para o valor padrão.`:"Nenhum aluno estava nela.");
+    }catch(erro){avise("erro","Não foi possível excluir a classe",describeError(erro))}
+  };
+  const definirClasseDoAluno=async(athleteName:string,name:string)=>{
+    try{await api.post("/api/financial",{action:"assign_class",athleteName,name});await load()}
+    catch(erro){avise("erro","Não foi possível mudar a classe do aluno",describeError(erro))}
+  };
+
+  /* Comprovante: a imagem é reduzida no navegador e sobe já pequena. */
+  const anexarComprovante=async(row:Row,arquivo?:File)=>{
+    if(!arquivo)return;
+    setEnviandoComprovante(row.athlete_name);
+    try{
+      const {imagem,kb}=await reduzComprovante(arquivo);
+      await api.post("/api/financial",{action:"save_receipt",athleteName:row.athlete_name,referenceMonth:month,image:imagem});
+      await load();
+      avise("ok","Comprovante anexado",`Guardado com ${kb} KB, reduzido no seu aparelho antes de subir.`);
+    }catch(erro){
+      avise("erro","Não foi possível anexar o comprovante",erro instanceof ComprovanteInvalido?erro.message:describeError(erro));
+    }finally{setEnviandoComprovante("")}
+  };
+  const abrirComprovante=async(row:Row)=>{
+    try{
+      const r=await fetch(`/api/financial?month=${month}&receipt=${encodeURIComponent(row.athlete_name)}`).then(resposta=>resposta.json());
+      if(!r.receipt?.receipt_image){avise("atencao","Comprovante não encontrado","Ele pode ter sido removido em outra aba.");return}
+      setComprovanteAberto({athlete:row.athlete_name,imagem:r.receipt.receipt_image,nota:r.receipt.receipt_note||"",quando:Number(r.receipt.receipt_added_at)||0});
+    }catch(erro){avise("erro","Não foi possível abrir o comprovante",describeError(erro))}
+  };
+  const removerComprovante=async(row:Row)=>{
+    if(!await pergunte({titulo:`Remover o comprovante de ${row.athlete_name}?`,descricao:"A imagem é apagada e não há como desfazer. A cobrança continua como está.",confirmar:"Remover comprovante",perigo:true}))return;
+    try{await api.post("/api/financial",{action:"remove_receipt",athleteName:row.athlete_name,referenceMonth:month});setComprovanteAberto(null);await load();avise("ok","Comprovante removido")}
+    catch(erro){avise("erro","Não foi possível remover",describeError(erro))}
+  };
+
+  const rows=data.payments as Row[];const todayKey=new Date().toISOString().slice(0,10);const paymentTiming=(row:Row)=>{if(row.status!=="Pendente"||!row.due_date)return row.status||"Sem cobrança";if(row.due_date<todayKey)return "Vencido";const days=Math.ceil((new Date(`${row.due_date}T12:00:00`).getTime()-new Date(`${todayKey}T12:00:00`).getTime())/86400000);return days<=5?"Vence em breve":"Pendente"};const pending=rows.filter(row=>row.status==="Pendente");const overdue=pending.filter(row=>paymentTiming(row)==="Vencido");const paid=rows.filter(row=>row.status==="Pago");const noCharge=rows.filter(row=>!row.status);const visibleRows=paymentFilter==="Vencidos"?overdue:paymentFilter==="Pendentes"?pending:paymentFilter==="Pagos"?paid:paymentFilter==="Sem cobrança"?noCharge:rows;const monthLabel=new Date(`${month}-01T12:00:00`).toLocaleDateString("pt-BR",{month:"long",year:"numeric"});const monthControls=<section className="financial-month-controls"><button onClick={()=>shiftMonth(-1)}>← Mês anterior</button><label>Mês das cobranças<input type="month" value={month} onChange={event=>setMonth(event.target.value)}/><b>{monthLabel}</b></label><button onClick={()=>shiftMonth(1)}>Próximo mês →</button><div>{(["Todos","Vencidos","Pendentes","Pagos","Sem cobrança"] as const).map(filter=><button key={filter} className={paymentFilter===filter?"selected":""} onClick={()=>setPaymentFilter(filter)}>{filter}</button>)}</div></section>;return <>{monthControls}<section className="financial-summary"><article className="urgent"><small>VENCIDOS</small><b>{overdue.length}</b><span>{overdue.reduce((sum,row)=>sum+(row.amount_cents||0),0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</span></article><article><small>PENDENTES</small><b>{pending.length}</b><span>{pending.reduce((sum,row)=>sum+(row.amount_cents||0),0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</span></article><article><small>PAGOS</small><b>{paid.length}</b><span>{paid.reduce((sum,row)=>sum+(row.amount_cents||0),0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</span></article><article><small>MÊS</small><b>{month.split("-").reverse().join("/")}</b><span>Valores individuais por aluno</span></article></section><section className="price-classes">
+    <header><div><span className="overline">CLASSES DE PREÇO</span><h2>Quem paga quanto</h2><p>Agrupe quem paga igual. Um reajuste alcança o grupo inteiro; a negociação de um aluno continua no valor da cobrança dele.</p></div><button onClick={()=>setClasseEditando({id:"",name:"",amount:"",dueDay:Number(data.settings?.due_day)||10})}>+ Nova classe</button></header>
+    <div className="price-class-grid">
+      {((data.classes||[]) as Classe[]).map(classe=>{
+        const quantos=rows.filter(linha=>linha.price_class===classe.name).length;
+        return <article key={classe.id}>
+          <b>{classe.name}</b>
+          <strong>{(classe.amount_cents/100).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</strong>
+          <small>vence dia {classe.due_day} · {plural(quantos,"aluno")}</small>
+          <div>
+            <button onClick={()=>setClasseEditando({id:classe.id,name:classe.name,amount:formatMoneyInput(classe.amount_cents/100),dueDay:classe.due_day})}>Editar</button>
+            <button className="price-class-delete" onClick={()=>void excluirClasse(classe)}>Excluir</button>
+          </div>
+        </article>})}
+      {!(data.classes||[]).length&&!classeEditando&&<p className="price-class-empty">Nenhuma classe criada. Sem classe, todo aluno usa o valor padrão do passo a passo acima.</p>}
+    </div>
+    {classeEditando&&<div className="price-class-form">
+      <label>Nome<input value={classeEditando.name} onChange={event=>setClasseEditando({...classeEditando,name:event.target.value})} placeholder="Ex.: Presencial, Online, Bolsista"/></label>
+      <label>Valor (R$)<input inputMode="decimal" value={classeEditando.amount} onChange={event=>setClasseEditando({...classeEditando,amount:event.target.value.replace(/[^0-9.,]/g,"")})} placeholder="150,00"/></label>
+      <label>Vencimento<input type="number" min="1" max="28" value={classeEditando.dueDay} onChange={event=>setClasseEditando({...classeEditando,dueDay:Math.min(28,Math.max(1,Number(event.target.value)||1))})}/></label>
+      <div><button className="gold" onClick={()=>void salvarClasse()}>Salvar classe</button><button onClick={()=>setClasseEditando(null)}>Cancelar</button></div>
+    </div>}
+  </section>
+
+  <section className="financial-list individual"><header><div><span className="overline">COBRANÇAS INDIVIDUAIS</span><h2>Valor e vencimento de cada aluno</h2><p>Edite em poucos passos. Vencidos e próximos do vencimento são destacados automaticamente, sem bloquear os treinos.</p></div></header>{!data.settings&&<p className="financial-warning">Salve a chave Pix antes de lançar a primeira pendência.</p>}<div>{visibleRows.map(row=>{const draft=drafts[row.athlete_name]||{amount:"",dueDate:`${month}-15`};return <article key={row.athlete_name}><b>{row.athlete_name}</b><label>Valor (R$)<input type="text" inputMode="decimal" value={draft.amount} onChange={event=>setDrafts(current=>({...current,[row.athlete_name]:{...draft,amount:event.target.value.replace(/[^0-9.,]/g,"")}}))} onBlur={()=>{const parsed=parseMoney(draft.amount);if(Number.isFinite(parsed)&&parsed>0)setDrafts(current=>({...current,[row.athlete_name]:{...draft,amount:formatMoneyInput(parsed)}}))}} placeholder="Ex.: 95,00"/></label><label>Vencimento<input type="date" value={draft.dueDate} onChange={event=>setDrafts(current=>({...current,[row.athlete_name]:{...draft,dueDate:event.target.value}}))}/></label><label className="payment-class">Classe<select value={row.price_class||""} onChange={event=>void definirClasseDoAluno(row.athlete_name,event.target.value)}><option value="">Padrão</option>{((data.classes||[]) as Classe[]).map(classe=><option key={classe.id}>{classe.name}</option>)}</select></label><em className={paymentTiming(row)==="Pago"?"paid":paymentTiming(row)==="Vencido"?"overdue":paymentTiming(row)==="Vence em breve"?"due-soon":paymentTiming(row)==="Pendente"?"pending":"empty"}>{paymentTiming(row)}</em><div><button disabled={!data.settings||!draft.amount||!draft.dueDate||savingAthlete===row.athlete_name} onClick={()=>savePayment(row,row.status||"Pendente")}>{savingAthlete===row.athlete_name?"Salvando…":row.status?"Atualizar cobrança":"Lançar pendência"}</button>{row.status&&<button className="payment-status-button" onClick={()=>savePayment(row,row.status==="Pago"?"Pendente":"Pago")}>{row.status==="Pago"?"Marcar pendente":"Marcar pago"}</button>}{row.status&&<button className="payment-delete-button" onClick={()=>setDeleteAthlete(row.athlete_name)}>Remover</button>}</div>{row.status&&<div className="payment-receipt">{row.has_receipt
+  ?<><button className="payment-receipt-open" onClick={()=>void abrirComprovante(row)}>Ver comprovante</button><small>anexado em {row.receipt_added_at?new Date(Number(row.receipt_added_at)).toLocaleDateString("pt-BR"):"—"}</small></>
+  :<label className="payment-receipt-add"><span>{enviandoComprovante===row.athlete_name?"Enviando…":"Procurar"}</span><input type="file" accept="image/*"
+        /* O controle nativo escreve "Procurar... Nenhum arquivo selecionado" e
+           não aceita outro texto. Some da vista sem sair do alcance do teclado
+           nem do leitor de tela. O estilo vai aqui porque uma folha de estilo
+           acabava perdendo para outra regra da cascata. */
+        style={{position:"absolute",width:1,height:1,padding:0,margin:-1,overflow:"hidden",clipPath:"inset(50%)",whiteSpace:"nowrap",border:0}}
+        disabled={enviandoComprovante===row.athlete_name} onChange={event=>void anexarComprovante(row,event.target.files?.[0])}/></label>}</div>}{deleteAthlete===row.athlete_name&&<aside className="payment-delete-confirm"><span>Remover a cobrança de {row.athlete_name} em {month.split("-").reverse().join("/")}?</span><button onClick={()=>setDeleteAthlete("")}>Cancelar</button><button className="danger-confirm" disabled={savingAthlete===row.athlete_name} onClick={()=>removePayment(row)}>{savingAthlete===row.athlete_name?"Removendo…":"Sim, remover"}</button></aside>}</article>})}</div>{state==="payment-saved"&&<p className="request-success">Cobrança individual atualizada ✓</p>}{state==="payment-deleted"&&<p className="request-success">Cobrança removida. O aluno não verá mais essa pendência ✓</p>}{state==="invalid-money"&&<p className="registration-error">Digite o valor em reais. Exemplo: 95,00.</p>}{state==="error"&&<p className="registration-error">Não foi possível atualizar o financeiro.</p>}</section>
+  {comprovanteAberto&&<div className="overlay overlay-centro" onMouseDown={evento=>evento.target===evento.currentTarget&&setComprovanteAberto(null)}>
+    <section className="comprovante-aberto" role="dialog" aria-modal="true" aria-label={`Comprovante de ${comprovanteAberto.athlete}`}>
+      <header><div><span className="overline">COMPROVANTE</span><h2>{comprovanteAberto.athlete}</h2><p>{comprovanteAberto.quando?`Anexado em ${new Date(comprovanteAberto.quando).toLocaleString("pt-BR")}`:"Sem data registrada"}</p></div><button onClick={()=>setComprovanteAberto(null)} aria-label="Fechar">×</button></header>
+      <img src={comprovanteAberto.imagem} alt={`Comprovante de pagamento de ${comprovanteAberto.athlete}`}/>
+      {comprovanteAberto.nota&&<p className="comprovante-nota">{comprovanteAberto.nota}</p>}
+      <footer><button className="danger-confirm" onClick={()=>void removerComprovante({athlete_name:comprovanteAberto.athlete})}>Remover comprovante</button></footer>
+    </section>
+  </div>}</>;
 }
 
 
@@ -537,7 +502,7 @@ function AccountsCenter({ athletes }: { athletes: Athlete[] }) {
     </div>}
 
     <section className="account-create">
-      <header><b>Criar acesso para um aluno</b><span>{availableAthletes.length} aluno(s) ainda sem conta</span></header>
+      <header><b>Criar acesso para um aluno</b><span>{plural(availableAthletes.length, "aluno")} ainda sem conta</span></header>
       <div className="account-create-grid">
         <label>Aluno
           <select value={form.athleteName} onChange={event => setForm({ ...form, athleteName: event.target.value })}>
@@ -597,16 +562,26 @@ function PainCaseScreen({ reportId, athleteName, close }: { reportId: string; at
     training_impact: string; note?: string; status: string; created_at: number;
     coach_note?: string; resolution?: string; linked_week_start?: string;
     contacted_at?: number; reviewed_at?: number; resolved_at?: number;
+    assessment_conduct?: string;
   };
   type Movimento = { id: string; actor_email: string; action: string; note?: string; created_at: number };
 
   const SITUACOES = ["Novo", "Em análise", "Verificado", "Resolvido"] as const;
+  /* As mesmas condutas que o servidor aceita: o que fazer com o treino depois
+     de avaliar a queixa. */
+  const CONDUTAS = [
+    "Segue treinando normalmente",
+    "Reduzir carga nesta semana",
+    "Pausar e reavaliar",
+    "Encaminhar para profissional de saúde",
+  ];
 
   const [caso, setCaso] = useState<Relato | null>(null);
   const [historico, setHistorico] = useState<Movimento[]>([]);
   const [semanas, setSemanas] = useState<Array<{ week_start: string; week_label: string; status: string }>>([]);
   const [relato, setRelato] = useState("");
   const [situacao, setSituacao] = useState("");
+  const [conduta, setConduta] = useState("");
   const [semana, setSemana] = useState("");
   const [estado, setEstado] = useState<"carregando" | "pronto" | "salvando">("carregando");
   const [erro, setErro] = useState("");
@@ -666,7 +641,7 @@ function PainCaseScreen({ reportId, athleteName, close }: { reportId: string; at
 
         <div className="pain-dash-facts">
           <span><small>CONVERSA</small>{caso.contacted_at ? soData(caso.contacted_at) : "ainda não"}</span>
-          <span><small>AVALIAÇÃO</small>{caso.coach_note || "ainda não"}</span>
+          <span><small>AVALIAÇÃO</small>{caso.assessment_conduct || "ainda não"}</span>
           <span><small>PLANILHA</small>{caso.linked_week_start ? `semana de ${caso.linked_week_start}` : "sem ajuste"}</span>
           <span><small>DESFECHO</small>{caso.resolution || "em aberto"}</span>
         </div>
@@ -678,6 +653,19 @@ function PainCaseScreen({ reportId, athleteName, close }: { reportId: string; at
               {SITUACOES.map(s => (
                 <button key={s} className={`${situacao === s ? "selected" : ""} ${classeSituacao(s)}`}
                   onClick={() => { setSituacao(s); setAviso(""); setErro(""); }}>{s}</button>
+              ))}
+            </div>
+          </label>
+
+          {/* A avaliação era só texto escrito de passagem ao trocar a
+              situação. Agora é um passo com conduta registrada — é a conduta
+              que muda o treino da semana. */}
+          <label className="pain-dash-conduta">
+            Avaliação: o que fazer com o treino
+            <div>
+              {CONDUTAS.map(item => (
+                <button key={item} className={conduta === item ? "selected" : ""}
+                  onClick={() => { setConduta(item); setAviso(""); setErro(""); }}>{item}</button>
               ))}
             </div>
           </label>
@@ -694,6 +682,10 @@ function PainCaseScreen({ reportId, athleteName, close }: { reportId: string; at
           <div className="pain-dash-actions">
             <button className="gold" disabled={estado === "salvando"} onClick={registrar}>
               {estado === "salvando" ? "Salvando…" : mudouSituacao ? `Salvar como “${situacao}”` : "Salvar registro"}
+            </button>
+            <button disabled={estado === "salvando" || !conduta}
+              onClick={() => conduta ? void enviar({ action: "assess", conduct: conduta, note: relato || undefined }, "Avaliação registrada.") : setErro("Escolha a conduta antes de registrar a avaliação.")}>
+              Registrar avaliação
             </button>
             <button disabled={estado === "salvando"} onClick={() => void enviar({ action: "contact" }, "Conversa registrada.")}>
               Marcar que falei com o atleta
@@ -826,17 +818,185 @@ function SecurityCenter() {
 }
 
 function ErrorMonitor() {
-  type AppError = {id:string;area:string;error_code:string;method:string;status_code:number;created_at:number};
+  type AppError = {id:string;area:string;error_code:string;method:string;status_code:number;created_at:number;route?:string|null;message?:string|null;stack?:string|null;actor_role?:string|null};
   const [errors,setErrors]=useState<AppError[]>([]);
   const [last24Hours,setLast24Hours]=useState(0);
   const [retentionDays,setRetentionDays]=useState(90);
   const [available,setAvailable]=useState(true);
+  /* Um erro por vez aberto. Ver a pilha de dois ao mesmo tempo não ajuda a ler
+     nenhuma das duas, e a lista fica impossível de percorrer. */
+  const [aberto,setAberto]=useState("");
+  const copiar=async(error:AppError)=>{
+    const texto=[
+      `${new Date(Number(error.created_at)).toLocaleString("pt-BR")} · ${error.method} ${error.route??"(rota não registrada)"}`,
+      `${error.status_code} ${error.error_code} · área: ${error.area} · quem chamou: ${error.actor_role??"—"}`,
+      error.message??"(sem mensagem registrada)",
+      error.stack??"",
+    ].join("\n").trim();
+    if(await copyText(texto))avise("ok","Erro copiado","Cole onde precisar investigar.");
+    else avise("erro","Não foi possível copiar","Selecione o texto na tela e copie à mão.");
+  };
   useEffect(()=>{fetch("/api/application-errors").then(r=>r.ok?r.json():Promise.reject()).then(data=>{setErrors(data.errors||[]);setLast24Hours(Number(data.last24Hours)||0);setRetentionDays(Number(data.retentionDays)||90)}).catch(()=>setAvailable(false))},[]);
-  return <section className="error-monitor"><header><div><span className="overline">MONITORAMENTO DA PLATAFORMA</span><h3>Saúde do ZonasApp</h3><p>Registra apenas a área e o tipo da falha. Nenhum dado pessoal, treino, senha ou e-mail de aluno entra neste histórico. Registros técnicos são apagados automaticamente após {retentionDays} dias.</p></div><span className={available&&last24Hours===0?"healthy":"attention"}>{!available?"INDISPONÍVEL":last24Hours===0?"TUDO NORMAL":`${last24Hours} FALHAS EM 24H`}</span></header>{!available?<div className="backup-empty">Não foi possível consultar o monitoramento agora.</div>:errors.length===0?<div className="monitor-empty"><b>✓</b><span><strong>Nenhuma falha registrada</strong><small>A plataforma está operando normalmente.</small></span></div>:<div className="monitor-list">{errors.map(error=><article key={error.id}><b>{error.area}</b><span>{error.error_code.replaceAll("_"," ")}</span><small>{error.method} · {new Date(Number(error.created_at)).toLocaleString("pt-BR")}</small></article>)}</div>}</section>;
+  return <section className="error-monitor"><header><div><span className="overline">MONITORAMENTO DA PLATAFORMA</span><h3>Saúde do ZonasApp</h3><p>Cada falha guarda horário, rota, retorno do servidor, a mensagem e onde ela aconteceu — abra uma para ver tudo. O que continua fora: nome, e-mail, senha e dado de treino de aluno; de quem chamou fica só o papel. Registros técnicos são apagados automaticamente após {retentionDays} dias.</p></div><span className={available&&last24Hours===0?"healthy":"attention"}>{!available?"INDISPONÍVEL":last24Hours===0?"TUDO NORMAL":`${last24Hours} FALHAS EM 24H`}</span></header>{!available?<div className="backup-empty">Não foi possível consultar o monitoramento agora.</div>:errors.length===0?<div className="monitor-empty"><b>✓</b><span><strong>Nenhuma falha registrada</strong><small>A plataforma está operando normalmente.</small></span></div>:<div className="monitor-list">{errors.map(error=>{
+    const estaAberto=aberto===error.id;
+    return <article key={error.id} className={estaAberto?"aberto":""}>
+      <button className="monitor-linha" aria-expanded={estaAberto} onClick={()=>setAberto(estaAberto?"":error.id)}>
+        <b>{error.area}</b>
+        <span>{error.error_code.replaceAll("_"," ")}</span>
+        <small>{error.method} {error.route??""} · {new Date(Number(error.created_at)).toLocaleString("pt-BR")}</small>
+        <em>{estaAberto?"Fechar":"Abrir"}</em>
+      </button>
+      {estaAberto&&<div className="monitor-detalhe">
+        <dl>
+          <div><dt>Quando</dt><dd>{new Date(Number(error.created_at)).toLocaleString("pt-BR",{dateStyle:"full",timeStyle:"medium"})}</dd></div>
+          <div><dt>Rota</dt><dd>{error.method} {error.route??"(não registrada — erro anterior a este log)"}</dd></div>
+          <div><dt>Retorno</dt><dd>{error.status_code} · {error.error_code}</dd></div>
+          <div><dt>Quem chamou</dt><dd>{error.actor_role??"—"}</dd></div>
+        </dl>
+        <b>Mensagem</b>
+        <pre>{error.message??"Sem mensagem registrada. Este erro é anterior ao log detalhado."}</pre>
+        {error.stack&&<><b>Onde aconteceu</b><pre className="monitor-pilha">{error.stack}</pre></>}
+        <button className="monitor-copiar" onClick={()=>void copiar(error)}>Copiar tudo</button>
+      </div>}
+    </article>;
+  })}</div>}</section>;
 }
 
+/**
+ * Biblioteca de planilhas-base.
+ *
+ * As dez originais vivem no código. Quando o treinador muda o método, precisa
+ * criar a própria — e as semanas dela usam o mesmo caminho de edição das
+ * outras, `/api/plan-template-overrides`, em vez de um segundo mecanismo.
+ */
 function PlanLibrary({open}:{open:(plan:TrainingPlan)=>void}) {
-  return <><div className="library-intro"><div><span className="overline">BIBLIOTECA DE TREINAMENTO</span><h2>Suas planilhas-base</h2><p>Escolha uma estrutura, veja as semanas e depois aplique ao aluno. Os ritmos e a frequência cardíaca continuam individuais.</p></div><div><b>{trainingPlans.filter(plan=>plan.complete).length}/{trainingPlans.length}</b><span>planilhas completas</span></div></div><section className="plan-library">{trainingPlans.map((plan,index)=><button key={plan.name} className={plan.pending?"pending-plan":""} onClick={()=>open(plan)}><header><i>{String(index+1).padStart(2,"0")}</i><span>{plan.complete?"TREINOS COMPLETOS":plan.pending?"ATUALIZAÇÃO PENDENTE":"ESTRUTURA CADASTRADA"}</span></header><h3>{plan.name}</h3><p>{plan.goal}</p><div className="plan-meta"><span><b>{plan.weeks}</b> semanas</span><span>{plan.frequency}</span></div><div className="phase-strip">{plan.phases.map(phase=><small key={phase}>{phase}</small>)}</div><footer>{plan.complete?"Ver e aplicar treinos reais →":plan.pending?"Abrir para atualizar →":"Ver estrutura →"}</footer></button>)}</section></>;
+  type PlanoProprio={id:string;name:string;distance:string;weeks:number;frequency:string;level:string;goal:string;phases:string};
+  const [proprias,setProprias]=useState<PlanoProprio[]>([]);
+  /* Sem isto, "sua biblioteca está vazia" aparecia por um instante em toda
+     abertura, antes da resposta chegar — e um treinador com dez planilhas lia
+     que não tinha nenhuma. */
+  const [carregando,setCarregando]=useState(true);
+  const [editando,setEditando]=useState<{id:string;name:string;distance:string;weeks:number;goal:string}|null>(null);
+  const carregar=useCallback(()=>api.get<{plans:PlanoProprio[]}>("/api/plans").then(dados=>setProprias(dados.plans||[])).catch(()=>setProprias([])).finally(()=>setCarregando(false)),[]);
+  useEffect(()=>{void carregar()},[carregar]);
+
+  const salvar=async()=>{
+    if(!editando)return;
+    try{
+      await api.post("/api/plans",{action:"save",planId:editando.id||undefined,name:editando.name,distance:editando.distance,weeks:editando.weeks,goal:editando.goal,frequency:`${editando.weeks} semanas`,level:"Planilha do treinador"});
+      setEditando(null);await carregar();
+      avise("ok","Planilha salva","Abra-a para montar os treinos de cada semana.");
+    }catch(erro){avise("erro","Não foi possível salvar a planilha",describeError(erro,"Confira o nome e o número de semanas."))}
+  };
+  const excluir=async(plano:PlanoProprio)=>{
+    if(!await pergunte({titulo:`Excluir a planilha ${plano.name}?`,descricao:"Os treinos montados nas semanas dela também são apagados. Alunos que a usam impedem a exclusão.",confirmar:"Excluir planilha",perigo:true}))return;
+    try{await api.post("/api/plans",{action:"delete",planId:plano.id});await carregar();avise("ok","Planilha excluída")}
+    catch(erro){
+      const detalhe=(erro as {details?:{motivo?:string;saida?:string}}).details;
+      avise("erro","Não foi possível excluir",detalhe?.motivo?`${detalhe.motivo} ${detalhe.saida??""}`.trim():describeError(erro));
+    }
+  };
+  const comoPlanilha=(plano:PlanoProprio):TrainingPlan=>({name:plano.name,distance:plano.distance,weeks:plano.weeks,frequency:plano.frequency,level:plano.level,goal:plano.goal,phases:(()=>{try{const lista=JSON.parse(plano.phases);return Array.isArray(lista)?lista:[]}catch{return[]}})()});
+
+  return <><div className="library-intro"><div><span className="overline">BIBLIOTECA DE TREINAMENTO</span><h2>Suas planilhas-base</h2><p>Escolha uma estrutura, veja as semanas e depois aplique ao aluno. Os ritmos e a frequência cardíaca continuam individuais.</p></div><div><b>{proprias.length}</b><span>{plural(proprias.length,"planilha")}</span></div></div>
+
+  <div className="section-title"><div><small>SUAS PLANILHAS</small><h2>Criadas por você</h2></div><button onClick={()=>setEditando({id:"",name:"",distance:"Livre",weeks:12,goal:""})}>+ Nova planilha</button></div>
+  {editando&&<section className="plan-form">
+    <label>Nome<input value={editando.name} onChange={event=>setEditando({...editando,name:event.target.value})} placeholder="Ex.: Base de inverno"/></label>
+    <label>Distância<input value={editando.distance} onChange={event=>setEditando({...editando,distance:event.target.value})} placeholder="10 km, Meia, Livre…"/></label>
+    <label>Semanas<input type="number" min="1" max="52" value={editando.weeks} onChange={event=>setEditando({...editando,weeks:Math.min(52,Math.max(1,Number(event.target.value)||1))})}/></label>
+    <label className="plan-form-goal">Objetivo<input value={editando.goal} onChange={event=>setEditando({...editando,goal:event.target.value})} placeholder="O que esta planilha entrega"/></label>
+    <div><button className="gold" onClick={()=>void salvar()}>Salvar planilha</button><button onClick={()=>setEditando(null)}>Cancelar</button></div>
+  </section>}
+  {carregando?<section className="plan-library-empty"><p>Carregando suas planilhas…</p></section>
+  :!proprias.length?<section className="plan-library-empty"><b>Sua biblioteca está vazia</b><p>Crie a primeira planilha-base e monte as semanas dela. Ela vale só para os seus alunos — nenhum outro treinador enxerga ou edita as suas.</p></section>
+  :<section className="plan-library">
+    {proprias.map(plano=><button key={plano.id} className="plan-proprio" onClick={()=>open(comoPlanilha(plano))}>
+      <header><i>★</i><span>PLANILHA DO TREINADOR</span></header>
+      <h3>{plano.name}</h3><p>{plano.goal}</p>
+      <div className="plan-meta"><span><b>{plano.weeks}</b> semanas</span><span>{plano.distance}</span></div>
+      <footer>Montar treinos das semanas →</footer>
+      <div className="plan-proprio-acoes">
+        <span role="button" tabIndex={0} onClick={evento=>{evento.stopPropagation();setEditando({id:plano.id,name:plano.name,distance:plano.distance,weeks:plano.weeks,goal:plano.goal})}} onKeyDown={evento=>evento.key==="Enter"&&setEditando({id:plano.id,name:plano.name,distance:plano.distance,weeks:plano.weeks,goal:plano.goal})}>Editar</span>
+        <span role="button" tabIndex={0} className="plan-proprio-excluir" onClick={evento=>{evento.stopPropagation();void excluir(plano)}} onKeyDown={evento=>evento.key==="Enter"&&void excluir(plano)}>Excluir</span>
+      </div>
+    </button>)}
+  </section>}</>;
+}
+
+/**
+ * A equipe do proprietário.
+ *
+ * Ele cria a conta do treinador, vê quantos alunos e quantas planilhas cada um
+ * tem, e pode entrar na área de um para conferir. Entrar não é agir como a
+ * pessoa: quem responde pelos atos continua sendo o proprietário, e a entrada
+ * fica registrada no log de segurança.
+ *
+ * O treinador nasce sem aluno e sem planilha. Isso não é um estado a corrigir:
+ * a carteira e a biblioteca são dele, e começam vazias.
+ */
+function TeamCenter() {
+  type Membro = { id:string; email:string; name:string; role:string; status:string; last_login_at:number|null; alunos_ativos:number; planilhas:number };
+  const [equipe,setEquipe]=useState<Membro[]>([]);
+  const [carregando,setCarregando]=useState(true);
+  const [visitando,setVisitando]=useState<{email:string;name:string}|null>(null);
+  const [criando,setCriando]=useState(false);
+  const [formulario,setFormulario]=useState({name:"",email:""});
+  const [salvando,setSalvando]=useState(false);
+
+  const carregar=useCallback(()=>api.get<{coaches:Membro[];visitando:{email:string;name:string}|null}>("/api/equipe")
+    .then(dados=>{setEquipe(dados.coaches||[]);setVisitando(dados.visitando??null)})
+    .catch(()=>setEquipe([]))
+    .finally(()=>setCarregando(false)),[]);
+  useEffect(()=>{void carregar()},[carregar]);
+
+  const criar=async()=>{
+    setSalvando(true);
+    try{
+      const criado=await api.post<{email:string;temporaryPassword:string}>("/api/equipe",{action:"create",name:formulario.name,email:formulario.email});
+      setCriando(false);setFormulario({name:"",email:""});await carregar();
+      /* A senha temporária aparece uma vez só: ela não fica guardada em texto
+         em lugar nenhum, então avisar é a única chance de anotá-la. */
+      avise("ok",`Treinador criado · senha ${criado.temporaryPassword}`,`Anote agora e entregue a ${criado.email}. Ele terá de trocá-la no primeiro acesso, e esta senha não aparece de novo.`);
+    }catch(erro){avise("erro","Não foi possível criar o treinador",describeError(erro,"Confira o nome e o e-mail."))}
+    finally{setSalvando(false)}
+  };
+
+  const entrar=async(membro:Membro)=>{
+    if(!await pergunte({titulo:`Entrar na área de ${membro.name}?`,descricao:"Você verá os alunos e as planilhas dele. A entrada fica registrada no log de segurança.",confirmar:"Entrar"}))return;
+    try{await api.post("/api/equipe",{action:"visit",email:membro.email});window.location.reload()}
+    catch(erro){avise("erro","Não foi possível entrar",describeError(erro))}
+  };
+
+  const sair=async()=>{
+    try{await api.post("/api/equipe",{action:"stop"});window.location.reload()}
+    catch(erro){avise("erro","Não foi possível voltar",describeError(erro))}
+  };
+
+  return <>
+    {visitando&&<section className="team-visiting"><div><small>CONFERINDO</small><b>Você está na área de {visitando.name}</b><span>Os alunos e as planilhas nesta tela são dele.</span></div><button className="gold" onClick={()=>void sair()}>Voltar à minha área</button></section>}
+
+    <div className="section-title"><div><small>SUA EQUIPE</small><h2>Treinadores</h2></div><button onClick={()=>setCriando(atual=>!atual)}>{criando?"Cancelar":"+ Novo treinador"}</button></div>
+
+    {criando&&<section className="team-form">
+      <label>Nome<input value={formulario.name} onChange={evento=>setFormulario({...formulario,name:evento.target.value})} placeholder="Nome completo"/></label>
+      <label>E-mail<input type="email" value={formulario.email} onChange={evento=>setFormulario({...formulario,email:evento.target.value})} placeholder="email@exemplo.com"/></label>
+      <div><button className="gold" disabled={salvando||formulario.name.trim().length<3||!formulario.email.includes("@")} onClick={()=>void criar()}>{salvando?"Criando…":"Criar treinador"}</button></div>
+      <p className="team-form-nota">Ele começa sem aluno e sem planilha. A carteira e a biblioteca são dele, e o que você tem não é copiado.</p>
+    </section>}
+
+    {carregando?<section className="team-empty"><p>Carregando sua equipe…</p></section>
+    :!equipe.length?<section className="team-empty"><b>Nenhum treinador ainda</b><p>Crie a conta do primeiro treinador. Cada um terá os próprios alunos e as próprias planilhas.</p></section>
+    :<section className="team-list">{equipe.map(membro=><article key={membro.id} className={membro.status==="Bloqueado"?"team-blocked":""}>
+      <header><b>{initialsOf(membro.name)}</b><div><strong>{membro.name}</strong><small>{membro.email}</small></div>{membro.role==="owner"&&<span className="team-tag">PROPRIETÁRIO</span>}</header>
+      <div className="team-numbers">
+        <span><b>{membro.alunos_ativos}</b><small>{membro.alunos_ativos===1?"aluno":"alunos"}</small></span>
+        <span><b>{membro.planilhas}</b><small>{membro.planilhas===1?"planilha":"planilhas"}</small></span>
+        <span><b>{membro.last_login_at?new Date(membro.last_login_at).toLocaleDateString("pt-BR"):"—"}</b><small>último acesso</small></span>
+      </div>
+      <footer><span className={membro.status==="Ativo"?"team-ok":"team-off"}>{membro.status}</span>{membro.role!=="owner"&&<button onClick={()=>void entrar(membro)}>Conferir área →</button>}</footer>
+    </article>)}</section>}
+  </>;
 }
 
 function PlanDetails({plan,close}:{plan:TrainingPlan;close:()=>void}) {
@@ -847,16 +1007,17 @@ function PlanDetails({plan,close}:{plan:TrainingPlan;close:()=>void}) {
   const [editingTemplateIndex,setEditingTemplateIndex]=useState<number|null>(null);
   const [templateEdits,setTemplateEdits]=useState<Record<number,StructuredSession[]>>({});
   const [targetWeekStart,setTargetWeekStart]=useState(()=>shiftIsoDate(mondayOf(new Date().toISOString().slice(0,10)),7));
-  const allDays=["Seg","Ter","Qua","Qui","Sex","Sáb","Dom"];
-  const [availableDays,setAvailableDays]=useState(plan.frequency.includes("6x")?["Seg","Ter","Qua","Qui","Sex","Sáb"]:plan.frequency.includes("4")?["Seg","Qua","Sex","Dom"]:["Ter","Qui","Sáb"]);
+  const allDays=["SEG","TER","QUA","QUI","SEX","SÁB","DOM"];
+  const [availableDays,setAvailableDays]=useState(plan.frequency.includes("6x")?["SEG","TER","QUA","QUI","SEX","SÁB"]:plan.frequency.includes("4")?["SEG","QUA","SEX","DOM"]:["TER","QUI","SÁB"]);
   const toggleDay=(day:string)=>setAvailableDays(current=>current.includes(day)?current.filter(d=>d!==day):allDays.filter(d=>current.includes(d)||d===day));
   const phaseFor=(n:number)=>plan.phases[Math.min(plan.phases.length-1,Math.floor((n-1)/(plan.weeks/plan.phases.length)))];
   const planningPhaseFor=(n:number)=>{const value=phaseFor(n);if(value.includes("Adaptação"))return"Adaptação";if(value.includes("Base"))return"Base";if(value.includes("Pré")||value.includes("Polimento")||value.includes("Desafio"))return"Pré-prova";if(value.includes("Específica")||value.includes("Ritmo específico"))return"Específica";return"Desenvolvimento"};
-  const samples = plan.name === "Iniciantes" ? ["Caminhada + corrida","Corrida leve","Mobilidade"] : plan.name.includes("Meia") ? ["Rodagem Z2","Tempo Run","Leve Z1","Longão progressivo"] : ["Leve Z1","Intervalado","Tempo Run","Longão"];
   const sampleDays = plan.name === "Meia Finish" ? ["SEG","TER","QUI","SÁB"] : ["SEG","QUA","SEX","SÁB"];
-  const weekSamples = week === plan.weeks ? (plan.name === "Iniciantes" ? ["Leve","Mobilidade","Desafio 5 km"] : ["Leve Z1","8 × 100 m","Leve curto","Prova-alvo"]) : samples;
-  const realTemplate=planWeekTemplates[plan.name]?.[week]||null;
-  const effectiveTemplate=templateEdits[week]||realTemplate;
+  /* Toda planilha é do treinador agora — não existe mais "versão de fábrica"
+     guardada no cliente. As semanas vêm inteiras do servidor, e enquanto não
+     vierem a semana está vazia, que é a verdade. Mostrar os treinos de exemplo
+     faria a planilha parecer preenchida antes de alguém montá-la. */
+  const effectiveTemplate=templateEdits[week]||null;
   const selectedDays=allDays.filter(day=>availableDays.includes(day)).slice(0,effectiveTemplate?.length||4);
   const templatePriority=(session:StructuredSession)=>{const text=`${session.type} ${session.title||""}`.toLowerCase();if(/prova|desafio|longão/.test(text))return 100;if(/tempo|limiar|específico|intervalado|fartlek|vo₂|ritmo|ativação/.test(text))return 80;if(/rodagem|aeróbia|contínua/.test(text))return 40;return 20};
   const adaptedTemplate=effectiveTemplate?effectiveTemplate.map((session,index)=>({session,index})).sort((a,b)=>templatePriority(b.session)-templatePriority(a.session)).slice(0,selectedDays.length).sort((a,b)=>a.index-b.index).map(item=>item.session):[];
@@ -864,19 +1025,113 @@ function PlanDetails({plan,close}:{plan:TrainingPlan;close:()=>void}) {
   useEffect(()=>{fetch("/api/athletes").then(response=>response.ok?response.json():{athletes:[]}).then(data=>{const rows=(data.athletes||[]).filter((athlete:any)=>athlete.access_status!=="Bloqueado");setEligibleAthletes(rows);setTargetAthlete(rows[0]?.name||"")}).catch(()=>setEligibleAthletes([]))},[]);
   useEffect(()=>{const athlete=eligibleAthletes.find(item=>item.name===targetAthlete);if(!athlete)return;try{const names:Record<string,string>={SEG:"Seg",TER:"Ter",QUA:"Qua",QUI:"Qui",SEX:"Sex",SÁB:"Sáb",SAB:"Sáb",DOM:"Dom"};const saved=JSON.parse(athlete.training_days||"[]").map((day:string)=>names[String(day).trim().toUpperCase()]||day).filter((day:string)=>allDays.includes(day));if(saved.length)setAvailableDays(saved)}catch{}},[targetAthlete,eligibleAthletes]);
   useEffect(()=>{let active=true;fetch(`/api/plan-template-overrides?plan=${encodeURIComponent(plan.name)}&week=${week}`).then(response=>response.ok?response.json():Promise.reject()).then(data=>{if(active&&data.override?.sessions)setTemplateEdits(current=>({...current,[week]:data.override.sessions}))}).catch(()=>{});return()=>{active=false}},[plan.name,week]);
-  const saveTemplateEdit=async(session:StructuredSession)=>{if(editingTemplateIndex===null||!effectiveTemplate)return;const updated=effectiveTemplate.map((item,index)=>index===editingTemplateIndex?session:item);setTemplateEdits(current=>({...current,[week]:updated}));setEditingTemplateIndex(null);setApplyState("idle");if(!window.confirm(`Salvar esta alteração permanentemente na semana ${week} da planilha ${plan.name}?\n\nEla será usada nos próximos rascunhos. Semanas já liberadas não serão modificadas.`))return;try{await api.post("/api/plan-template-overrides",{plan:plan.name,weekNumber:week,sessions:updated});window.alert("Alteração salva na planilha-base. Ela será usada nos próximos rascunhos e aplicações.")}catch{window.alert("Não foi possível salvar a alteração na planilha-base. Tente novamente.")}};
+  /* Uma planilha criada pelo treinador nasce sem treino nenhum, e não havia
+     por onde começar: a edição só existia para trocar um treino que já estava
+     lá. Agora a semana aceita receber o primeiro, e perder o último. */
+  const [adicionandoTreino,setAdicionandoTreino]=useState(false);
+  const gravarSemana=async(sessoes:StructuredSession[])=>{
+    setTemplateEdits(current=>({...current,[week]:sessoes}));
+    try{
+      await api.post("/api/plan-template-overrides",{plan:plan.name,weekNumber:week,sessions:sessoes});
+      avise("ok","Semana salva",`Semana ${week} da planilha ${plan.name} guardada com ${plural(sessoes.length,"treino")}.`);
+    }catch(erro){avise("erro","Não foi possível salvar a semana",describeError(erro))}
+  };
+  const adicionarTreino=async(session:StructuredSession)=>{
+    setAdicionandoTreino(false);
+    await gravarSemana([...(effectiveTemplate||[]),session]);
+  };
+  const removerTreino=async(indice:number)=>{
+    if(!effectiveTemplate)return;
+    if(!await pergunte({titulo:"Tirar este treino da semana?",descricao:"Ele sai da planilha-base. Semanas já liberadas para alunos não mudam.",confirmar:"Tirar treino",perigo:true}))return;
+    await gravarSemana(effectiveTemplate.filter((_,i)=>i!==indice));
+  };
+
+  const saveTemplateEdit=async(session:StructuredSession)=>{if(editingTemplateIndex===null||!effectiveTemplate)return;const updated=effectiveTemplate.map((item,index)=>index===editingTemplateIndex?session:item);setTemplateEdits(current=>({...current,[week]:updated}));setEditingTemplateIndex(null);setApplyState("idle");if(!await pergunte({titulo:`Salvar esta alteração na planilha ${plan.name}?`,descricao:`Semana ${week}. A alteração passa a valer para os próximos rascunhos; semanas já liberadas não mudam.`,confirmar:"Salvar na planilha-base"}))return;try{await api.post("/api/plan-template-overrides",{plan:plan.name,weekNumber:week,sessions:updated});avise("ok","Alteração salva na planilha-base","Ela será usada nos próximos rascunhos e aplicações.")}catch(erro){avise("erro","Não foi possível salvar na planilha-base",describeError(erro,"Tente novamente em alguns instantes."))}};
   const applyPlan=async()=>{if(!targetAthlete||plan.pending)return;setApplyState("saving");try{await api.post("/api/athlete-planning",{athleteName:targetAthlete,plan:plan.name,phase:planningPhaseFor(week),weekNumber:week,totalWeeks:plan.weeks});if(effectiveTemplate){const chosenDays=selectedDays.slice(0,adaptedTemplate.length).map(day=>day.toUpperCase());const sessions=Object.fromEntries(chosenDays.map((day,index)=>[day,adaptedTemplate[index]]));const draft=await fetch("/api/training-weeks",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({athleteName:targetAthlete,weekStart:targetWeekStart,plan:plan.name,phase:planningPhaseFor(week),weekLabel:`${week} de ${plan.weeks}`,trainingDays:chosenDays,sessions,status:"Rascunho"})});if(!draft.ok)throw new Error()}setApplyState("saved")}catch{setApplyState("error")}};
-  return <div className="overlay" onMouseDown={e=>e.target===e.currentTarget&&close()}><aside className="drawer plan-details"><header><div><span className="overline">PLANILHA-BASE · {plan.distance}</span><h2>{plan.name}</h2><p>{plan.weeks} semanas · {plan.frequency} · {plan.goal}</p></div><button onClick={close}>×</button></header>{plan.pending&&<div className="profile-alert">Esta planilha está registrada, mas precisa ser atualizada antes de ser aplicada aos alunos.</div>}{plan.complete&&<div className="request-success">Treinos reais cadastrados em todas as semanas ✓</div>}<div className="plan-phase-summary">{plan.phases.map((phase,i)=><span key={phase}><b>{i+1}</b><small>{phase}</small></span>)}</div><section className="schedule-adapter"><div className="profile-title"><div><span className="overline">APLICAR AO ALUNO</span><h3>Aluno e dias disponíveis</h3></div><small>{availableDays.length} dias selecionados</small></div><label className="template-athlete-select">Aluno<select value={targetAthlete} onChange={event=>{setTargetAthlete(event.target.value);setApplyState("idle")}}><option value="">Selecione</option>{eligibleAthletes.map(athlete=><option key={athlete.name}>{athlete.name}</option>)}</select></label><label className="template-week-date">Semana no calendário<input type="date" value={targetWeekStart} onChange={event=>{if(event.target.value)setTargetWeekStart(mondayOf(event.target.value));setApplyState("idle")}}/><small>O rascunho será criado de {weekDateLabel(targetWeekStart)}.</small></label><p>Marque os dias reais do aluno. O ZonasApp distribui os treinos da semana nesses dias e cria um rascunho para sua revisão.</p><div className="availability-picker">{allDays.map(day=><button key={day} className={availableDays.includes(day)?"selected":""} onClick={()=>toggleDay(day)}>{day}</button>)}</div><div className="adapted-schedule">{selectedDays.map((day,i)=><article key={day}><b>{day.toUpperCase()}</b><span><strong>{adaptedTemplate[i]?.title||prioritySessions[i]}</strong><small>{realTemplate?"Treino adaptado da semana · revisar antes de liberar":prioritySessions[i]==="Longão"?"Prioridade alta · resistência":"Estrutura-base"}</small></span></article>)}</div></section><section><div className="profile-title"><h3>Escolha uma semana</h3><small>{effectiveTemplate?"Clique no treino para ver e editar":"Visualização da estrutura"}</small></div><div className="template-weeks">{Array.from({length:plan.weeks},(_,i)=>i+1).map(n=><button key={n} className={week===n?"selected":""} onClick={()=>{setWeek(n);setApplyState("idle")}}><b>{n}</b><small>{phaseFor(n)}</small></button>)}</div></section><section className="template-preview"><div><span className="overline">SEMANA {week} DE {plan.weeks}</span><h3>{phaseFor(week)}</h3></div><div>{(effectiveTemplate||weekSamples).map((item:any,i:number)=><article key={effectiveTemplate?item.title:item} className={effectiveTemplate?"editable-template-session":""}><b>{effectiveTemplate?`TREINO ${i+1}`:sampleDays[i]}</b><span><strong>{effectiveTemplate?item.title:item}</strong><small>{effectiveTemplate?`${item.durationMinutes||"Distância definida"}${item.durationMinutes?" min":""} · ${item.steps?.length||0} etapas`:"Estrutura-base · intensidade individual"}</small></span>{effectiveTemplate&&<button onClick={()=>setEditingTemplateIndex(i)}>Ver e editar treino →</button>}</article>)}</div><p>{effectiveTemplate?"Abra qualquer treino para conferir todas as etapas. As alterações serão usadas neste rascunho e você ainda decidirá quando liberar ao aluno.":"Ao aplicar, a base, a fase e a semana escolhida ficam salvas no cadastro."}</p></section><section className="plan-application-summary"><header><span className="overline">CONFIRA ANTES DE CRIAR</span><h3>Este será o rascunho no Calendário</h3></header><div><article><small>ALUNO</small><b>{targetAthlete||"Escolha um aluno"}</b></article><article><small>PLANILHA E SEMANA</small><b>{plan.name} · {week} de {plan.weeks}</b></article><article><small>DATA NO CALENDÁRIO</small><b>{weekDateLabel(targetWeekStart)}</b></article><article><small>DIAS ADAPTADOS</small><b>{selectedDays.join(", ")||"Nenhum dia"}</b></article></div><p>A semana ${week} da biblioteca será usada nestas datas. Ela ficará como rascunho até você conferir e liberar no Calendário.</p></section>{applyState==="saved"&&<div className="request-success">Planilha aplicada a {targetAthlete} ✓ Semana {week} criada como rascunho em {weekDateLabel(targetWeekStart)}.</div>}{applyState==="error"&&<div className="registration-error">Não foi possível aplicar a planilha.</div>}<footer><button className="outline" onClick={close}>Fechar</button><button className="gold" onClick={applyPlan} disabled={plan.pending||!availableDays.length||!targetAthlete||applyState==="saving"}>{plan.pending?"Atualize antes de aplicar":applyState==="saving"?"Aplicando…":effectiveTemplate?`Criar semana ${week} como rascunho →`:"Aplicar base, fase e semana →"}</button></footer></aside>{editingTemplateIndex!==null&&effectiveTemplate?.[editingTemplateIndex]&&<WorkoutDrawer close={()=>setEditingTemplateIndex(null)} athleteName={targetAthlete||"Planilha-base"} day={`TREINO ${editingTemplateIndex+1}`} initial={effectiveTemplate[editingTemplateIndex]} weekLabel={`Semana ${week} de ${plan.weeks}`} onSave={saveTemplateEdit}/>}</div>;
+  return <div className="overlay" onMouseDown={e=>e.target===e.currentTarget&&close()}><aside className="drawer plan-details"><header><div><span className="overline">PLANILHA-BASE · {plan.distance}</span><h2>{plan.name}</h2><p>{plan.weeks} semanas · {plan.frequency} · {plan.goal}</p></div><button onClick={close}>×</button></header>{plan.pending&&<div className="profile-alert">Esta planilha está registrada, mas precisa ser atualizada antes de ser aplicada aos alunos.</div>}{plan.complete&&<div className="request-success">Treinos reais cadastrados em todas as semanas ✓</div>}<div className="plan-phase-summary">{plan.phases.map((phase,i)=><span key={phase}><b>{i+1}</b><small>{phase}</small></span>)}</div><section className="schedule-adapter"><div className="profile-title"><div><span className="overline">APLICAR AO ALUNO</span><h3>Aluno e dias disponíveis</h3></div><small>{availableDays.length} dias selecionados</small></div><label className="template-athlete-select">Aluno<select value={targetAthlete} onChange={event=>{setTargetAthlete(event.target.value);setApplyState("idle")}}><option value="">Selecione</option>{eligibleAthletes.map(athlete=><option key={athlete.name}>{athlete.name}</option>)}</select></label><label className="template-week-date">Semana no calendário<input type="date" value={targetWeekStart} onChange={event=>{if(event.target.value)setTargetWeekStart(mondayOf(event.target.value));setApplyState("idle")}}/><small>O rascunho será criado de {weekDateLabel(targetWeekStart)}.</small></label><p>Marque os dias reais do aluno. O ZonasApp distribui os treinos da semana nesses dias e cria um rascunho para sua revisão.</p><div className="availability-picker">{allDays.map(day=><button key={day} className={availableDays.includes(day)?"selected":""} onClick={()=>toggleDay(day)}>{day}</button>)}</div><div className="adapted-schedule">{selectedDays.map((day,i)=><article key={day}><b>{day.toUpperCase()}</b><span><strong>{adaptedTemplate[i]?.title||prioritySessions[i]}</strong><small>{effectiveTemplate?"Treino adaptado da semana · revisar antes de liberar":prioritySessions[i]==="Longão"?"Prioridade alta · resistência":"Estrutura-base"}</small></span></article>)}</div></section><section><div className="profile-title"><h3>Escolha uma semana</h3><small>{effectiveTemplate?"Clique no treino para ver e editar":"Visualização da estrutura"}</small></div><div className="template-weeks">{Array.from({length:plan.weeks},(_,i)=>i+1).map(n=><button key={n} className={week===n?"selected":""} onClick={()=>{setWeek(n);setApplyState("idle")}}><b>{n}</b><small>{phaseFor(n)}</small></button>)}</div></section><section className="template-preview"><div><span className="overline">SEMANA {week} DE {plan.weeks}</span><h3>{phaseFor(week)}</h3></div><div>{(effectiveTemplate||[]).map((item:any,i:number)=><article key={effectiveTemplate?item.title:item} className={effectiveTemplate?"editable-template-session":""}><b>{effectiveTemplate?`TREINO ${i+1}`:sampleDays[i]}</b><span><strong>{effectiveTemplate?item.title:item}</strong><small>{effectiveTemplate?`${item.durationMinutes||"Distância definida"}${item.durationMinutes?" min":""} · ${item.steps?.length||0} etapas`:"Estrutura-base · intensidade individual"}</small></span>{effectiveTemplate&&<button onClick={()=>setEditingTemplateIndex(i)}>Ver e editar treino →</button>}{effectiveTemplate&&<button className="template-remove" onClick={()=>void removerTreino(i)}>Tirar</button>}</article>)}
+    {!effectiveTemplate?.length&&<p className="template-vazio">Semana {week} ainda sem treino. Escreva o primeiro abaixo — algo como “10 min Z1 + 5x(3 min Z4 + 2 min Z1) + 10 min Z1” já vira um treino estruturado.</p>}
+    <button className="template-add" onClick={()=>setAdicionandoTreino(true)}>＋ Adicionar treino nesta semana</button></div><p>{effectiveTemplate?"Abra qualquer treino para conferir todas as etapas. As alterações serão usadas neste rascunho e você ainda decidirá quando liberar ao aluno.":"Ao aplicar, a base, a fase e a semana escolhida ficam salvas no cadastro."}</p></section><section className="plan-application-summary"><header><span className="overline">CONFIRA ANTES DE CRIAR</span><h3>Este será o rascunho no Calendário</h3></header><div><article><small>ALUNO</small><b>{targetAthlete||"Escolha um aluno"}</b></article><article><small>PLANILHA E SEMANA</small><b>{plan.name} · {week} de {plan.weeks}</b></article><article><small>DATA NO CALENDÁRIO</small><b>{weekDateLabel(targetWeekStart)}</b></article><article><small>DIAS ADAPTADOS</small><b>{selectedDays.join(", ")||"Nenhum dia"}</b></article></div><p>A semana ${week} da biblioteca será usada nestas datas. Ela ficará como rascunho até você conferir e liberar no Calendário.</p></section>{applyState==="saved"&&<div className="request-success">Planilha aplicada a {targetAthlete} ✓ Semana {week} criada como rascunho em {weekDateLabel(targetWeekStart)}.</div>}{applyState==="error"&&<div className="registration-error">Não foi possível aplicar a planilha.</div>}<footer><button className="outline" onClick={close}>Fechar</button><button className="gold" onClick={applyPlan} disabled={plan.pending||!availableDays.length||!targetAthlete||applyState==="saving"}>{plan.pending?"Atualize antes de aplicar":applyState==="saving"?"Aplicando…":effectiveTemplate?`Criar semana ${week} como rascunho →`:"Aplicar base, fase e semana →"}</button></footer></aside>{editingTemplateIndex!==null&&effectiveTemplate?.[editingTemplateIndex]&&<WorkoutDrawer close={()=>setEditingTemplateIndex(null)} athleteName={targetAthlete||"Planilha-base"} day={`TREINO ${editingTemplateIndex+1}`} initial={effectiveTemplate[editingTemplateIndex]} weekLabel={`Semana ${week} de ${plan.weeks}`} onSave={saveTemplateEdit}/>}
+    {adicionandoTreino&&<WorkoutDrawer close={()=>setAdicionandoTreino(false)} athleteName={plan.name} day={`TREINO ${(effectiveTemplate?.length||0)+1}`} weekLabel={`Semana ${week} de ${plan.weeks}`} onSave={adicionarTreino}/>}</div>;
 }
 
+/** Valores do navegador que não mudam durante a sessão. */
+const semAssinatura = () => () => {};
+const origemDoNavegador = () => window.location.origin;
+const temCompartilhamentoNativo = () => typeof navigator.share === "function";
+
 function InviteLink(){
-  const [state,setState]=useState<"idle"|"copied"|"shared"|"error">("idle");
-  const link=typeof window!=="undefined"?window.location.origin:"";
+  /**
+   * Envio do convite de cadastro.
+   *
+   * O botão "Outras opções" chamava navigator.share e, quando a API não existe,
+   * caía no copiar — mas gravava o estado "copied", que muda o rótulo do botão
+   * VIZINHO. Para quem clicava, o botão simplesmente não fazia nada. E a API só
+   * existe no Safari (iOS/macOS) e no Chrome de Android/Windows: no Chrome de
+   * Linux, que é onde o app foi testado, navigator.share é undefined.
+   *
+   * Agora cada caminho é explícito e tem retorno próprio. O compartilhamento
+   * nativo — que no Apple abre o AirDrop e no Android o Quick Share — só
+   * aparece quando o navegador realmente o oferece, em vez de fingir.
+   *
+   * Nenhum destes caminhos exige conectar conta: wa.me e mailto: abrem o
+   * WhatsApp e o e-mail do próprio treinador, com a mensagem pronta.
+   */
+  const [feito,setFeito]=useState<""|"copiado"|"compartilhado"|"erro">("");
+
+  // Origem e disponibilidade da API só existem no navegador. Lê-las direto no
+  // corpo do componente faria o servidor renderizar um valor e o cliente
+  // outro; resolvê-las num efeito dispararia uma segunda renderização à toa.
+  // useSyncExternalStore existe exatamente para isto: declara o valor do
+  // servidor e o do cliente, e o React concilia sem remontar.
+  const link = useSyncExternalStore(semAssinatura, origemDoNavegador, () => "");
+  const temShareNativo = useSyncExternalStore(semAssinatura, temCompartilhamentoNativo, () => false);
+
   const message=`Olá! Acesse o ZonasApp pelo link abaixo e faça seu cadastro. Ao abrir, toque em “Instalar ZonasApp” para deixar o aplicativo na tela inicial. Depois que você enviar o cadastro, eu revisarei e liberarei seu acesso:\n${link}`;
-  const copy=async()=>setState(await copyText(message)?"copied":"error");
-  const whatsapp=()=>{window.open(`https://wa.me/?text=${encodeURIComponent(message)}`,"_blank","noopener,noreferrer");setState("shared")};
-  const share=async()=>{try{if(navigator.share){await navigator.share({title:"Cadastro no ZonasApp",text:message,url:link});setState("shared")}else{setState(await copyText(message)?"copied":"error")}}catch(error){if(error instanceof DOMException&&error.name==="AbortError")return;setState("error")}};
-  return <section className="invite-link-card"><div><span className="overline">LINK PARA NOVOS ALUNOS</span><h2>Envie o cadastro do ZonasApp</h2><p>O convite já explica como instalar. O aluno preenche os dados, mas só acessa a plataforma depois da sua aprovação.</p><code>{link}</code></div><div className="invite-link-actions"><button className="outline" onClick={copy}>{state==="copied"?"Convite copiado ✓":"Copiar convite"}</button><button className="whatsapp" onClick={whatsapp}>Enviar no WhatsApp</button><button className="gold" onClick={share}>{state==="shared"?"Compartilhado ✓":"Outras opções"}</button></div>{state==="error"&&<small>Não foi possível copiar automaticamente. Pressione o link acima para selecioná-lo.</small>}</section>;
+  const copy=async()=>setFeito(await copyText(message)?"copiado":"erro");
+  const share=async()=>{
+    try{
+      await navigator.share({title:"Cadastro no ZonasApp",text:message,url:link});
+      setFeito("compartilhado");
+    }catch(error){
+      // Fechar a folha de compartilhamento não é falha.
+      if(error instanceof DOMException&&error.name==="AbortError")return;
+      setFeito("erro");
+    }
+  };
+
+  const assunto="Seu acesso ao ZonasApp";
+
+  return <section className="invite-link-card">
+    <div>
+      <span className="overline">LINK PARA NOVOS ALUNOS</span>
+      <h2>Envie o cadastro do ZonasApp</h2>
+      <p>O convite já explica como instalar. O aluno preenche os dados, mas só acessa a plataforma depois da sua aprovação.</p>
+      <code>{link}</code>
+    </div>
+    <div className="invite-link-actions">
+      {/* Links de verdade, e não window.open: abrem com Ctrl/Cmd+clique, não
+          são barrados por bloqueador de pop-up e o destino aparece na barra. */}
+      <a className="whatsapp" href={`https://wa.me/?text=${encodeURIComponent(message)}`} target="_blank" rel="noopener noreferrer">
+        Enviar no WhatsApp
+      </a>
+      <a className="outline" href={`mailto:?subject=${encodeURIComponent(assunto)}&body=${encodeURIComponent(message)}`}>
+        Enviar por e-mail
+      </a>
+      <button type="button" className="outline" onClick={copy}>
+        {feito==="copiado"?"Convite copiado ✓":"Copiar convite"}
+      </button>
+      {temShareNativo && <button type="button" className="gold" onClick={share}>
+        {feito==="compartilhado"?"Compartilhado ✓":"Compartilhar…"}
+      </button>}
+    </div>
+    <small className="invite-link-help" role="status">
+      {feito==="erro"
+        ? "Não foi possível copiar automaticamente. Selecione o link acima e copie à mão."
+        : temShareNativo
+          ? "“Compartilhar” abre as opções do seu aparelho, incluindo AirDrop e Quick Share."
+          : "Este navegador não oferece o compartilhamento do sistema. Use o WhatsApp, o e-mail ou copie o convite."}
+    </small>
+  </section>;
 }
 
 function AccessRequests({onApproved}:{onApproved:()=>void}){
@@ -896,14 +1151,24 @@ function TrainingFeedbacks(){
   useEffect(()=>{load()},[]);
   const review=async(id:string)=>{setState("saving");try{await api.post("/api/feedbacks",{id,status:"Revisado"});await load();setState("done")}catch{setState("error")}};
   const pending=items.filter(item=>item.status==="Novo");
-  return <section className="real-feedbacks"><header><div><span className="overline">RETORNO REAL DOS TREINOS</span><h2>Feedbacks dos alunos</h2><p>Os retornos enviados pela área do aluno aparecem aqui.</p></div><b>{pending.length} novo(s)</b></header>{pending.length===0?<div className="feedback-empty">Nenhum feedback novo para revisar.</div>:pending.map(item=><article key={item.id}><span className={item.feeling==="Sentiu dor"?"pain":item.feeling==="Cansado"?"tired":"good"}>{item.feeling==="Sentiu dor"?"⚠":item.feeling==="Cansado"?"😮‍💨":"🙂"}</span><div><b>{item.athlete_name}</b><small>{item.workout_day||"Treino"} · {new Date(Number(item.created_at)).toLocaleString("pt-BR")}</small><p>{item.feeling}{item.note?` · ${item.note}`:""}</p></div><button disabled={state==="saving"} onClick={()=>review(item.id)}>Marcar como revisado</button></article>)}{state==="error"&&<p className="registration-error">Não foi possível atualizar os feedbacks.</p>}</section>;
+  return <section className="real-feedbacks"><header><div><span className="overline">RETORNO REAL DOS TREINOS</span><h2>Feedbacks dos alunos</h2><p>Os retornos enviados pela área do aluno aparecem aqui.</p></div><b>{plural(pending.length, "novo")}</b></header>{pending.length===0?<div className="feedback-empty">Nenhum feedback novo para revisar.</div>:pending.map(item=><article key={item.id}><span className={item.feeling==="Sentiu dor"?"pain":item.feeling==="Cansado"?"tired":"good"}>{item.feeling==="Sentiu dor"?"⚠":item.feeling==="Cansado"?"😮‍💨":"🙂"}</span><div><b>{item.athlete_name}</b><small>{item.workout_day||"Treino"} · {new Date(Number(item.created_at)).toLocaleString("pt-BR")}</small><p>{item.feeling}{item.note?` · ${item.note}`:""}</p></div><button disabled={state==="saving"} onClick={()=>review(item.id)}>Marcar como revisado</button></article>)}{state==="error"&&<p className="registration-error">Não foi possível atualizar os feedbacks.</p>}</section>;
 }
 
 function WorkoutAccuracy(){
   type Execution={id:string;athlete_name:string;week_start:string;workout_day:string;planned_minutes?:number;planned_km?:string;actual_minutes?:number;actual_km?:string;correct_percentage:number;wrong_percentage:number;classification:string;created_at:number};
-  const [items,setItems]=useState<Execution[]>([]);const [state,setState]=useState("loading");
+  const [items,setItems]=useState<Execution[]>([]);const [state,setState]=useState("loading");const [verTodas,setVerTodas]=useState(false);
   useEffect(()=>{fetch("/api/workout-executions").then(r=>r.ok?r.json():Promise.reject()).then(data=>{setItems(data.executions||[]);setState("ready")}).catch(()=>setState("error"))},[]);
-  return <section className="workout-accuracy-coach"><header><div><span className="overline">CONFERÊNCIA AUTOMÁTICA</span><h2>Treino certo ou fora do planejado</h2><p>Comparação entre o treino liberado e o resultado informado pelo aluno.</p></div><b>{items.length} análise(s)</b></header>{state==="loading"?<div className="feedback-empty">Carregando análises…</div>:items.length===0?<div className="feedback-empty">As análises aparecerão quando os alunos registrarem tempo ou distância.</div>:items.slice(0,8).map(item=><article key={item.id}><div className="accuracy-athlete"><b>{item.athlete_name}</b><small>{item.workout_day} · semana de {String(item.week_start).split("-").reverse().join("/")}</small><span>{item.classification}</span></div><div className="accuracy-comparison"><span><small>PLANEJADO</small><b>{item.planned_minutes?`${item.planned_minutes} min`:"—"}{item.planned_km?` · ${item.planned_km} km`:""}</b></span><span><small>REALIZADO</small><b>{item.actual_minutes?`${item.actual_minutes} min`:"—"}{item.actual_km?` · ${item.actual_km} km`:""}</b></span></div><div className="accuracy-numbers"><strong>{item.correct_percentage}%<small>certo</small></strong><strong className="wrong">{item.wrong_percentage}%<small>fora</small></strong></div></article>)}{state==="error"&&<p className="registration-error">Não foi possível carregar as análises agora.</p>}</section>;
+  /* "Concluído sem medição" é o treino que o aluno marcou como feito sem informar
+     tempo nem distância. O servidor grava 0/0 porque não há o que comparar; exibir
+     "0% certo" ali afirmaria um erro de execução que o dado não sustenta. */
+  const semMedicao=items.filter(item=>item.classification==="Concluído sem medição");
+  const noPlano=items.filter(item=>item.classification==="Dentro do planejado");
+  const foraDoPlano=items.filter(item=>item.classification!=="Dentro do planejado"&&item.classification!=="Concluído sem medição");
+  /* O painel mostra o que pede decisão: as execuções mais distantes do combinado.
+     A lista completa continua aqui, a um clique, sem trocar de tela. */
+  const destaque=[...foraDoPlano].sort((a,b)=>b.wrong_percentage-a.wrong_percentage||b.created_at-a.created_at).slice(0,3);
+  const linha=(item:Execution)=><article key={item.id}><div className="accuracy-athlete"><b>{item.athlete_name}</b><small>{item.workout_day} · semana de {String(item.week_start).split("-").reverse().join("/")}</small><span>{item.classification}</span></div><div className="accuracy-comparison"><span><small>PLANEJADO</small><b>{item.planned_minutes?`${item.planned_minutes} min`:"—"}{item.planned_km?` · ${item.planned_km} km`:""}</b></span><span><small>REALIZADO</small><b>{item.actual_minutes?`${item.actual_minutes} min`:"—"}{item.actual_km?` · ${item.actual_km} km`:""}</b></span></div>{item.classification==="Concluído sem medição"?<div className="accuracy-numbers"><em>Sem medição</em></div>:<div className="accuracy-numbers"><strong>{item.correct_percentage}%<small>certo</small></strong><strong className="wrong">{item.wrong_percentage}%<small>fora</small></strong></div>}</article>;
+  return <section className="workout-accuracy-coach"><header><div><span className="overline">CONFERÊNCIA AUTOMÁTICA</span><h2>Treino certo ou fora do planejado</h2><p>Comparação entre o treino liberado e o resultado informado pelo aluno.</p></div><b>{plural(items.length,"análise")}</b></header>{state==="loading"?<div className="feedback-empty">Carregando análises…</div>:items.length===0?<div className="feedback-empty">As análises aparecerão quando os alunos registrarem tempo ou distância.</div>:<><div className="accuracy-summary"><span><b>{noPlano.length}</b>dentro do planejado</span><span className="fora"><b>{foraDoPlano.length}</b>fora do combinado</span><span className="ausente"><b>{semMedicao.length}</b>sem medição</span></div>{(verTodas?items:destaque).length?(verTodas?items:destaque).map(linha):<div className="feedback-empty">Nenhuma execução saiu do combinado.</div>}{items.length>destaque.length&&<button className="accuracy-toggle" onClick={()=>setVerTodas(valor=>!valor)}>{verTodas?"Mostrar só os maiores desvios":`Ver todas as ${items.length} análises →`}</button>}</>}{state==="error"&&<p className="registration-error">Não foi possível carregar as análises agora.</p>}</section>;
 }
 
 /**
@@ -925,28 +1190,62 @@ function CoachNotificationCenter({go,openPain,painReports,pendingRaces,pendingTe
     ...painReports.map(item=>({id:`pain-${item.id}`,tone:"red",icon:"!",title:"Relato de dor precisa de atenção",detail:`${item.athlete_name} · ${item.body_area} · intensidade ${item.intensity}/10.${item.note||item.training_impact?` “${item.note||item.training_impact}”`:""}`,action:"Acompanhar lesão",section:"Alunos",pain:{id:item.id,athleteName:item.athlete_name}})),
     ...races.map(item=>({id:`race-${item.id}`,tone:"blue",icon:"⚑",title:"Prova aguardando análise",detail:`${item.athlete_name} cadastrou ${item.name} (${item.distance}).`,action:"Analisar prova",section:"Provas"})),
   ];
-  return <section className="coach-notification-center" id="avisos-do-professor"><header><div><span className="overline">CENTRAL DE AVISOS</span><h2>O que precisa da sua decisão</h2><p>Cada aviso abre diretamente a tela onde você resolve a pendência.</p></div><b>{alerts.length} pendente(s)</b></header>{alerts.length?<div>{alerts.slice(0,8).map(alert=><button key={alert.id} className={alert.tone} onClick={()=>alert.pain?openPain(alert.pain):go(alert.section)}><i>{alert.icon}</i><span><strong>{alert.title}</strong><small>{alert.detail}</small></span><em>{alert.action} →</em></button>)}</div>:<aside><i>✓</i><span><b>Tudo em dia</b><small>Nenhuma decisão pendente neste momento.</small></span></aside>}</section>;
+  return <section className="coach-notification-center" id="avisos-do-professor"><header><div><span className="overline">CENTRAL DE AVISOS</span><h2>O que precisa da sua decisão</h2><p>Cada aviso abre diretamente a tela onde você resolve a pendência.</p></div><b>{plural(alerts.length, "pendente")}</b></header>{alerts.length?<div>{alerts.slice(0,8).map(alert=><button key={alert.id} className={alert.tone} onClick={()=>alert.pain?openPain(alert.pain):go(alert.section)}><i>{alert.icon}</i><span><strong>{alert.title}</strong><small>{alert.detail}</small></span><em>{alert.action} →</em></button>)}</div>:<aside><i>✓</i><span><b>Tudo em dia</b><small>Nenhuma decisão pendente neste momento.</small></span></aside>}</section>;
 }
 
-function Dashboard({ go, openPain, chooseDistance, athletes, painReports, pendingRaces, pendingTests }: { go: (s: string) => void; openPain: (c:{id:string;athleteName:string})=>void; chooseDistance: (s: string) => void; athletes:Athlete[]; painReports:any[]; pendingRaces:any[]; pendingTests:any[] }) {
+/* Faixa de contexto do painel. Não repete nenhuma pendência: a Central de avisos
+   é a única fila. Aqui ficam só os fatos que situam a semana e a ação principal. */
+function CoachWeekSummary({ go, athletes, painReports, pendingRaces, pendingTests }: { go: (s: string) => void; athletes:Athlete[]; painReports:any[]; pendingRaces:any[]; pendingTests:any[] }) {
+  const racesWaiting=pendingRaces.filter(race=>race.status==="Aguardando análise");
+  const nextRace=pendingRaces.find(race=>race.race_date>=new Date().toISOString().slice(0,10));
+  const daysToRace=nextRace?Math.max(0,Math.ceil((new Date(`${nextRace.race_date}T12:00:00`).getTime()-Date.now())/86400000)):null;
+  const comTreino=athletes.filter(athlete=>!String(athlete.next).includes("Aguardando")).length;
+  const pendencias=painReports.length+racesWaiting.length+pendingTests.filter(test=>test.status!=="Aprovado").length;
+  const semana=weekDateLabel(mondayOf(new Date(Date.now()-3*60*60*1000).toISOString().slice(0,10)));
+  return <section className="coach-week">
+    <div className="coach-week-state">
+      <span className="overline">SEMANA</span><small>{semana}</small>
+      <p>{pendencias?`${plural(pendencias,"situação","situações")} ${concordar(pendencias,"precisa","precisam")} da sua decisão.`:"Nenhuma pendência aguardando sua decisão."}</p>
+    </div>
+    <div className="coach-week-facts">
+      <button onClick={()=>go("Alunos")}><small>Alunos ativos</small><b>{athletes.length}</b><span>{comTreino===athletes.length?"todos com treino programado":`${comTreino} com treino programado`}</span></button>
+      <button onClick={()=>go("Provas")}><small>Próxima prova</small><b>{daysToRace??"—"}{daysToRace!==null&&<em> dias</em>}</b><span>{nextRace?.name||"Nenhuma cadastrada"}</span></button>
+    </div>
+    <button className="gold coach-week-action" onClick={()=>go("Calendário")}>Montar treinos da semana</button>
+  </section>;
+}
+
+/* Cinco distâncias, quase sempre com o time concentrado em duas ou três. A barra
+   mostra a proporção sem gráfico decorativo, e o grupo vazio fica apagado para
+   não disputar atenção com o que tem aluno dentro. */
+function CoachGroups({ go, chooseDistance, athletes }: { go: (s: string) => void; chooseDistance: (s: string) => void; athletes:Athlete[] }) {
   const groupNames:[[string,string],...Array<[string,string]>]=[["Iniciantes","01"],["5 km","05"],["10 km","10"],["Meia","21"],["Maratona","42"]];
   const groups=groupNames.map(([name,number])=>({name,number,count:athletes.filter(athlete=>athlete.distance===name).length}));
-  const racesWaiting=pendingRaces.filter(race=>race.status==="Aguardando análise");const nextRace=pendingRaces.find(race=>race.race_date>=new Date().toISOString().slice(0,10));
-  const daysToRace=nextRace?Math.max(0,Math.ceil((new Date(`${nextRace.race_date}T12:00:00`).getTime()-Date.now())/86400000)):null;
-  const attentionTotal=painReports.length+racesWaiting.length+pendingTests.length;
-  /* Contagem herdada do painel do celular: alunos cujo próximo treino já saiu do "Aguardando". */
-  const workoutsToday=athletes.filter(athlete=>!String(athlete.next).includes("Aguardando")).length;
-  return <><section className="hero"><div><span className="pill">VISÃO DA SEMANA</span><h2>Treinos claros.<br/><em>Atletas em movimento.</em></h2><p>{attentionTotal?`${attentionTotal} situação(ões) precisam da sua atenção.`:"Nenhuma pendência urgente registrada."}</p><button className="gold" onClick={()=>go("Calendário")}>Montar treinos da semana →</button></div></section><section className="stats"><button className="stat-card" onClick={()=>go("Alunos")}><small>ALUNOS CADASTRADOS</small><b>{athletes.length}</b><span>Ver todos os alunos →</span></button><button className="stat-card" onClick={()=>go("Calendário")}><small>TREINOS HOJE</small><b>{workoutsToday}</b><span>Montar no calendário →</span></button><button className="stat-card" onClick={()=>painReports[0]?openPain({id:painReports[0].id,athleteName:painReports[0].athlete_name}):go("Alunos")}><small>RELATOS DE DOR</small><b>{painReports.length}</b><span>{painReports.length?"Acompanhar lesão →":"Sem pendências"}</span></button><button className="stat-card" onClick={()=>go("Provas")}><small>PROVAS PARA ANALISAR</small><b>{racesWaiting.length}</b><span>{racesWaiting.length?"Analisar provas →":"Tudo revisado"}</span></button><button className="stat-card" onClick={()=>go("Provas")}><small>PRÓXIMA PROVA</small><b>{daysToRace??"—"}{daysToRace!==null&&<em> dias</em>}</b><span>{nextRace?.name||"Nenhuma cadastrada"}</span></button></section><div className="section-title"><div><small>ORGANIZAÇÃO DOS ALUNOS</small><h2>Grupos de treinamento</h2></div><button onClick={()=>go("Alunos")}>Ver todos →</button></div><section className="groups">{groups.map(group=><button key={group.name} onClick={()=>chooseDistance(group.name)}><i>{group.number}</i><h3>{group.name==="Meia"?"Meia maratona":group.name}</h3><b>{group.count} aluno(s)</b><span>Ver bases, fases e semanas →</span></button>)}</section></>;
-}
-
-function PendingTestShortcut({tests,open}:{tests:any[];open:()=>void}){
-  if(!tests.length)return null;
-  return <button className="dashboard-pending-zones" onClick={open}><span><small>AÇÃO PRIORITÁRIA</small><b>{tests.length} teste(s) aguardando liberação das zonas</b><em>{tests[0].athlete_name} está esperando os ritmos para receber treinos individualizados.</em></span><strong>Revisar e liberar agora →</strong></button>;
+  const maior=Math.max(1,...groups.map(group=>group.count));
+  return <section className="coach-groups">
+    <header><h2>Grupos de treinamento</h2><button onClick={()=>go("Alunos")}>Ver todos os alunos →</button></header>
+    <div>{groups.map(group=>
+      <button key={group.name} className={group.count?undefined:"vazio"} onClick={()=>chooseDistance(group.name)}>
+        <i>{group.number}</i>
+        <strong>{group.name==="Meia"?"Meia maratona":group.name}</strong>
+        <small><b>{group.count}</b> {group.count===1?"aluno":"alunos"}</small>
+        <em><span style={{width:`${Math.round(group.count/maior*100)}%`}}/></em>
+      </button>)}</div>
+  </section>;
 }
 
 function Athletes({ filtered, allAthletes, distance, phase, plan, setDistance, setPhase, setPlan, openProfile, situation, setSituation, counts, onArchiveChange }: any) {
   const planCount=(name:string)=>allAthletes.filter((a:Athlete)=>athletePlan(a)===name).length;
+  const planNames=planNamesDe(allAthletes);
+  /* Procurar um aluno pelo nome é o gesto mais frequente desta tela e era o
+     único que não existia: havia 22 botões de filtro e nenhum campo de busca. */
+  const [busca,setBusca]=useState("");
+  /* Das dez planilhas-base, nove costumam estar zeradas. Filtro que não filtra
+     ninguém ocupa espaço sem oferecer escolha, então fica recolhido. */
+  const [todasAsPlanilhas,setTodasAsPlanilhas]=useState(false);
   const [acaoEmCurso,setAcaoEmCurso]=useState("");
+  const termo=busca.trim().toLocaleLowerCase("pt-BR");
+  const visiveis=termo?filtered.filter((a:Athlete)=>a.name.toLocaleLowerCase("pt-BR").includes(termo)):filtered;
   const [confirmando,setConfirmando]=useState("");
   const [motivo,setMotivo]=useState("");
 
@@ -956,7 +1255,7 @@ function Athletes({ filtered, allAthletes, distance, phase, plan, setDistance, s
     try{
       await api.post("/api/athletes",{action,name:nome,...(action==="archive"&&motivo?{reason:motivo}:{})});
       setConfirmando("");setMotivo("");onArchiveChange?.();
-    }catch(error){window.alert(describeError(error,"Não foi possível alterar a situação do aluno."))}
+    }catch(error){avise("erro","Não foi possível alterar a situação do aluno",describeError(error,"Tente novamente em alguns instantes."))}
     finally{setAcaoEmCurso("")}
   };
 
@@ -980,13 +1279,17 @@ function Athletes({ filtered, allAthletes, distance, phase, plan, setDistance, s
       <button onClick={()=>{setConfirmando("");setMotivo("")}}>Cancelar</button>
     </div>
   </div>}
-  <div className="filters"><label>DISTÂNCIA<div>{distances.map(d => <button key={d} className={distance === d ? "selected" : ""} onClick={() => setDistance(d)}>{d}</button>)}</div></label><label>PLANILHA-BASE<div>{planNames.map(name => <button key={name} className={plan === name ? "selected" : ""} onClick={() => setPlan(name)}>{name}{name!=="Todas"&&<b>{planCount(name)}</b>}</button>)}</div></label><label>FASE<div>{phases.map(p => <button key={p} className={phase === p ? "selected" : ""} onClick={() => setPhase(p)}>{p}</button>)}</div></label></div><div className="athlete-list"><header><span>ALUNO</span><span>DISTÂNCIA</span><span>PLANILHA-BASE</span><span>FASE</span><span>SEMANA</span><span>PRÓXIMO TREINO</span><span>SITUAÇÃO</span></header>{filtered.map((a: Athlete) => <article key={a.name} className={`athlete-row${a.archivedAt ? " inativo" : ""}`} onClick={() => openProfile(a)}><span className="athlete-name"><b>{a.initials}</b><strong>{a.name}{a.archivedAt ? <em className="athlete-inactive-tag">inativo</em> : null}</strong></span><span>{a.distance}</span><span className="plan-cell">{athletePlan(a)}</span><span>{a.phase}</span><span>{a.week}</span><span>{a.archivedAt ? (a.archivedReason || "Sem motivo registrado") : a.next}</span><span className="athlete-row-action" onClick={event => event.stopPropagation()}>{a.archivedAt
+  <div className="filters"><label className="filtro-busca">BUSCAR ALUNO<input value={busca} onChange={event => setBusca(event.target.value)} placeholder="Digite o nome" aria-label="Buscar aluno pelo nome"/>{busca && <button onClick={() => setBusca("")} aria-label="Limpar busca">×</button>}</label><label>DISTÂNCIA<div>{distances.map(d => <button key={d} className={distance === d ? "selected" : ""} onClick={() => setDistance(d)}>{d}</button>)}</div></label><label>PLANILHA-BASE<div>{planNames.filter((name:string) => todasAsPlanilhas || name === "Todas" || name === plan || planCount(name) > 0).map((name:string) => <button key={name} className={plan === name ? "selected" : ""} onClick={() => setPlan(name)}>{name}{name!=="Todas"&&<b>{planCount(name)}</b>}</button>)}{planNames.some((name:string) => name !== "Todas" && planCount(name) === 0) && <button className="filtro-mais" onClick={() => setTodasAsPlanilhas(valor => !valor)}>{todasAsPlanilhas ? "Ocultar vazias" : `+ ${planNames.filter((name:string) => name !== "Todas" && planCount(name) === 0).length} sem aluno`}</button>}</div></label><label>FASE<div>{phases.map(p => <button key={p} className={phase === p ? "selected" : ""} onClick={() => setPhase(p)}>{p}</button>)}</div></label></div><div className="athlete-list"><header><span>ALUNO</span><span>DISTÂNCIA</span><span>PLANILHA-BASE</span><span>FASE</span><span>SEMANA</span><span>PRÓXIMO TREINO</span><span>SITUAÇÃO</span></header>{visiveis.length===0&&<div className="athlete-list-empty">{termo?`Nenhum aluno com “${busca.trim()}” no nome.`:"Nenhum aluno neste recorte de filtros."}</div>}{visiveis.map((a: Athlete) => <article key={a.name} className={`athlete-row${a.archivedAt ? " inativo" : ""}`} onClick={() => openProfile(a)}><span className="athlete-name"><b>{a.initials}</b><strong>{a.name}{a.archivedAt ? <em className="athlete-inactive-tag">inativo</em> : null}</strong></span><span>{a.distance}</span><span className="plan-cell">{athletePlan(a)}</span><span>{a.phase}</span><span>{a.week}</span><span>{a.archivedAt ? (a.archivedReason || "Sem motivo registrado") : a.next}</span><span className="athlete-row-action" onClick={event => event.stopPropagation()}>{a.archivedAt
   ? <button disabled={acaoEmCurso === a.name} onClick={() => mudarSituacao(a.name, "restore")}>{acaoEmCurso === a.name ? "Reativando…" : "Reativar"}</button>
-  : <><span className={a.flag ? "flag" : "ok"}>{a.flag || "Abrir ficha"}</span><button className="athlete-archive" onClick={() => setConfirmando(a.name)}>Inativar</button></>}</span></article>)}</div></>;
+  : <><span className={a.flag ? "flag" : "ok"}>{a.flag || "Em dia"}</span><button className="athlete-archive" onClick={() => setConfirmando(a.name)}>Inativar</button><em className="athlete-open" aria-hidden="true">›</em></>}</span></article>)}</div></>;
 }
 
 function AthleteProfile({ athlete, close, onOpenPain }: { athlete: Athlete; close: () => void; onOpenPain?: (id: string) => void }) {
   const [saved, setSaved] = useState(false);
+  /* Quem treina sem prova-alvo ficava para sempre como "cadastro incompleto",
+     e o painel seguia cobrando um dado que não existe. A marca diz que a
+     ausência é intencional. */
+  const [semProva, setSemProva] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState("");
   const [tab, setTab] = useState("Cadastro");
@@ -1024,7 +1327,10 @@ function AthleteProfile({ athlete, close, onOpenPain }: { athlete: Athlete; clos
   const [weekConfirmed, setWeekConfirmed] = useState(false);
   const [manualWeek, setManualWeek] = useState<number | null>(null);
   const [planningSaveState,setPlanningSaveState]=useState<"idle"|"saving"|"saved"|"error">("idle");
-  const days = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
+  /* Mesmo vocabulário do resto do sistema. Com "Seg" aqui e "SEG" gravado,
+     nenhum dia aparecia marcado ao reabrir a ficha, e o cadastro parecia ter
+     sido esvaziado. */
+  const days = ["SEG", "TER", "QUA", "QUI", "SEX", "SÁB", "DOM"];
   const toggleTrainingDay = (day:string) => setTrainingDays(current => current.includes(day) ? current.filter(item => item !== day) : [...current, day]);
   const tabs = ["Cadastro", "Treinos", "Testes e zonas", "Histórico", "Acesso"];
   const planCatalog: Record<string,{weeks:number,frequency:string,level:string}> = {
@@ -1087,10 +1393,10 @@ function AthleteProfile({ athlete, close, onOpenPain }: { athlete: Athlete; clos
     setWeekConfirmed(false);
     setCopiedWeek("");
   };
-  const useRaceSuggestion=()=>{
+  const useRaceSuggestion=async()=>{
     if(recommendedDateSuggestedWeek===null)return;
     const availability=availableDayCount?`${availableDayCount} dia${availableDayCount===1?"":"s"} disponível(is)`:"nenhum dia disponível";
-    if(!window.confirm(`Sugestão individual para ${athlete.name.split(" ")[0]}:\n\n${recommendedPlan} · semana ${recommendedDateSuggestedWeek} de ${recommendedPlanDetails.weeks}\n${raceDistance} · ${availability}\n\nAplicar esta base e revisar o planejamento?`))return;
+    if(!await pergunte({titulo:`Aplicar esta base para ${athlete.name.split(" ")[0]}?`,descricao:"Sugestão calculada a partir da prova-alvo e dos dias disponíveis.",linhas:[`${recommendedPlan} · semana ${recommendedDateSuggestedWeek} de ${recommendedPlanDetails.weeks}`,`${raceDistance} · ${availability}`],confirmar:"Aplicar e revisar"}))return;
     setTrainingPlan(recommendedPlan);
     setManualWeek(recommendedDateSuggestedWeek);
     setPlannedPhase(recommendedDateSuggestedPhase);
@@ -1117,6 +1423,7 @@ function AthleteProfile({ athlete, close, onOpenPain }: { athlete: Athlete; clos
         setIntegration(profile.integration || "Garmin");
         try { setTrainingDays(JSON.parse(profile.training_days || "[]")); } catch { setTrainingDays([]); }
       }
+      setSemProva(Number(profileData?.athlete?.no_target_race) === 1);
       const nextRace = raceData.races?.[0];
       if (nextRace) {
         setRace(nextRace.name || "");
@@ -1135,7 +1442,7 @@ function AthleteProfile({ athlete, close, onOpenPain }: { athlete: Athlete; clos
   const saveProfile = async () => {
     setProfileSaving(true); setProfileMessage(""); setSaved(false);
     try {
-      await api.post("/api/athlete-profile", { athleteName: athlete.name, phone, birthDate, objective, integration, trainingDays });
+      await api.post("/api/athlete-profile", { athleteName: athlete.name, phone, birthDate, objective, integration, trainingDays, noTargetRace: semProva });
       await api.post("/api/athlete-planning", { athleteName: athlete.name, plan: trainingPlan, phase: plannedPhase, weekNumber: selectedWeekNumber, totalWeeks: currentPlan.weeks });
       if (race.trim() && raceDate) {
         await api.post("/api/races-records", { kind: "race", athleteName: athlete.name, name: race, raceDate, distance: raceDistance, goal: raceGoal, priority: racePriority });
@@ -1148,7 +1455,7 @@ function AthleteProfile({ athlete, close, onOpenPain }: { athlete: Athlete; clos
     const trainingDayKeys=trainingDays.map(day=>day.toUpperCase());
     if(!trainingDayKeys.length){
       setPlanningSaveState("error");
-      window.alert(`Antes de criar a semana de ${athlete.name.split(" ")[0]}, escolha pelo menos um dia disponível na aba Cadastro.`);
+      avise("atencao","Escolha os dias de treino primeiro",`${athlete.name.split(" ")[0]} não tem nenhum dia disponível marcado. Defina os dias na ficha do aluno antes de criar a semana.`);
       setTab("Cadastro");
       return;
     }
@@ -1161,18 +1468,29 @@ function AthleteProfile({ athlete, close, onOpenPain }: { athlete: Athlete; clos
         sessions=await sessionsForSavedPlanWeek(trainingPlan,selectedWeekNumber,trainingDayKeys);
         if(!Object.keys(sessions).length){
           setPlanningSaveState("error");
-          window.alert(`A semana ${selectedWeekNumber} da planilha ${trainingPlan} ainda não possui treinos estruturados. Complete a planilha-base antes de criar o rascunho.`);
+          avise("erro",`A semana ${selectedWeekNumber} da planilha ${trainingPlan} está vazia`,"Complete a planilha-base em “Planilhas” antes de criar o rascunho.");
           return;
         }
       }
       const sessionPreview=trainingDayKeys.map(day=>{
         const session=sessions[day];
-        return `${day}: ${session?.title||session?.description||session?.type||"Treino estruturado"}`;
-      }).join("\n");
-      const confirmation=existing.week
-        ? `Já existe uma programação para ${athlete.name.split(" ")[0]} em ${weekDateLabel(draftWeekStart)}.\n\nO planejamento será atualizado para ${trainingPlan} · semana ${selectedWeekNumber} de ${currentPlan.weeks}, e a programação existente será aberta sem ser substituída.\n\nContinuar?`
-        : `CONFIRA A SEMANA DE ${athlete.name.split(" ")[0].toUpperCase()}\n\nPlanilha: ${trainingPlan}\nFase: ${plannedPhase}\nSemana: ${selectedWeekNumber} de ${currentPlan.weeks}\nDatas: ${weekDateLabel(draftWeekStart)}\nDias: ${trainingDayKeys.join(", ")}\n\nTREINOS QUE SERÃO CRIADOS\n${sessionPreview}\n\nCriar esta semana como rascunho?`;
-      if(!window.confirm(confirmation)){
+        return `${day} · ${session?.title||session?.description||session?.type||"Treino estruturado"}`;
+      });
+      const aceitou=existing.week
+        ? await pergunte({
+            titulo:`Atualizar o planejamento de ${athlete.name.split(" ")[0]}?`,
+            descricao:`Já existe uma programação em ${weekDateLabel(draftWeekStart)}. Ela será aberta sem ser substituída.`,
+            linhas:[`Nova base: ${trainingPlan}`,`Semana ${selectedWeekNumber} de ${currentPlan.weeks}`],
+            confirmar:"Atualizar planejamento",
+          })
+        : await pergunte({
+            titulo:`Criar a semana de ${athlete.name.split(" ")[0]} como rascunho?`,
+            descricao:`${trainingPlan} · ${plannedPhase} · semana ${selectedWeekNumber} de ${currentPlan.weeks} · ${weekDateLabel(draftWeekStart)}`,
+            linhas:sessionPreview,
+            resumo:`${plural(trainingDayKeys.length,"dia de treino","dias de treino")}: ${trainingDayKeys.join(", ")}. O aluno só verá esta semana depois que você liberar.`,
+            confirmar:"Criar rascunho",
+          });
+      if(!aceitou){
         setPlanningSaveState("idle");
         return;
       }
@@ -1251,6 +1569,9 @@ function AthleteProfile({ athlete, close, onOpenPain }: { athlete: Athlete; clos
       <label>Dias disponíveis para treinar<div className="day-picker">{days.map(d=><button type="button" key={d} className={trainingDays.includes(d)?"selected":""} onClick={()=>toggleTrainingDay(d)}>{d}</button>)}</div></label>
     </section>
     <section className="profile-section">
+      {/* Quem treina sem prova-alvo ficava para sempre como "cadastro
+          incompleto", e o painel seguia cobrando um dado que não existe. */}
+      <label className="sem-prova"><input type="checkbox" checked={semProva} onChange={event=>setSemProva(event.target.checked)}/><span><b>Este aluno treina sem prova-alvo no momento</b><small>O cadastro deixa de aparecer como incompleto e o painel para de cobrar uma prova. Desmarque quando ele escolher uma.</small></span></label>
       <div className="profile-title"><div><span className="overline">PERIODIZAÇÃO</span><h3>Próxima prova</h3></div><small>{race&&raceDate?"Salva junto com a ficha":"Preencha quando o aluno definir"}</small></div>
       <div className="profile-grid">
         <label>Nome da prova<input value={race} onChange={e=>setRace(e.target.value)} placeholder="Informe a prova" /></label>
@@ -1270,7 +1591,7 @@ function AthleteProfile({ athlete, close, onOpenPain }: { athlete: Athlete; clos
     {label:"Semana 6",date:"27 jul–2 ago",phase:"Desenvolvimento",volume:"37 km",done:"5/5 concluídos",items:["Leve Z1","Fartlek 10 × 1 min","Tempo Run","Longão 1h05"]}
   ].map(week=><article key={week.label} className={copiedWeek===week.label?"copied":""}><header><div><b>{week.label}</b><small>{week.date} · {week.phase}</small></div><span>{week.done}</span></header><div>{week.items.map(item=><small key={item}>{item}</small>)}</div><footer><span>{week.volume} planejados</span><button disabled={!weekConfirmed} onClick={()=>setCopiedWeek(week.label)}>{copiedWeek===week.label?"Copiada para a próxima ✓":"Copiar para a próxima"}</button></footer></article>)}</div><div className="copy-note"><b>As intensidades continuam individuais.</b><span>Ao copiar, o ZonasApp mantém a estrutura da semana e aplica os ritmos, a FC e os Tempo Runs atuais deste aluno.</span></div></section>}
   {tab === "Acesso" && <section className="profile-section access-section"><div className="access-head"><div><span className={`access-dot ${access === "Bloqueado" ? "blocked" : access === "Convite preparado" || access === "Ativo" ? "ready" : ""}`}/><div><small>STATUS DE ACESSO</small><h3>{access}</h3></div></div><span>Último acesso: {lastAccess}</span></div><label>E-mail usado para entrar no ZonasApp<input type="email" value={email} disabled={access==="Ativo"} onChange={e=>{setEmail(e.target.value);setAccess("Não convidado");setAccessMessage("");setActivationConfirmed(false);setRevocationConfirmed(false)}} placeholder="aluno@email.com" /></label><p className="access-help">O aluno entrará com o próprio e-mail. Você não precisa criar ou guardar senha.</p>{activatedAt&&<p className="access-help">Ativado em: {activatedAt}</p>}{(access==="Convite preparado"||access==="Bloqueado")&&<label className="activation-confirm"><input type="checkbox" checked={activationConfirmed} onChange={e=>setActivationConfirmed(e.target.checked)}/><span>Conferi o nome do aluno e o e-mail. Quero {access==="Bloqueado"?"reativar":"ativar"} a área individual.</span></label>}<div className="access-actions">{access==="Não convidado"&&<button className="gold" disabled={!email.trim()||accessSaving} onClick={()=>saveAthleteAccess("Convite preparado")}>{accessSaving?"Salvando...":"Preparar vínculo"}</button>}{(access==="Convite preparado"||access==="Bloqueado")&&<button className="gold" disabled={!activationConfirmed||accessSaving} onClick={()=>saveAthleteAccess("Ativo")}>{accessSaving?"Ativando...":access==="Bloqueado"?"Reativar acesso":"Ativar acesso do aluno"}</button>}{access==="Ativo"&&<button className="gold" disabled>Acesso ativo ✓</button>}<button className={revocationConfirmed?"danger-confirm":"outline"} disabled={(access!=="Convite preparado"&&access!=="Ativo")||accessSaving} onClick={()=>saveAthleteAccess("Bloqueado")}>{accessSaving?"Bloqueando...":revocationConfirmed?"Confirmar bloqueio de "+athlete.name.split(" ")[0]:"Bloquear acesso"}</button>{revocationConfirmed&&<button className="outline" disabled={accessSaving} onClick={()=>{setRevocationConfirmed(false);setAccessMessage("")}}>Cancelar</button>}</div>{accessMessage&&<p className={"access-help "+(revocationConfirmed?"danger-message":"")} role="status">{accessMessage}</p>}<div className="access-notice"><b>{access==="Ativo"?"Área individual ativada.":access==="Bloqueado"?"Entrada bloqueada.":"Nenhum aluno foi liberado ainda."}</b><span>{access==="Ativo"?"O aluno só verá os próprios treinos, provas, zonas e registros. Para trocar o e-mail, bloqueie o acesso primeiro.":access==="Bloqueado"?"O e-mail continua vinculado, mas não consegue entrar até você reativar.":"Prepare o vínculo, confira o e-mail e faça a ativação final."}</span></div><div className="access-audit"><div><span className="overline">REGISTRO DE SEGURANÇA</span><h3>Histórico de acesso</h3><p>Ativações, bloqueios e alterações ficam registradas. Senhas nunca são armazenadas.</p></div>{accessHistory.length===0?<div className="audit-empty">Nenhuma alteração registrada para este aluno.</div>:accessHistory.map(item=><article key={item.id}><span className={`audit-icon ${item.action.includes("bloqueado")?"danger":""}`}>{item.action.includes("bloqueado")?"!":"✓"}</span><div><b>{item.action}</b><small>{new Date(Number(item.created_at)).toLocaleString("pt-BR")} · {item.actor_email}</small><p>{item.previous_status?`${item.previous_status} → ${item.new_status}`:`Status: ${item.new_status}`}</p></div></article>)}</div></section>}
-  {tab === "Testes e zonas" && <section className="profile-section athlete-tests"><div className="profile-title"><div><span className="overline">AVALIAÇÕES SALVAS</span><h3>Testes, zonas e Tempo Runs</h3></div><small>{testHistory.length} teste(s)</small></div>{testHistory.length===0?<div className="athlete-tests-empty"><b>Sem teste registrado</b><span>Cadastre o resultado de 3 km ou 5 km para calcular as zonas de {athlete.name.split(" ")[0]}.</span><button className="gold" onClick={()=>window.dispatchEvent(new CustomEvent("zonasapp:open-tests",{detail:athlete.name}))}>Cadastrar teste de {athlete.name.split(" ")[0]} →</button></div>:testHistory.map((test,index)=>{const zones=JSON.parse(test.zones||"[]");const tempos=JSON.parse(test.tempo_runs||"[]");return <article key={test.id} className="athlete-test-card"><header><div><small>{index===0?"TESTE MAIS RECENTE":"HISTÓRICO"} · {test.test_date.split("-").reverse().join("/")}</small><h3>{test.distance_km} km em {duration(test.total_seconds)}</h3></div><span>{test.status}</span></header><div className="athlete-test-metrics"><span><small>VAM</small><b>{Number(test.vam).toFixed(2)} km/h</b></span><span><small>VO₂</small><b>{Number(test.vo2).toFixed(1)}</b></span><span><small>RITMO</small><b>{pace(Number(test.pace_seconds))}</b></span><span><small>FCMÁX</small><b>{test.fc_max} bpm</b></span></div><div className="athlete-zone-list">{zones.map((zone:any)=><span key={zone.z}><b>{zone.z}</b><small>{pace(zone.slow)} – {pace(zone.fast)}</small></span>)}</div><div className="athlete-tempo-list">{tempos.map((tempo:any)=><span key={tempo.label}><small>Tempo Run {tempo.label}</small><b>{pace(tempo.targetPace)}</b></span>)}</div><button className="review-zones-button" onClick={()=>startTestReview(test)}>{test.status==="Aprovado"?"Revisar novamente":"Revisar e aprovar zonas"}</button></article>})}{reviewTestId&&<div className="zone-review-editor"><header><div><span className="overline">REVISÃO DO TREINADOR</span><h3>Ajuste os ritmos antes de aprovar</h3></div><button onClick={()=>setReviewTestId("")}>×</button></header><p>Use o formato min:seg. O primeiro ritmo é o mais lento e o segundo é o mais rápido de cada zona.</p><div className="review-zone-grid">{reviewZones.map((zone,index)=><article key={zone.z}><b>{zone.z}</b><span>{zone.label}</span><label>Mais lento<input value={zone.slow} onChange={e=>setReviewZones(current=>current.map((item,i)=>i===index?{...item,slow:e.target.value}:item))}/></label><label>Mais rápido<input value={zone.fast} onChange={e=>setReviewZones(current=>current.map((item,i)=>i===index?{...item,fast:e.target.value}:item))}/></label></article>)}</div><h4>Tempo Runs</h4><div className="review-tempo-grid">{reviewTempos.map((tempo,index)=><label key={tempo.label}>{tempo.label}<input value={tempo.targetPace} onChange={e=>setReviewTempos(current=>current.map((item,i)=>i===index?{...item,targetPace:e.target.value}:item))}/></label>)}</div>{reviewState==="error"&&<p className="review-error">Confira os ritmos. Exemplo válido: 5:10.</p>}<footer><button className="outline" disabled={reviewState==="saving"} onClick={()=>saveTestReview("review")}>Salvar rascunho</button><button className="gold" disabled={reviewState==="saving"} onClick={()=>saveTestReview("approve")}>{reviewState==="saving"?"Salvando...":"Aprovar e usar nos treinos ✓"}</button></footer></div>}</section>}
+  {tab === "Testes e zonas" && <section className="profile-section athlete-tests"><div className="profile-title"><div><span className="overline">AVALIAÇÕES SALVAS</span><h3>Testes, zonas e Tempo Runs</h3></div><small>{plural(testHistory.length, "teste")}</small></div>{testHistory.length===0?<div className="athlete-tests-empty"><b>Sem teste registrado</b><span>Cadastre o resultado de 3 km ou 5 km para calcular as zonas de {athlete.name.split(" ")[0]}.</span><button className="gold" onClick={()=>window.dispatchEvent(new CustomEvent("zonasapp:open-tests",{detail:athlete.name}))}>Cadastrar teste de {athlete.name.split(" ")[0]} →</button></div>:testHistory.map((test,index)=>{const zones=JSON.parse(test.zones||"[]");const tempos=JSON.parse(test.tempo_runs||"[]");return <article key={test.id} className="athlete-test-card"><header><div><small>{index===0?"TESTE MAIS RECENTE":"HISTÓRICO"} · {test.test_date.split("-").reverse().join("/")}</small><h3>{test.distance_km} km em {duration(test.total_seconds)}</h3></div><span>{test.status}</span></header><div className="athlete-test-metrics"><span><small>VAM</small><b>{Number(test.vam).toFixed(2)} km/h</b></span><span><small>VO₂</small><b>{Number(test.vo2).toFixed(1)}</b></span><span><small>RITMO</small><b>{pace(Number(test.pace_seconds))}</b></span><span><small>FCMÁX</small><b>{test.fc_max} bpm</b></span></div><div className="athlete-zone-list">{zones.map((zone:any)=><span key={zone.z}><b>{zone.z}</b><small>{pace(zone.slow)} – {pace(zone.fast)}</small></span>)}</div><div className="athlete-tempo-list">{tempos.map((tempo:any)=><span key={tempo.label}><small>Tempo Run {tempo.label}</small><b>{pace(tempo.targetPace)}</b></span>)}</div><button className="review-zones-button" onClick={()=>startTestReview(test)}>{test.status==="Aprovado"?"Revisar novamente":"Revisar e aprovar zonas"}</button></article>})}{reviewTestId&&<div className="zone-review-editor"><header><div><span className="overline">REVISÃO DO TREINADOR</span><h3>Ajuste os ritmos antes de aprovar</h3></div><button onClick={()=>setReviewTestId("")}>×</button></header><p>Use o formato min:seg. O primeiro ritmo é o mais lento e o segundo é o mais rápido de cada zona.</p><div className="review-zone-grid">{reviewZones.map((zone,index)=><article key={zone.z}><b>{zone.z}</b><span>{zone.label}</span><label>Mais lento<input value={zone.slow} onChange={e=>setReviewZones(current=>current.map((item,i)=>i===index?{...item,slow:e.target.value}:item))}/></label><label>Mais rápido<input value={zone.fast} onChange={e=>setReviewZones(current=>current.map((item,i)=>i===index?{...item,fast:e.target.value}:item))}/></label></article>)}</div><h4>Tempo Runs</h4><div className="review-tempo-grid">{reviewTempos.map((tempo,index)=><label key={tempo.label}>{tempo.label}<input value={tempo.targetPace} onChange={e=>setReviewTempos(current=>current.map((item,i)=>i===index?{...item,targetPace:e.target.value}:item))}/></label>)}</div>{reviewState==="error"&&<p className="review-error">Confira os ritmos. Exemplo válido: 5:10.</p>}<footer><button className="outline" disabled={reviewState==="saving"} onClick={()=>saveTestReview("review")}>Salvar rascunho</button><button className="gold" disabled={reviewState==="saving"} onClick={()=>saveTestReview("approve")}>{reviewState==="saving"?"Salvando...":"Aprovar e usar nos treinos ✓"}</button></footer></div>}</section>}
   {tab === "Histórico" && <section className="profile-section history-tab"><div className="history-head"><div><span className="overline">ÚLTIMOS RETORNOS REAIS</span><h3>Treinos e feedbacks de {athlete.name.split(" ")[0]}</h3></div>{(historyExecutions.length>0||historyFeedbacks.length>0)&&<button className={handled?"handled":""} onClick={()=>setHandled(true)}>{handled?"Revisado ✓":"Marcar como revisado"}</button>}</div>{historyFeedbacks.map(item=><article key={item.id} className={`history-item ${item.feeling==="Sentiu dor"?"alert-item":""}`}><i>{item.feeling==="Sentiu dor"?"⚠":item.feeling==="Cansado"?"😮‍💨":"🙂"}</i><div><strong>{item.feeling}</strong><small>{item.workout_day||"Treino"} · {new Date(Number(item.created_at)).toLocaleDateString("pt-BR")}</small><p>{item.note||"Feedback enviado pelo aluno após o treino."}</p></div><span>{handled?"REVISADO":item.status?.toUpperCase()||"NOVO"}</span></article>)}{historyExecutions.map(item=><article key={item.id} className="history-item"><i>✓</i><div><strong>{item.classification}</strong><small>{item.workout_day} · semana de {String(item.week_start).split("-").reverse().join("/")}</small><p>Planejado: {item.planned_minutes||"—"} min{item.planned_km?` · ${item.planned_km} km`:""}. Realizado: {item.actual_minutes||"—"} min{item.actual_km?` · ${item.actual_km} km`:""}.</p></div><span>{item.correct_percentage}% CERTO</span></article>)}{historyExecutions.length===0&&historyFeedbacks.length===0&&<div className="feedback-empty">Este aluno ainda não registrou resultados ou feedbacks.</div>}</section>}
   <footer><button className="outline" onClick={close}>Fechar</button><button className="gold" disabled={profileSaving} onClick={saveProfile}>{profileSaving ? "Salvando ficha..." : saved ? "Ficha salva ✓" : "Salvar ficha completa"}</button></footer></aside></div>;
 }
@@ -1278,13 +1599,15 @@ function AthleteProfile({ athlete, close, onOpenPain }: { athlete: Athlete; clos
 function NewAthlete({ close, save }: { close: () => void; save: (athlete: Athlete, details: Record<string, unknown>) => Promise<void> }) {
   const [name, setName] = useState("");
   const [distance, setDistance] = useState("Iniciantes");
-  const [days, setDays] = useState(["Seg", "Qua", "Sex"]);
+  const [days, setDays] = useState(["SEG", "QUA", "SEX"]);
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [integration, setIntegration] = useState("Garmin");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const weekDays = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"];
+  /* Mesmo vocabulário do resto do sistema: o calendário, a semana gravada e o
+     perfil comparam os dias como texto, e "Seg" nunca casaria com "SEG". */
+  const weekDays = ["SEG", "TER", "QUA", "QUI", "SEX", "SÁB", "DOM"];
   const toggleDay = (day: string) => setDays(days.includes(day) ? days.filter(d => d !== day) : [...days, day]);
   const submit = async () => {
     if (!name.trim()) return;
@@ -1306,16 +1629,58 @@ function PendingTestCenter({athletes,openCalendar}:{athletes:Athlete[];openCalen
   const [reviewZones,setReviewZones]=useState<Array<{z:string;label:string;slow:string;fast:string}>>([]);
   const [reviewTempos,setReviewTempos]=useState<Array<{label:string;targetPace:string;projectedTotal:number}>>([]);
   const [reviewState,setReviewState]=useState<"idle"|"saving"|"saved"|"error">("idle");
+  /* O teste passou a ter um começo: o treinador pede, o aluno corre e devolve
+     o tempo, e só então vem a revisão que libera as zonas. */
+  const [distanciaPedida,setDistanciaPedida]=useState(3);
+  const pedirTeste=async()=>{
+    if(!athleteName)return;
+    if(!await pergunte({titulo:`Pedir um teste de ${distanciaPedida} km para ${athleteName.split(" ")[0]}?`,descricao:"O aluno verá o pedido na área dele e devolve o tempo quando correr. As zonas só saem depois da sua revisão.",confirmar:"Pedir teste"}))return;
+    try{
+      await api.post("/api/performance-tests",{action:"request",athleteName,distanceKm:distanciaPedida});
+      await loadTests(athleteName);
+      avise("ok","Teste solicitado",`${athleteName.split(" ")[0]} já vê o pedido na área dele.`);
+    }catch(erro){
+      const detalhe=(erro as {details?:{motivo?:string;saida?:string}}).details;
+      avise("erro","Não foi possível pedir o teste",detalhe?.motivo?`${detalhe.motivo} ${detalhe.saida??""}`.trim():describeError(erro));
+    }
+  };
+  const cancelarPedido=async(id:string)=>{
+    if(!await pergunte({titulo:"Cancelar este pedido de teste?",descricao:"O aluno deixa de ver o pedido. Nenhum resultado se perde, porque ainda não há resultado.",confirmar:"Cancelar pedido",perigo:true}))return;
+    try{await api.post("/api/performance-tests",{action:"cancel_request",id});await loadTests(athleteName);avise("ok","Pedido cancelado")}
+    catch(erro){avise("erro","Não foi possível cancelar",describeError(erro))}
+  };
   useEffect(()=>{const requested=sessionStorage.getItem("zonasapp:tests-athlete");if(requested&&athletes.some(athlete=>athlete.name===requested)){setAthleteName(requested);sessionStorage.removeItem("zonasapp:tests-athlete")}},[athletes]);
   const loadTests=async(name:string)=>{if(!name){setTests([]);return}setLoading(true);try{const response=await fetch(`/api/performance-tests?athlete=${encodeURIComponent(name)}`);if(!response.ok)throw new Error();const data=await response.json();setTests(data.tests||[])}catch{setTests([])}finally{setLoading(false)}};
   useEffect(()=>{if(!athleteName&&athletes[0]?.name)setAthleteName(athletes[0].name)},[athletes,athleteName]);
   useEffect(()=>{if(athleteName)window.dispatchEvent(new CustomEvent("zonasapp:test-athlete",{detail:athleteName}))},[athleteName]);
+  /* O tempo do teste é medido pelo aluno, não digitado pelo treinador. Quando
+     um teste volta, a calculadora abaixo recebe distância e tempo prontos e o
+     treinador só confirma a idade para calcular as zonas. */
+  useEffect(()=>{
+    const devolvido=tests.find((teste:{status?:string})=>teste.status==="Aguardando revisão");
+    window.dispatchEvent(new CustomEvent("zonasapp:test-returned",{detail:devolvido??null}));
+  },[tests]);
   useEffect(()=>{const sync=(event:Event)=>{const name=(event as CustomEvent<string>).detail;if(name&&name!==athleteName)setAthleteName(name)};window.addEventListener("zonasapp:test-athlete",sync);return()=>window.removeEventListener("zonasapp:test-athlete",sync)},[athleteName]);
   useEffect(()=>{loadTests(athleteName);const refresh=()=>loadTests(athleteName);window.addEventListener("zonasapp:test-saved",refresh);return()=>window.removeEventListener("zonasapp:test-saved",refresh)},[athleteName]);
   const startReview=(test:any)=>{const zones=JSON.parse(test.zones||"[]");const tempos=JSON.parse(test.tempo_runs||"[]");setReviewTestId(test.id);setReviewState("idle");setReviewZones(zones.map((zone:any)=>({...zone,slow:paceInput(zone.slow),fast:paceInput(zone.fast)})));setReviewTempos(tempos.map((tempo:any)=>({...tempo,targetPace:paceInput(tempo.targetPace)})));setTimeout(()=>document.querySelector(".test-release-editor")?.scrollIntoView({behavior:"smooth",block:"start"}),0)};
   const saveReview=async(action:"review"|"approve")=>{setReviewState("saving");const zones=reviewZones.map(zone=>({...zone,slow:paceSeconds(zone.slow),fast:paceSeconds(zone.fast)}));const tempoRuns=reviewTempos.map(tempo=>({...tempo,targetPace:paceSeconds(tempo.targetPace)}));try{await api.post("/api/performance-tests",{id:reviewTestId,action,zones,tempoRuns});await loadTests(athleteName);setReviewState("saved");if(action==="approve")setReviewTestId("")}catch{setReviewState("error")}};
   const pending=tests.filter(test=>test.status!=="Aprovado");
-  return <><section className="pending-test-center"><header><div><span className="overline">LIBERAÇÃO DAS ZONAS</span><h2>Testes aguardando liberação</h2><p>Revise e aprove aqui. Depois disso, as zonas ficam disponíveis para montar os treinos.</p></div><b>{pending.length} PENDENTE(S)</b></header><label>Aluno<select value={athleteName} onChange={event=>{setAthleteName(event.target.value);setReviewTestId("");setReviewState("idle")}}>{athletes.map(athlete=><option key={athlete.name}>{athlete.name}</option>)}</select></label>{loading?<p>Carregando testes de {athleteName}…</p>:pending.length===0?<div className="pending-test-empty">Nenhum teste de {athleteName||"aluno selecionado"} aguardando liberação.</div>:pending.map(test=><article key={test.id}><div><small>{String(test.test_date).split("-").reverse().join("/")} · {test.distance_km} km</small><strong>{duration(Number(test.total_seconds))}</strong><span>{test.status}</span></div><button className="gold" onClick={()=>startReview(test)}>Revisar e liberar zonas →</button></article>)}</section>{reviewTestId&&<section className="zone-review-editor test-release-editor"><header><div><span className="overline">REVISÃO DO TREINADOR</span><h3>Ajuste e libere as zonas de {athleteName}</h3></div><button onClick={()=>setReviewTestId("")}>×</button></header><p>Confira os ritmos no formato min:seg. Ao aprovar, eles passam a ser usados nos treinos estruturados.</p><div className="review-zone-grid">{reviewZones.map((zone,index)=><article key={zone.z}><b>{zone.z}</b><span>{zone.label}</span><label>Mais lento<input value={zone.slow} onChange={event=>setReviewZones(current=>current.map((item,i)=>i===index?{...item,slow:event.target.value}:item))}/></label><label>Mais rápido<input value={zone.fast} onChange={event=>setReviewZones(current=>current.map((item,i)=>i===index?{...item,fast:event.target.value}:item))}/></label></article>)}</div><h4>Tempo Runs</h4><div className="review-tempo-grid">{reviewTempos.map((tempo,index)=><label key={tempo.label}>{tempo.label}<input value={tempo.targetPace} onChange={event=>setReviewTempos(current=>current.map((item,i)=>i===index?{...item,targetPace:event.target.value}:item))}/></label>)}</div>{reviewState==="error"&&<p className="review-error">Confira os ritmos. Exemplo válido: 5:10.</p>}<footer><button className="outline" disabled={reviewState==="saving"} onClick={()=>saveReview("review")}>Salvar rascunho</button><button className="gold" disabled={reviewState==="saving"} onClick={()=>saveReview("approve")}>{reviewState==="saving"?"Liberando...":"Aprovar e usar nos treinos ✓"}</button></footer></section>}{reviewState==="saved"&&!reviewTestId&&<div className="zones-release-success"><span><b>Zonas liberadas para os treinos de {athleteName} ✓</b><small>Agora monte a semana usando os ritmos individuais aprovados.</small></span><button className="gold" onClick={()=>openCalendar(athleteName)}>Montar treino de {athleteName.split(" ")[0]} →</button></div>}</>;
+  return <><section className="pending-test-center"><header><div><span className="overline">LIBERAÇÃO DAS ZONAS</span><h2>Testes aguardando liberação</h2><p>Peça o teste, espere o aluno devolver o tempo e revise. As zonas ficam disponíveis depois da sua aprovação.</p></div><b>{plural(pending.length, "PENDENTE", "PENDENTES")}</b></header>
+    <div className="test-request">
+      <span className="overline">PEDIR UM TESTE</span>
+      <div>{[3,5].map(km=><button key={km} className={distanciaPedida===km?"selected":""} onClick={()=>setDistanciaPedida(km)}>{km} km</button>)}</div>
+      <button className="gold" disabled={!athleteName} onClick={()=>void pedirTeste()}>Pedir teste a {athleteName.split(" ")[0]||"—"}</button>
+      {tests.filter(teste=>teste.status==="Solicitado").map(teste=>
+        <p key={teste.id} className="test-request-open">Teste de {teste.distance_km} km pedido e ainda não realizado. <button onClick={()=>void cancelarPedido(teste.id)}>Cancelar pedido</button></p>)}
+      {tests.filter(teste=>teste.status==="Aguardando revisão").map(teste=>
+        <div key={teste.id} className="test-request-back">
+          <p>{athleteName.split(" ")[0]} devolveu o teste de {teste.distance_km} km em {duration(Number(teste.total_seconds))}. Revise abaixo para liberar as zonas.</p>
+          {/* O número sozinho não conta tudo: um teste feito com dor pede outra
+              leitura dos ritmos que um teste feito bem. */}
+          {teste.effort&&<span className="test-back-esforco">Terminou: <b>{teste.effort}</b>{teste.source_format?` · medido por arquivo ${teste.source_format}${teste.source_km?` (${Number(teste.source_km).toLocaleString("pt-BR",{maximumFractionDigits:2})} km)`:""}`:" · tempo informado à mão"}</span>}
+          {teste.athlete_note&&<em className="test-back-nota">“{teste.athlete_note}”</em>}
+        </div>)}
+    </div><label>Aluno<select value={athleteName} onChange={event=>{setAthleteName(event.target.value);setReviewTestId("");setReviewState("idle")}}>{athletes.map(athlete=><option key={athlete.name}>{athlete.name}</option>)}</select></label>{loading?<p>Carregando testes de {athleteName}…</p>:pending.length===0?<div className="pending-test-empty">Nenhum teste de {athleteName||"aluno selecionado"} aguardando liberação.</div>:pending.map(test=><article key={test.id}><div><small>{String(test.test_date).split("-").reverse().join("/")} · {test.distance_km} km</small><strong>{duration(Number(test.total_seconds))}</strong><span>{test.status}</span></div><button className="gold" onClick={()=>startReview(test)}>Revisar e liberar zonas →</button></article>)}</section>{reviewTestId&&<section className="zone-review-editor test-release-editor"><header><div><span className="overline">REVISÃO DO TREINADOR</span><h3>Ajuste e libere as zonas de {athleteName}</h3></div><button onClick={()=>setReviewTestId("")}>×</button></header><p>Confira os ritmos no formato min:seg. Ao aprovar, eles passam a ser usados nos treinos estruturados.</p><div className="review-zone-grid">{reviewZones.map((zone,index)=><article key={zone.z}><b>{zone.z}</b><span>{zone.label}</span><label>Mais lento<input value={zone.slow} onChange={event=>setReviewZones(current=>current.map((item,i)=>i===index?{...item,slow:event.target.value}:item))}/></label><label>Mais rápido<input value={zone.fast} onChange={event=>setReviewZones(current=>current.map((item,i)=>i===index?{...item,fast:event.target.value}:item))}/></label></article>)}</div><h4>Tempo Runs</h4><div className="review-tempo-grid">{reviewTempos.map((tempo,index)=><label key={tempo.label}>{tempo.label}<input value={tempo.targetPace} onChange={event=>setReviewTempos(current=>current.map((item,i)=>i===index?{...item,targetPace:event.target.value}:item))}/></label>)}</div>{reviewState==="error"&&<p className="review-error">Confira os ritmos. Exemplo válido: 5:10.</p>}<footer><button className="outline" disabled={reviewState==="saving"} onClick={()=>saveReview("review")}>Salvar rascunho</button><button className="gold" disabled={reviewState==="saving"} onClick={()=>saveReview("approve")}>{reviewState==="saving"?"Liberando...":"Aprovar e usar nos treinos ✓"}</button></footer></section>}{reviewState==="saved"&&!reviewTestId&&<div className="zones-release-success"><span><b>Zonas liberadas para os treinos de {athleteName} ✓</b><small>Agora monte a semana usando os ritmos individuais aprovados.</small></span><button className="gold" onClick={()=>openCalendar(athleteName)}>Montar treino de {athleteName.split(" ")[0]} →</button></div>}</>;
 }
 
 function TestCalculator({ athletes, testDistance, setTestDistance, minutes, setMinutes, seconds, setSeconds, age, setAge, calc }: any) {
@@ -1324,6 +1689,23 @@ function TestCalculator({ athletes, testDistance, setTestDistance, minutes, setM
   const [saveState,setSaveState]=useState<"idle"|"saving"|"saved"|"error">("idle");
   const [saveError,setSaveError]=useState("");
   useEffect(()=>{const sync=(event:Event)=>{const name=(event as CustomEvent<string>).detail;if(name)setAthleteName(name)};window.addEventListener("zonasapp:test-athlete",sync);return()=>window.removeEventListener("zonasapp:test-athlete",sync)},[]);
+  /* Teste devolvido pelo aluno: distância e tempo vêm dele e não se digitam
+     aqui. Sem um teste devolvido, a calculadora segue aberta para um teste
+     feito fora do aplicativo. */
+  const [devolvido,setDevolvido]=useState<{id:string;distance_km:number;total_seconds:number;test_date:string}|null>(null);
+  useEffect(()=>{
+    const receber=(event:Event)=>{
+      const teste=(event as CustomEvent<{id:string;distance_km:number;total_seconds:number;test_date:string}|null>).detail;
+      setDevolvido(teste);
+      if(!teste)return;
+      setTestDistance(Number(teste.distance_km));
+      setMinutes(Math.floor(Number(teste.total_seconds)/60));
+      setSeconds(Number(teste.total_seconds)%60);
+      if(teste.test_date)setTestDate(teste.test_date);
+    };
+    window.addEventListener("zonasapp:test-returned",receber);
+    return()=>window.removeEventListener("zonasapp:test-returned",receber);
+  },[setTestDistance,setMinutes,setSeconds]);
   const saveTest=async()=>{
     setSaveState("saving");setSaveError("");
     try{
@@ -1331,7 +1713,7 @@ function TestCalculator({ athletes, testDistance, setTestDistance, minutes, setM
       setSaveState("saved");window.dispatchEvent(new CustomEvent("zonasapp:test-athlete",{detail:athleteName}));window.dispatchEvent(new Event("zonasapp:test-saved"));
     }catch(error){setSaveError(describeError(error,"Não foi possível salvar o teste. Confira os dados."));setSaveState("error")}
   };
-  return <div className="test-grid"><section className="test-form"><span className="overline">NOVO TESTE</span><h2>Teste de desempenho</h2><p>Informe o resultado. Os cálculos são atualizados imediatamente.</p><label>Aluno<select value={athleteName} onChange={e=>{setAthleteName(e.target.value);setSaveState("idle")}}>{athletes.map((athlete:Athlete)=><option key={athlete.name}>{athlete.name}</option>)}</select></label><label>Data do teste<input type="date" value={testDate} onChange={e=>setTestDate(e.target.value)} /></label><label>Distância do teste<div className="segmented"><button className={testDistance === 3 ? "selected" : ""} onClick={() => setTestDistance(3)}>3 km</button><button className={testDistance === 5 ? "selected" : ""} onClick={() => setTestDistance(5)}>5 km</button></div></label><div className="field-row"><label>Minutos<input type="number" min="5" value={minutes} onChange={e => setMinutes(+e.target.value)} /></label><label>Segundos<input type="number" min="0" max="59" value={seconds} onChange={e => setSeconds(Math.min(59, +e.target.value))} /></label></div><label>Idade do atleta<input type="number" min="10" max="90" value={age} onChange={e => setAge(+e.target.value)} /></label><div className="notice">As zonas de ritmo e os Tempo Runs abaixo são provisórios até a validação do treinador.</div>{saveState==="error"&&<p className="test-save-state error">{saveError||"Não foi possível salvar o teste."}</p>}<button className="gold wide" disabled={!athleteName||saveState==="saving"} onClick={saveTest}>{saveState==="saving"?"Salvando...":saveState==="saved"?"Teste salvo para revisão ✓":"Salvar teste para revisão"}</button></section><section className="test-results"><div className="result-head"><div><span className="overline">RESULTADO CALCULADO · {athleteName||"SELECIONE O ALUNO"}</span><h2>{testDistance} km em {duration(calc.total)}</h2></div><span className="review">AGUARDANDO REVISÃO</span></div><div className="metrics"><article><small>VAM</small><b>{calc.vam.toFixed(2)}</b><span>km/h</span></article><article><small>VO₂ ESTIMADO</small><b>{calc.vo2.toFixed(1)}</b><span>ml/kg/min</span></article><article><small>RITMO DO TESTE</small><b>{pace(calc.paceSeconds)}</b><span>referência principal</span></article><article><small>FCMÁX ESTIMADA</small><b>{calc.fcMax}</b><span>bpm · 220 − idade</span></article></div><h3>Tempo Run por distância</h3><p className="tempo-note">O ritmo desacelera progressivamente conforme a distância aumenta. As referências são estimadas pelo resultado do teste e podem ser ajustadas antes da publicação.</p><div className="tempo-runs">{calc.tempoRuns.map((t: any) => <article key={t.label}><small>TEMPO RUN</small><strong>{t.label}</strong><b>{pace(t.targetPace)}</b><span>tempo previsto {duration(t.projectedTotal)}</span></article>)}</div><div className="zone-box"><header><h3>Zonas de ritmo provisórias</h3><small>Baseadas em percentuais da VAM</small></header>{calc.zones.map((z: any) => <div className="zone" key={z.z}><i className={z.z.toLowerCase()}/><b>{z.z}</b><span>{z.label}</span><strong>{pace(z.slow)} – {pace(z.fast)}</strong></div>)}</div></section></div>;
+  return <div className="test-grid"><section className="test-form"><span className="overline">NOVO TESTE</span><h2>Teste de desempenho</h2><p>{devolvido?"O aluno devolveu o tempo. Confirme a idade e libere as zonas.":"Para um teste feito fora do aplicativo. O caminho normal é pedir o teste acima e esperar o aluno devolver."}</p>{devolvido&&<p className="test-from-student">Distância e tempo vieram do aluno e não se editam aqui.</p>}<label>Aluno<select value={athleteName} onChange={e=>{setAthleteName(e.target.value);setSaveState("idle")}}>{athletes.map((athlete:Athlete)=><option key={athlete.name}>{athlete.name}</option>)}</select></label><label>Data do teste<input type="date" value={testDate} onChange={e=>setTestDate(e.target.value)} /></label><label>Distância do teste<div className="segmented"><button className={testDistance === 3 ? "selected" : ""} disabled={Boolean(devolvido)} onClick={() => setTestDistance(3)}>3 km</button><button className={testDistance === 5 ? "selected" : ""} disabled={Boolean(devolvido)} onClick={() => setTestDistance(5)}>5 km</button></div></label><div className="field-row"><label>Minutos<input type="number" min="5" value={minutes} readOnly={Boolean(devolvido)} onChange={e => setMinutes(+e.target.value)} /></label><label>Segundos<input type="number" min="0" max="59" value={seconds} readOnly={Boolean(devolvido)} onChange={e => setSeconds(Math.min(59, +e.target.value))} /></label></div><label>Idade do atleta<input type="number" min="10" max="90" value={age} onChange={e => setAge(+e.target.value)} /></label><div className="notice">As zonas de ritmo e os Tempo Runs abaixo são provisórios até a validação do treinador.</div>{saveState==="error"&&<p className="test-save-state error">{saveError||"Não foi possível salvar o teste."}</p>}<button className="gold wide" disabled={!athleteName||saveState==="saving"} onClick={saveTest}>{saveState==="saving"?"Salvando...":saveState==="saved"?"Teste salvo para revisão ✓":"Salvar teste para revisão"}</button></section><section className="test-results"><div className="result-head"><div><span className="overline">RESULTADO CALCULADO · {athleteName||"SELECIONE O ALUNO"}</span><h2>{testDistance} km em {duration(calc.total)}</h2></div><span className="review">AGUARDANDO REVISÃO</span></div><div className="metrics"><article><small>VAM</small><b>{calc.vam.toFixed(2)}</b><span>km/h</span></article><article><small>VO₂ ESTIMADO</small><b>{calc.vo2.toFixed(1)}</b><span>ml/kg/min</span></article><article><small>RITMO DO TESTE</small><b>{pace(calc.paceSeconds)}</b><span>referência principal</span></article><article><small>FCMÁX ESTIMADA</small><b>{calc.fcMax}</b><span>bpm · 220 − idade</span></article></div><h3>Tempo Run por distância</h3><p className="tempo-note">O ritmo desacelera progressivamente conforme a distância aumenta. As referências são estimadas pelo resultado do teste e podem ser ajustadas antes da publicação.</p><div className="tempo-runs">{calc.tempoRuns.map((t: any) => <article key={t.label}><small>TEMPO RUN</small><strong>{t.label}</strong><b>{pace(t.targetPace)}</b><span>tempo previsto {duration(t.projectedTotal)}</span></article>)}</div><div className="zone-box"><header><h3>Zonas de ritmo provisórias</h3><small>Baseadas em percentuais da VAM</small></header>{calc.zones.map((z: any) => <div className="zone" key={z.z}><i className={z.z.toLowerCase()}/><b>{z.z}</b><span>{z.label}</span><strong>{pace(z.slow)} – {pace(z.fast)}</strong></div>)}</div></section></div>;
 }
 
 function Calendar() {
@@ -1405,8 +1787,8 @@ function Calendar() {
     };
     exportButton.addEventListener("click",()=>{
       const records=filteredHistory(filter.value);
-      if(!records.length){window.alert("Não há registros neste filtro para exportar.");return}
-      const report=window.open("","_blank");if(!report){window.alert("Permita a abertura da janela para gerar o relatório.");return}
+      if(!records.length){avise("atencao","Nada para exportar","Nenhum registro corresponde ao filtro escolhido.");return}
+      const report=window.open("","_blank");if(!report){avise("erro","O navegador bloqueou a janela do relatório","Permita janelas pop-up para este endereço e gere o relatório de novo.");return}
       const style=report.document.createElement("style");style.textContent="body{font:14px Arial;color:#171717;margin:36px}header{border-bottom:3px solid #b68b2f;padding-bottom:16px;margin-bottom:22px}h1{margin:0 0 6px}p{color:#555}article{padding:14px 0;border-bottom:1px solid #ccc}article b,article span,article small{display:block}article small{margin:5px 0;color:#555}article span{line-height:1.5}@media print{body{margin:18mm}button{display:none}}";report.document.head.appendChild(style);
       const header=report.document.createElement("header");const title=report.document.createElement("h1");title.textContent="ZonasApp · Histórico da semana";const subtitle=report.document.createElement("p");subtitle.textContent=`${selected} · ${current.plan} · semana ${calendarPlanWeek} de ${currentPlanningTotal} · ${weekDateLabel(weekStart)}`;header.append(title,subtitle);report.document.body.appendChild(header);
       records.forEach(item=>{const article=report.document.createElement("article");const action=report.document.createElement("b");action.textContent=item.action;const meta=report.document.createElement("small");meta.textContent=`${new Date(Number(item.created_at)).toLocaleString("pt-BR")} · ${item.actor_email}`;const detail=report.document.createElement("span");let fields:string[]=[];try{fields=JSON.parse(item.changed_fields||"[]")}catch{}detail.textContent=fields.filter(field=>field.startsWith("base:")).map(field=>field.replace("base:","").replace(":",": ")).join(" · ")||`Campos alterados: ${fields.join(", ")||"registro de conferência"}`;article.append(action,meta,detail);report.document.body.appendChild(article)});
@@ -1441,12 +1823,12 @@ function Calendar() {
     if(!released){
       const incompleteDays=current.days.filter(day=>!sessions[day]||sessions[day].removed||!sessions[day].steps?.length);
       if(incompleteDays.length){
-        window.alert(`Complete os treinos estruturados antes de liberar. Falta revisar: ${incompleteDays.join(", ")}.`);
+        avise("atencao","Falta estruturar treino antes de liberar",`Revise ${incompleteDays.join(", ")} — cada dia disponível precisa de um treino com etapas.`);
         return;
       }
       const baseSessions=await sessionsForSavedPlanWeek(current.plan,calendarPlanWeek,current.days);
       if(!Object.keys(baseSessions).length){
-        window.alert(`Não foi possível conferir a semana ${calendarPlanWeek} da planilha ${current.plan}. Complete a planilha-base antes de liberar.`);
+        avise("erro",`Não foi possível conferir a semana ${calendarPlanWeek}`,`A planilha ${current.plan} não tem os treinos da semana ${calendarPlanWeek} cadastrados. Complete a planilha-base em “Planilhas” antes de liberar.`);
         return;
       }
       const comparison=current.days.map(day=>{
@@ -1456,11 +1838,25 @@ function Calendar() {
         return{day,status:JSON.stringify(currentSession)===JSON.stringify(planned)?"IGUAL À BASE":"ALTERADO"};
       });
       const differences=comparison.filter(item=>item.status!=="IGUAL À BASE");
-      const comparisonText=comparison.map(item=>`${item.day}: ${item.status}`).join("\n");
-      const summary=differences.length?`${differences.length} treino(s) diferente(s) da planilha-base. Confira se as alterações são intencionais.`:"Todos os treinos conferem com a planilha-base.";
-      const recentHistory=weekHistory.slice(0,3).map(item=>`${new Date(Number(item.created_at)).toLocaleString("pt-BR")} · ${item.actor_email} · ${item.action}`).join("\n");
-      if(!window.confirm(`CONFERÊNCIA AUTOMÁTICA\n\n${selected}\n${current.plan} · semana ${calendarPlanWeek} de ${currentPlanningTotal}\nDatas: ${weekTitle}\n\n${comparisonText}\n\n${summary}${recentHistory?`\n\nHISTÓRICO RECENTE\n${recentHistory}`:""}\n\nLiberar esta semana para o aluno?`))return;
-      await saveWeek("Liberada",comparison.map(item=>`${item.day}:${item.status}`));
+      const comparisonText=comparison.map(item=>`${item.day} · ${item.status.toLocaleLowerCase("pt-BR")}`);
+      const summary=differences.length?`${plural(differences.length, "treino diferente", "treinos diferentes")} da planilha-base. Confira se as alterações são intencionais.`:"Todos os treinos conferem com a planilha-base.";
+      const recentHistory=weekHistory.slice(0,3).map(item=>`${new Date(Number(item.created_at)).toLocaleString("pt-BR")} · ${item.actor_email} · ${item.action}`);
+      const aceitou=await pergunte({
+        titulo:`Liberar esta semana para ${selected.split(" ")[0]}?`,
+        descricao:`${current.plan} · semana ${calendarPlanWeek} de ${currentPlanningTotal} · ${weekTitle}`,
+        linhas:comparisonText,
+        resumo:summary,
+        historico:recentHistory,
+        confirmar:"Liberar para o aluno →",
+      });
+      if(!aceitou){
+        avise("atencao","Liberação cancelada","A semana continua como rascunho e o aluno ainda não a vê.");
+        return;
+      }
+      const liberou=await saveWeek("Liberada",comparison.map(item=>`${item.day}:${item.status}`));
+      avise(liberou?"ok":"erro",
+        liberou?"Semana liberada":"Não foi possível liberar a semana",
+        liberou?`${selected.split(" ")[0]} já consegue ver os treinos desta semana.`:"O servidor recusou a gravação. Confira sua conexão e tente novamente.");
       return;
     }
     saveWeek("Trancada");
@@ -1468,7 +1864,30 @@ function Calendar() {
   const openWorkout=(day?:string)=>setDrawerDay(day||current.days[0]||"TER");
   const attachWorkout=(session:StructuredSession)=>{if(!drawerDay)return;setSessions(value=>({...value,[drawerDay]:session}));setReleased(false);setSaveState("idle");setDrawerDay(null)};
   const sessionFor=(day:string):StructuredSession=>sessions[day]||{type:schedule[day]?.[0]||"Treino",description:schedule[day]?.[1]||"A definir"};
-  const confirmMove=()=>{if(!moveFrom||!moveTo||moveFrom===moveTo)return;const source=sessionFor(moveFrom);const target=sessionFor(moveTo);setSessions(value=>({...value,[moveTo]:source,[moveFrom]:target}));setReleased(false);setSaveState("idle");setMoveFrom(null);setMoveTo("")};
+  /* Arrastar um treino para outro dia é a mesma troca do botão "Mover", só
+     que sem passar pelo formulário. Os dois caminhos chamam a mesma função,
+     para não existirem duas regras de troca. */
+  const [arrastando,setArrastando]=useState("");
+  const [alvoDoArrasto,setAlvoDoArrasto]=useState("");
+  const trocarDias=(origem:string,destino:string)=>{
+    if(!origem||!destino||origem===destino)return;
+    const saindo=sessionFor(origem);const chegando=sessions[destino];
+    setSessions(valor=>{const proximo={...valor,[destino]:saindo};
+      if(chegando)proximo[origem]=chegando; else delete proximo[origem];
+      return proximo});
+    setReleased(false);setSaveState("idle");
+  };
+  /* A origem vem do próprio evento, não do estado: o dia foi guardado no
+     `dataTransfer` no início do arrasto, e ler de lá dispensa esperar o React
+     propagar o estado entre o início e a soltura. O estado fica só para o
+     destaque visual. */
+  const soltarNoDia=(destino:string,evento:React.DragEvent)=>{
+    const origem=(()=>{try{return evento.dataTransfer.getData("text/plain")}catch{return ""}})()||arrastando;
+    setArrastando("");setAlvoDoArrasto("");
+    if(!origem||!current.days.includes(destino))return;
+    trocarDias(origem,destino);
+  };
+  const confirmMove=()=>{if(!moveFrom||!moveTo||moveFrom===moveTo)return;trocarDias(moveFrom,moveTo);setMoveFrom(null);setMoveTo("")};
   const confirmDelete=()=>{if(!deleteDay)return;setSessions(value=>({...value,[deleteDay]:{type:"Descanso",description:"Treino removido pelo treinador",removed:true}}));setReleased(false);setSaveState("idle");setDeleteDay(null)};
   const copyPreviousWeek=async()=>{setCopyState("loading");const previousStart=shiftIsoDate(weekStart,-7);try{const response=await fetch(`/api/training-weeks?athlete=${encodeURIComponent(selected)}&weekStart=${previousStart}`);if(!response.ok)throw new Error("load_failed");const data=await response.json();if(!data.week){setCopyState("empty");return}const previousSessions=JSON.parse(data.week.sessions||"{}");setSessions(previousSessions);setReleased(false);setCopied(true);setSaveState("idle");setCopyState("copied")}catch{setCopyState("error")}};
   const openCopyOther=()=>{const source=plannerAthletes.find(athlete=>athlete.name!==selected)?.name||"";setCopyOtherAthlete(source);setCopyOtherWeek(weekStart);setCopyOtherDays([...current.days]);setCopyOtherState("idle");setCopyOtherOpen(true)};
@@ -1481,13 +1900,24 @@ function Calendar() {
   if(!plannerAthletes.length)return <section className="calendar-empty"><b>Nenhum aluno disponível para receber treino</b><span>Cadastre um aluno na aba “Alunos”. Cadastros bloqueados não aparecem aqui.</span></section>;
   const readyWorkoutCount=current.days.filter(day=>sessions[day]&&!sessions[day].removed).length;
   const workflowStep=released?3:readyWorkoutCount===current.days.length&&current.days.length>0?2:1;
-  return <><div className="planner-head"><div><span className="overline">PROGRAMAÇÃO SEMANAL</span><h2>Semana de {weekTitle}</h2><p>Escolha o aluno, confira os treinos e libere. A tela mostra exatamente o que falta.</p></div><div className="planner-actions"><button className="outline" disabled={copyState==="loading"} onClick={copyPreviousWeek}>{copyState==="loading"?"Buscando semana anterior...":copied?"Semana anterior copiada ✓":"Copiar semana anterior"}</button><button className={replaceBaseConfirm?"danger-confirm":"outline"} disabled={replaceBaseState==="saving"} onClick={replaceWithBasePlanWeek}>{replaceBaseState==="saving"?"Carregando…":replaceBaseConfirm?`Confirmar semana ${calendarPlanWeek}`:`Usar semana ${calendarPlanWeek} da planilha-base`}</button><button className="gold" onClick={()=>openWorkout()}>+ Montar treino do zero</button></div></div><section className="week-navigator"><button onClick={()=>{setCalendarPlanWeek(value=>Math.max(1,value-1));setWeekStart(value=>shiftIsoDate(value,-7))}}>← Semana {Math.max(1,calendarPlanWeek-1)}</button><label>Semana {calendarPlanWeek} de {currentPlanningTotal}<input aria-label="Escolher data da semana" type="date" value={weekStart} onChange={e=>{if(!e.target.value)return;const target=mondayOf(e.target.value);const delta=Math.round((new Date(`${target}T12:00:00`).getTime()-new Date(`${weekStart}T12:00:00`).getTime())/604800000);setCalendarPlanWeek(value=>Math.min(currentPlanningTotal,Math.max(1,value+delta)));setWeekStart(target)}}/></label><button onClick={()=>{setCalendarPlanWeek(value=>Math.min(currentPlanningTotal,value+1));setWeekStart(value=>shiftIsoDate(value,7))}}>Semana {Math.min(currentPlanningTotal,calendarPlanWeek+1)} →</button></section><section className="coach-week-guide"><header><div><span className="overline">FLUXO RÁPIDO</span><h3>Prepare a semana em 3 passos</h3></div><b>{released?"PRONTO PARA O ALUNO":`${readyWorkoutCount}/${current.days.length} TREINOS PRONTOS`}</b></header><div>{[{number:1,title:"Aluno e semana",detail:`${selected.split(" ")[0]} · semana ${calendarPlanWeek}`,done:workflowStep>1},{number:2,title:"Conferir treinos",detail:`${readyWorkoutCount} de ${current.days.length} dias prontos`,done:workflowStep>2},{number:3,title:"Liberar ao aluno",detail:released?"Aluno já pode visualizar":"Só aparece depois de liberar",done:released}].map(step=><article key={step.number} className={`${step.done?"done":""} ${workflowStep===step.number?"active":""}`}><i>{step.done?"✓":step.number}</i><span><b>{step.title}</b><small>{step.detail}</small></span></article>)}</div></section>{copyState==="empty"&&<div className="copy-week-message empty">Nenhuma programação foi encontrada na semana anterior deste aluno.</div>}{copyState==="error"&&<div className="copy-week-message error">Não foi possível buscar a semana anterior. Tente novamente.</div>}{copyState==="copied"&&<div className="copy-week-message success">Treinos copiados para esta semana como rascunho. Revise os dias antes de salvar.</div>}{replaceBaseConfirm&&<div className="base-week-replace-confirm"><div><b>Substituir os treinos atuais pela semana {calendarPlanWeek} da planilha {current.plan}?</b><span>A semana ficará como rascunho. O aluno deixará de ver a versão anterior até você revisar e liberar novamente.</span></div><button className="outline" onClick={()=>{setReplaceBaseConfirm(false);setReplaceBaseState("idle")}}>Cancelar</button></div>}{replaceBaseState==="done"&&<div className="copy-week-message success">Semana {calendarPlanWeek} correta carregada da planilha-base como rascunho ✓</div>}{replaceBaseState==="error"&&<div className="copy-week-message error">Não foi possível carregar esta semana da planilha-base.</div>}<section className="planner-layout"><div className="weekly-planner"><div className="athlete-week-head"><label>Aluno<select value={selected} onChange={e=>{setSelected(e.target.value);setReleased(false);setCopied(false);setConfirmLock(false)}}>{plannerAthletes.map(a=><option key={a.name}>{a.name}</option>)}</select></label><div><small>PLANILHA-BASE</small><b>{current.plan}</b></div><div><small>FASE E SEMANA</small><b>{phaseForPlanWeek(current.plan,calendarPlanWeek)} · {calendarPlanWeek} de {currentPlanningTotal}</b></div><span className={released?"week-released":"week-draft"}>{released?"SEMANA LIBERADA":"AGUARDANDO LIBERAÇÃO"}</span></div><div className="available-note"><b>Dias disponíveis: {current.days.join(", ")}</b><span>{current.days.length===3?"Treinos prioritários mantidos: intervalado/ritmo, Tempo Run e longão.":"Programação completa da planilha-base."}</span></div><div className="week">{labels.map((day,i)=>{const fallback=current.days.includes(day)?schedule[day]:undefined;const workout=sessions[day];return <article key={day} className={current.days.includes(day)?"available-day":""}><header><small>{day}</small><b>{dates[i]}</b></header>{current.days.includes(day)?workout?.removed?<div className="session removed-session-card"><small>DESCANSO</small><b>Treino removido</b><span>Este dia ficará sem treino após salvar.</span><button onClick={()=>openWorkout(day)}>Adicionar novo treino</button></div>:<div className="session"><small>{workout?.type||fallback?.[0]||"Treino"}</small><b>{workout?.title||workout?.description||fallback?.[1]||"Adicionar treino"}</b><span>{workout?.steps?.length?`${workout.steps.length} etapas estruturadas · pronto para salvar`:"Ritmos individuais do aluno"}</span><div className="session-actions"><button onClick={()=>openWorkout(day)}>Abrir treino completo</button><button onClick={()=>{setMoveFrom(day);setMoveTo(current.days.find(item=>item!==day)||"")}}>Mover</button><button className="delete" onClick={()=>setDeleteDay(day)}>Excluir</button></div></div>:<p>INDISPONÍVEL</p>}</article>})}</div>{saveState!=="idle"&&<div className={`week-save-state ${saveState}`}>{saveState==="saving"?"Salvando programação...":saveState==="saved"?"Programação salva com segurança ✓":"Não foi possível salvar. Tente novamente."}</div>}{moveFrom&&<div className="week-action-confirm"><div><b>Mover treino de {moveFrom}</b><span>Se o destino já tiver treino, os dois trocarão de dia.</span></div><label>Novo dia<select value={moveTo} onChange={e=>setMoveTo(e.target.value)}>{current.days.filter(day=>day!==moveFrom).map(day=><option key={day}>{day}</option>)}</select></label><button className="outline" onClick={()=>{setMoveFrom(null);setMoveTo("")}}>Cancelar</button><button className="gold" onClick={confirmMove}>Confirmar troca</button></div>}{deleteDay&&<div className="week-action-confirm delete-confirm"><div><b>Excluir o treino de {deleteDay}?</b><span>Ele será retirado do rascunho. O aluno só verá a mudança depois de salvar e liberar.</span></div><button className="outline" onClick={()=>setDeleteDay(null)}>Cancelar</button><button className="danger-confirm" onClick={confirmDelete}>Confirmar exclusão</button></div>}{advanceConfirm&&<div className="advance-confirm" role="alert"><div><b>Avançar {selected.split(" ")[0]} para a semana {nextPlanningWeek}?</b><span>Os treinos próprios da semana seguinte serão carregados como rascunho. Revise e libere somente quando estiver correto.</span></div><button className="outline" onClick={()=>{setAdvanceConfirm(false);setAdvanceState("idle")}}>Cancelar</button></div>}{advanceState==="error"&&<div className="advance-error">Não foi possível avançar a semana. Tente novamente.</div>}{confirmLock&&<div className="sensitive-confirm" role="alert"><div><b>Trancar a semana de {selected}?</b><span>Os treinos deixarão de aparecer imediatamente na área do aluno.</span></div><button className="outline" onClick={()=>setConfirmLock(false)}>Cancelar</button></div>}<div className="planner-footer"><div><b>{current.days.length} treinos programados</b><span>{current.days.length===3?"1 treino complementar retirado automaticamente.":"Todos os treinos-base foram mantidos."}</span></div><div className="week-actions">{released&&currentPlanningWeek<currentPlanningTotal&&<button className={advanceConfirm?"advance-ready":"outline"} disabled={advanceState==="saving"} onClick={approveWeekAdvance}>{advanceState==="saving"?"Avançando...":advanceConfirm?"Confirmar avanço autorizado":`Avançar para semana ${nextPlanningWeek}`}</button>}<button className="outline" onClick={()=>saveWeek("Rascunho")}>Salvar rascunho</button><button className={confirmLock?"danger-confirm":released?"outline":"gold"} disabled={saveState==="saving"} onClick={changeWeekVisibility}>{confirmLock?"Confirmar: trancar semana":released?"Trancar semana":"Liberar semana para o aluno →"}</button></div></div></div><aside className="programming-status"><header><span className="overline">CONTROLE RÁPIDO</span><h3>Alunos desta semana</h3><p>Veja quem ainda precisa receber treino.</p></header>{plannerAthletes.map(a=><button key={a.name} className={selected===a.name?"selected":""} onClick={()=>{setSelected(a.name);setReleased(a.status==="Liberada");setCopied(false);setConfirmLock(false)}}><span><b>{a.name}</b><small>{a.plan} · {a.week}</small></span><em className={a.status==="Sem treino"?"missing":a.status==="Revisar"?"review":a.status==="Liberada"?"released":"ready"}>{a.status}</em></button>)}<div className="programming-summary"><span><b>{statusCounts.missing}</b> sem treino</span><span><b>{statusCounts.review}</b> para revisar</span><span><b>{statusCounts.released}</b> liberada(s)</span></div><button className="copy-athlete" onClick={openCopyOther}>Copiar treino de outro aluno</button></aside></section>{copyOtherOpen&&<div className="overlay" onMouseDown={e=>e.target===e.currentTarget&&setCopyOtherOpen(false)}><aside className="drawer copy-workout-drawer"><header><div><span className="overline">COPIAR ENTRE ALUNOS</span><h2>Escolha a origem dos treinos</h2><p>Destino: {selected} · semana de {weekTitle}</p></div><button onClick={()=>setCopyOtherOpen(false)}>×</button></header><label>Aluno de origem<select value={copyOtherAthlete} onChange={e=>{setCopyOtherAthlete(e.target.value);setCopyOtherState("idle")}}>{plannerAthletes.filter(athlete=>athlete.name!==selected).map(athlete=><option key={athlete.name}>{athlete.name}</option>)}</select></label><label>Semana de origem<input type="date" value={copyOtherWeek} onChange={e=>e.target.value&&setCopyOtherWeek(mondayOf(e.target.value))}/></label><section><small>DIAS QUE SERÃO COPIADOS</small><div className="copy-day-picker">{current.days.map(day=><button key={day} className={copyOtherDays.includes(day)?"selected":""} onClick={()=>toggleCopyDay(day)}>{day}</button>)}</div><p>Somente os dias marcados serão substituídos. Os demais treinos de {selected.split(" ")[0]} permanecerão como estão.</p></section>{copyOtherState==="empty"&&<div className="copy-other-message">Nenhum treino foi encontrado nos dias escolhidos dessa semana.</div>}{copyOtherState==="error"&&<div className="copy-other-message error">Não foi possível buscar os treinos. Tente novamente.</div>}{copyOtherState==="copied"&&<div className="copy-other-message success">Treinos copiados para o rascunho ✓</div>}<footer><button className="outline" onClick={()=>setCopyOtherOpen(false)}>Cancelar</button><button className="gold" disabled={!copyOtherDays.length||copyOtherState==="loading"} onClick={copyFromOtherAthlete}>{copyOtherState==="loading"?"Buscando treinos...":"Copiar dias escolhidos →"}</button></footer></aside></div>}{drawerDay&&<WorkoutDrawer close={()=>setDrawerDay(null)} athleteName={selected} day={drawerDay} initial={sessions[drawerDay]} weekLabel={weekTitle} onSave={attachWorkout}/>}</>
+  return <><div className="planner-head"><div><span className="overline">PROGRAMAÇÃO SEMANAL</span><h2>Semana de {weekTitle}</h2><p>Escolha o aluno, confira os treinos e libere. A tela mostra exatamente o que falta.</p></div><div className="planner-actions"><button className="outline" disabled={copyState==="loading"} onClick={copyPreviousWeek}>{copyState==="loading"?"Buscando semana anterior...":copied?"Semana anterior copiada ✓":"Copiar semana anterior"}</button><button className={replaceBaseConfirm?"danger-confirm":"outline"} disabled={replaceBaseState==="saving"} onClick={replaceWithBasePlanWeek}>{replaceBaseState==="saving"?"Carregando…":replaceBaseConfirm?`Confirmar semana ${calendarPlanWeek}`:`Usar semana ${calendarPlanWeek} da planilha-base`}</button><button className="gold" onClick={()=>openWorkout()}>+ Montar treino do zero</button></div></div><section className="week-navigator"><button onClick={()=>{setCalendarPlanWeek(value=>Math.max(1,value-1));setWeekStart(value=>shiftIsoDate(value,-7))}}>← Semana {Math.max(1,calendarPlanWeek-1)}</button><label>Semana {calendarPlanWeek} de {currentPlanningTotal}<input aria-label="Escolher data da semana" type="date" value={weekStart} onChange={e=>{if(!e.target.value)return;const target=mondayOf(e.target.value);const delta=Math.round((new Date(`${target}T12:00:00`).getTime()-new Date(`${weekStart}T12:00:00`).getTime())/604800000);setCalendarPlanWeek(value=>Math.min(currentPlanningTotal,Math.max(1,value+delta)));setWeekStart(target)}}/></label><button onClick={()=>{setCalendarPlanWeek(value=>Math.min(currentPlanningTotal,value+1));setWeekStart(value=>shiftIsoDate(value,7))}}>Semana {Math.min(currentPlanningTotal,calendarPlanWeek+1)} →</button></section><section className="coach-week-guide"><header><div><span className="overline">FLUXO RÁPIDO</span><h3>Prepare a semana em 3 passos</h3></div><b>{released?"PRONTO PARA O ALUNO":`${readyWorkoutCount}/${current.days.length} TREINOS PRONTOS`}</b></header><div>{[{number:1,title:"Aluno e semana",detail:`${selected.split(" ")[0]} · semana ${calendarPlanWeek}`,done:workflowStep>1},{number:2,title:"Conferir treinos",detail:`${readyWorkoutCount} de ${current.days.length} dias prontos`,done:workflowStep>2},{number:3,title:"Liberar ao aluno",detail:released?"Aluno já pode visualizar":"Só aparece depois de liberar",done:released}].map(step=><article key={step.number} className={`${step.done?"done":""} ${workflowStep===step.number?"active":""}`}><i>{step.done?"✓":step.number}</i><span><b>{step.title}</b><small>{step.detail}</small></span></article>)}</div></section>{copyState==="empty"&&<div className="copy-week-message empty">Nenhuma programação foi encontrada na semana anterior deste aluno.</div>}{copyState==="error"&&<div className="copy-week-message error">Não foi possível buscar a semana anterior. Tente novamente.</div>}{copyState==="copied"&&<div className="copy-week-message success">Treinos copiados para esta semana como rascunho. Revise os dias antes de salvar.</div>}{replaceBaseConfirm&&<div className="base-week-replace-confirm"><div><b>Substituir os treinos atuais pela semana {calendarPlanWeek} da planilha {current.plan}?</b><span>A semana ficará como rascunho. O aluno deixará de ver a versão anterior até você revisar e liberar novamente.</span></div><button className="outline" onClick={()=>{setReplaceBaseConfirm(false);setReplaceBaseState("idle")}}>Cancelar</button></div>}{replaceBaseState==="done"&&<div className="copy-week-message success">Semana {calendarPlanWeek} correta carregada da planilha-base como rascunho ✓</div>}{replaceBaseState==="error"&&<div className="copy-week-message error">Não foi possível carregar esta semana da planilha-base.</div>}<section className="planner-layout"><div className="weekly-planner"><div className="athlete-week-head"><label>Aluno<select value={selected} onChange={e=>{setSelected(e.target.value);setReleased(false);setCopied(false);setConfirmLock(false)}}>{plannerAthletes.map(a=><option key={a.name}>{a.name}</option>)}</select></label><div><small>PLANILHA-BASE</small><b>{current.plan}</b></div><div><small>FASE E SEMANA</small><b>{phaseForPlanWeek(current.plan,calendarPlanWeek)} · {calendarPlanWeek} de {currentPlanningTotal}</b></div><span className={released?"week-released":"week-draft"}>{released?"SEMANA LIBERADA":"AGUARDANDO LIBERAÇÃO"}</span></div><div className={`available-note${current.days.length?"":" sem-dias"}`}><b>{current.days.length?`Dias disponíveis: ${current.days.join(", ")}`:"Nenhum dia de treino cadastrado para este aluno"}</b><span>{current.days.length?(current.days.length===3?"Treinos prioritários mantidos: intervalado/ritmo, Tempo Run e longão.":"Programação completa da planilha-base."):"Enquanto não houver dias cadastrados na ficha do aluno, todos os dias ficam indisponíveis e não há como montar a semana."}</span></div><div className="week">{labels.map((day,i)=>{const fallback=current.days.includes(day)?schedule[day]:undefined;const workout=sessions[day];const podeReceber=current.days.includes(day);
+      /* Dia em que o aluno pode treinar e ainda não tem treino: é o que falta
+         preencher na semana, e por isso se destaca dos demais. */
+      const vazioEDisponivel=podeReceber&&(!sessions[day]||sessions[day].removed);
+      return <article key={day}
+        className={`${podeReceber?"available-day":""}${vazioEDisponivel?" dia-vazio":""}${arrastando===day?" arrastando":""}${alvoDoArrasto===day&&arrastando&&arrastando!==day?" alvo-do-arrasto":""}${arrastando&&!podeReceber?" recusa-arrasto":""}`}
+        onDragOver={evento=>{if(podeReceber){evento.preventDefault();if(arrastando&&arrastando!==day)setAlvoDoArrasto(day)}}}
+        onDragLeave={()=>setAlvoDoArrasto(atual=>atual===day?"":atual)}
+        onDrop={evento=>{evento.preventDefault();soltarNoDia(day,evento)}}><header><small>{day}</small><b>{dates[i]}</b></header>{current.days.includes(day)?workout?.removed?<div className="session removed-session-card"><small>DESCANSO</small><b>Treino removido</b><span>Este dia ficará sem treino após salvar.</span><button onClick={()=>openWorkout(day)}>Adicionar novo treino</button></div>:<div className="session" draggable
+        onDragStart={evento=>{setArrastando(day);evento.dataTransfer.effectAllowed="move";try{evento.dataTransfer.setData("text/plain",day)}catch{}}}
+        onDragEnd={()=>{setArrastando("");setAlvoDoArrasto("")}}
+        title="Arraste para outro dia para trocar"><small>{workout?.type||fallback?.[0]||"Treino"}</small><b>{workout?.title||workout?.description||fallback?.[1]||"Adicionar treino"}</b><span>{workout?.steps?.length?`${workout.steps.length} etapas estruturadas · pronto para salvar`:"Ritmos individuais do aluno"}</span><div className="session-actions"><button onClick={()=>openWorkout(day)}>Abrir treino completo</button><button onClick={()=>{setMoveFrom(day);setMoveTo(current.days.find(item=>item!==day)||"")}}>Mover</button><button className="delete" onClick={()=>setDeleteDay(day)}>Excluir</button></div></div>:<p>SEM TREINO</p>}</article>})}</div>{saveState!=="idle"&&<div className={`week-save-state ${saveState}`}>{saveState==="saving"?"Salvando programação...":saveState==="saved"?"Programação salva com segurança ✓":"Não foi possível salvar. Tente novamente."}</div>}{moveFrom&&<div className="week-action-confirm"><div><b>Mover treino de {moveFrom}</b><span>Se o destino já tiver treino, os dois trocarão de dia.</span></div><label>Novo dia<select value={moveTo} onChange={e=>setMoveTo(e.target.value)}>{current.days.filter(day=>day!==moveFrom).map(day=><option key={day}>{day}</option>)}</select></label><button className="outline" onClick={()=>{setMoveFrom(null);setMoveTo("")}}>Cancelar</button><button className="gold" onClick={confirmMove}>Confirmar troca</button></div>}{deleteDay&&<div className="week-action-confirm delete-confirm"><div><b>Excluir o treino de {deleteDay}?</b><span>Ele será retirado do rascunho. O aluno só verá a mudança depois de salvar e liberar.</span></div><button className="outline" onClick={()=>setDeleteDay(null)}>Cancelar</button><button className="danger-confirm" onClick={confirmDelete}>Confirmar exclusão</button></div>}{advanceConfirm&&<div className="advance-confirm" role="alert"><div><b>Avançar {selected.split(" ")[0]} para a semana {nextPlanningWeek}?</b><span>Os treinos próprios da semana seguinte serão carregados como rascunho. Revise e libere somente quando estiver correto.</span></div><button className="outline" onClick={()=>{setAdvanceConfirm(false);setAdvanceState("idle")}}>Cancelar</button></div>}{advanceState==="error"&&<div className="advance-error">Não foi possível avançar a semana. Tente novamente.</div>}{confirmLock&&<div className="sensitive-confirm" role="alert"><div><b>Trancar a semana de {selected}?</b><span>Os treinos deixarão de aparecer imediatamente na área do aluno.</span></div><button className="outline" onClick={()=>setConfirmLock(false)}>Cancelar</button></div>}<div className="planner-footer"><div><b>{plural(readyWorkoutCount,"treino programado","treinos programados")}</b><span>{current.days.length?`${plural(current.days.length,"dia disponível","dias disponíveis")} · ${current.plan}`:"Sem dias de treino cadastrados para este aluno."}</span></div><div className="week-actions">{released&&currentPlanningWeek<currentPlanningTotal&&<button className={advanceConfirm?"advance-ready":"outline"} disabled={advanceState==="saving"} onClick={approveWeekAdvance}>{advanceState==="saving"?"Avançando...":advanceConfirm?"Confirmar avanço autorizado":`Avançar para semana ${nextPlanningWeek}`}</button>}<button className="outline" onClick={()=>saveWeek("Rascunho")}>Salvar rascunho</button><button className={confirmLock?"danger-confirm":released?"outline":"gold"} disabled={saveState==="saving"} onClick={changeWeekVisibility}>{confirmLock?"Confirmar: trancar semana":released?"Trancar semana":"Liberar semana para o aluno →"}</button></div></div></div><aside className="programming-status"><header><span className="overline">CONTROLE RÁPIDO</span><h3>Alunos desta semana</h3><p>Veja quem ainda precisa receber treino.</p></header>{plannerAthletes.map(a=><button key={a.name} className={selected===a.name?"selected":""} onClick={()=>{setSelected(a.name);setReleased(a.status==="Liberada");setCopied(false);setConfirmLock(false)}}><span><b>{a.name}</b><small>{a.plan} · {a.week}</small></span><em className={a.status==="Sem treino"?"missing":a.status==="Revisar"?"review":a.status==="Liberada"?"released":"ready"}>{a.status}</em></button>)}<div className="programming-summary"><span><b>{statusCounts.missing}</b> sem treino</span><span><b>{statusCounts.review}</b> para revisar</span><span><b>{statusCounts.released}</b> {statusCounts.released === 1 ? "liberada" : "liberadas"}</span></div><button className="copy-athlete" onClick={openCopyOther}>Copiar treino de outro aluno</button></aside></section>{copyOtherOpen&&<div className="overlay" onMouseDown={e=>e.target===e.currentTarget&&setCopyOtherOpen(false)}><aside className="drawer copy-workout-drawer"><header><div><span className="overline">COPIAR ENTRE ALUNOS</span><h2>Escolha a origem dos treinos</h2><p>Destino: {selected} · semana de {weekTitle}</p></div><button onClick={()=>setCopyOtherOpen(false)}>×</button></header><label>Aluno de origem<select value={copyOtherAthlete} onChange={e=>{setCopyOtherAthlete(e.target.value);setCopyOtherState("idle")}}>{plannerAthletes.filter(athlete=>athlete.name!==selected).map(athlete=><option key={athlete.name}>{athlete.name}</option>)}</select></label><label>Semana de origem<input type="date" value={copyOtherWeek} onChange={e=>e.target.value&&setCopyOtherWeek(mondayOf(e.target.value))}/></label><section><small>DIAS QUE SERÃO COPIADOS</small><div className="copy-day-picker">{current.days.map(day=><button key={day} className={copyOtherDays.includes(day)?"selected":""} onClick={()=>toggleCopyDay(day)}>{day}</button>)}</div><p>Somente os dias marcados serão substituídos. Os demais treinos de {selected.split(" ")[0]} permanecerão como estão.</p></section>{copyOtherState==="empty"&&<div className="copy-other-message">Nenhum treino foi encontrado nos dias escolhidos dessa semana.</div>}{copyOtherState==="error"&&<div className="copy-other-message error">Não foi possível buscar os treinos. Tente novamente.</div>}{copyOtherState==="copied"&&<div className="copy-other-message success">Treinos copiados para o rascunho ✓</div>}<footer><button className="outline" onClick={()=>setCopyOtherOpen(false)}>Cancelar</button><button className="gold" disabled={!copyOtherDays.length||copyOtherState==="loading"} onClick={copyFromOtherAthlete}>{copyOtherState==="loading"?"Buscando treinos...":"Copiar dias escolhidos →"}</button></footer></aside></div>}{drawerDay&&<WorkoutDrawer close={()=>setDrawerDay(null)} athleteName={selected} day={drawerDay} initial={sessions[drawerDay]} weekLabel={weekTitle} onSave={attachWorkout}/>}</>
 }
 
 function Races({races,onChange}:{races:any[];onChange:(races:any[])=>void}) {
   const [saving,setSaving]=useState("");const [error,setError]=useState("");
   const review=async(race:any,status:string,priority:string)=>{setSaving(race.id);setError("");try{await api.post("/api/races-records",{action:"review_race",id:race.id,status,priority});onChange(races.map(item=>item.id===race.id?{...item,status,priority}:item))}catch{setError(race.id)}finally{setSaving("")}};
-  return <><div className="section-title"><div><small>PLANEJAMENTO REAL</small><h2>Provas dos alunos</h2><p>Analise cada prova e defina a importância no planejamento.</p></div><b>{races.length} cadastrada(s)</b></div>{races.length===0?<section className="calendar-empty"><b>Nenhuma prova cadastrada</b><span>Quando o aluno enviar uma prova, ela aparecerá aqui para sua análise.</span></section>:<section className="race-cards">{races.map(race=><article key={race.id}><span className={`pill ${race.status==="Aguardando análise"?"alert":""}`}>{race.status}</span><small>{new Date(`${race.race_date}T12:00:00`).toLocaleDateString("pt-BR")}</small><h3>{race.name}</h3><p>{race.athlete_name} · {race.distance}{race.city?` · ${race.city}`:""}</p>{race.goal&&<blockquote>Objetivo: {race.goal}</blockquote>}<label>Importância<select value={race.priority||"Prova A"} onChange={event=>onChange(races.map(item=>item.id===race.id?{...item,priority:event.target.value}:item))}><option>Prova A</option><option>Prova B</option><option>Treino</option></select></label><div>{race.status==="Aprovada"
+  return <><div className="section-title"><div><small>PLANEJAMENTO REAL</small><h2>Provas dos alunos</h2><p>Analise cada prova e defina a importância no planejamento.</p></div><b>{plural(races.length, "cadastrada")}</b></div>{races.length===0?<section className="calendar-empty"><b>Nenhuma prova cadastrada</b><span>Quando o aluno enviar uma prova, ela aparecerá aqui para sua análise.</span></section>:<section className="race-cards">{races.map(race=><article key={race.id}><span className={`pill ${race.status==="Aguardando análise"?"alert":""}`}>{race.status}</span><small>{new Date(`${race.race_date}T12:00:00`).toLocaleDateString("pt-BR")}</small><h3>{race.name}</h3><p>{race.athlete_name} · {race.distance}{race.city?` · ${race.city}`:""}</p>{race.goal&&<blockquote>Objetivo: {race.goal}</blockquote>}<label>Importância<select value={race.priority||"Prova A"} onChange={event=>onChange(races.map(item=>item.id===race.id?{...item,priority:event.target.value}:item))}><option>Prova A</option><option>Prova B</option><option>Treino</option></select></label><div>{race.status==="Aprovada"
               ? <button className="race-cancel" disabled={saving===race.id} onClick={()=>review(race,"Aguardando análise",race.priority||"Prova A")}>{saving===race.id?"Salvando…":"Cancelar aprovação"}</button>
               : <><button className="gold" disabled={saving===race.id} onClick={()=>review(race,"Aprovada",race.priority||"Prova A")}>{saving===race.id?"Salvando…":"Aprovar e usar no planejamento"}</button>{race.status!=="Descartada"&&<button className="outline" disabled={saving===race.id} onClick={()=>review(race,"Descartada",race.priority||"Treino")}>Não periodizar</button>}</>}</div>{error===race.id&&<small className="registration-error">Não foi possível salvar. Tente novamente.</small>}</article>)}</section>}</>;
 }
@@ -1539,7 +1969,7 @@ function WorkoutDrawer({ close, athleteName, day, initial, weekLabel, onSave }: 
   const missingTempoRun=selectedIntensities.find(intensity=>intensity.startsWith("Tempo Run")&&!approvedTempoRefs[intensity]);
   const hasMainBlock=repeatSteps.length>0||extraSteps.length>0;
   const completeParts=[{label:"Aquecimento",ready:warmup.minutes>0},{label:"Parte principal",ready:hasMainBlock},{label:"Recuperações",ready:repeatSteps.length===0||repeatSteps.every(step=>step.recovery>0)},{label:"Desaquecimento",ready:cooldown.minutes>0}];
-  useEffect(()=>{if(saveWarning)window.alert(saveWarning)},[saveWarning]);
+  useEffect(()=>{if(saveWarning)avise("atencao","Confira antes de salvar",saveWarning)},[saveWarning]);
   const changeRepeat=(id:number,patch:Partial<RepeatStep>)=>setRepeatSteps(current=>current.map(step=>step.id===id?{...step,...patch}:step));
   const changeExtra=(id:number,patch:Partial<ExtraStep>)=>setExtraSteps(current=>current.map(step=>step.id===id?{...step,...patch}:step));
   const applyQuickModel=(model:"leve"|"intervalado"|"tempo"|"longao")=>{
@@ -1599,7 +2029,33 @@ function completeSessionForStudent(session?:StructuredSession):StructuredSession
   if(continuous){const minutes=Number(continuous[1]);return{...session,title:session.title||session.type||"Corrida contínua",durationMinutes:session.durationMinutes||minutes,steps:[{kind:"simple",label:"Treino principal",minutes,zone:continuous[2].toUpperCase()}]}}
   return session;
 }
-function StructuredWorkoutCard({session}:{session:StructuredSession}){
+/** Faixa de ritmo de uma zona, no formato em que o teste aprovado a guarda. */
+type ZonaAprovada = { label: string; slow: number; fast: number };
+
+/**
+ * Ritmos por zona, tirados do teste aprovado pelo professor.
+ *
+ * O treino liberado guarda a zona ("Z2"), não o ritmo — e quem vai correr
+ * precisa do ritmo. Ele já existia, a duas telas de distância, em "Testes e
+ * zonas"; só não chegava ao cartão do treino, que exibia a frase "zona
+ * aprovada" no lugar do número. Sem teste aprovado o mapa volta vazio e o
+ * cartão diz que o ritmo ainda não foi liberado, em vez de inventar um valor.
+ */
+function approvedZones(tests:unknown):Record<string,ZonaAprovada>{
+  const lista=(tests as {tests?:Array<Record<string,unknown>>})?.tests||[];
+  const approved=lista.find(test=>test.status==="Aprovado");
+  return Object.fromEntries(parsedList(approved?.zones).map((zone:{z:string;label?:string;slow:number;fast:number})=>
+    [String(zone.z).toUpperCase(),{label:String(zone.label||""),slow:Number(zone.slow),fast:Number(zone.fast)}]));
+}
+
+function StructuredWorkoutCard({session,zones}:{session:StructuredSession;zones?:Record<string,ZonaAprovada>}){
+  /* O professor pode fixar o ritmo direto na etapa; quando não fixa, vale a
+     faixa da zona aprovada no teste do aluno. */
+  const ritmoDaZona=(fixo?:string,zona?:string)=>{
+    if(fixo)return fixo;
+    const faixa=zona?zones?.[String(zona).toUpperCase()]:undefined;
+    return faixa?`${faixa.label?`${faixa.label} · `:""}${paceInput(faixa.slow)} – ${paceInput(faixa.fast)}/km`:null;
+  };
   const target=(intensity:string)=>intensity?.startsWith("Tempo Run")?`no ${intensity}`:`em ${intensity}`;
   const effortAmount=(step:any)=>step.effortMeters?`${step.effortMeters} m`:step.effortSeconds?`${step.effortSeconds} s`:`${step.effortMinutes} min`;
   const simpleAmount=(step:any)=>step.distanceMeters?`${step.distanceMeters} m`:step.seconds?`${step.seconds} s`:`${step.minutes} min`;
@@ -1608,8 +2064,8 @@ function StructuredWorkoutCard({session}:{session:StructuredSession}){
     <header><div><span className="pill">TREINO LIBERADO</span><h2>{session.title||session.description}</h2><p>{session.steps?.length||0} etapas na ordem definida pelo treinador</p></div><strong>{session.durationMinutes||"—"}<small>min aprox.</small></strong></header>
     {(session as any).instructions&&<p className="student-workout-note"><b>Orientação do treinador:</b> {(session as any).instructions}</p>}
     <div className="student-instructions">{session.steps?.map((step:any,index:number)=>step.kind==="repeat"?
-      <article className="repeat-step" key={index}><i>{index+1}</i><div><small>REPITA {step.repetitions} VEZES</small><h3>Corra {effortAmount(step)} {target(step.effortZone)}</h3><b>Ritmo individual: {step.effortPace||"zona aprovada"}</b><em>Após cada repetição: {recoveryAmount(step)} {target(step.recoveryZone)} · {step.recoveryPace||"zona aprovada"}</em></div></article>:
-      <article key={index}><i>{index+1}</i><div><small>{String(step.label||"ETAPA").toUpperCase()}</small><h3>Corra {simpleAmount(step)} {target(step.zone)}</h3><b>Ritmo individual: {step.pace||"zona aprovada"}</b></div></article>)}</div>
+      <article className="repeat-step" key={index}><i>{index+1}</i><div><small>REPITA {step.repetitions} VEZES</small><h3>Corra {effortAmount(step)} {target(step.effortZone)}</h3><b className={ritmoDaZona(step.effortPace,step.effortZone)?undefined:"ritmo-pendente"}>{ritmoDaZona(step.effortPace,step.effortZone)?`Ritmo individual: ${ritmoDaZona(step.effortPace,step.effortZone)}`:"Ritmo individual ainda não liberado"}</b><em>Após cada repetição: {recoveryAmount(step)} {target(step.recoveryZone)}{ritmoDaZona(step.recoveryPace,step.recoveryZone)?` · ${ritmoDaZona(step.recoveryPace,step.recoveryZone)}`:""}</em></div></article>:
+      <article key={index}><i>{index+1}</i><div><small>{String(step.label||"ETAPA").toUpperCase()}</small><h3>Corra {simpleAmount(step)} {target(step.zone)}</h3><b className={ritmoDaZona(step.pace,step.zone)?undefined:"ritmo-pendente"}>{ritmoDaZona(step.pace,step.zone)?`Ritmo individual: ${ritmoDaZona(step.pace,step.zone)}`:"Ritmo individual ainda não liberado"}</b></div></article>)}</div>
     {session.tempoRun&&session.tempoRun!=="Nenhum"&&<p className="structured-tempo">Referência complementar: Tempo Run {session.tempoRun}</p>}<p className="structured-confirm">✓ Este é o mesmo treino montado e liberado pelo treinador.</p>
   </article>
 }
@@ -1634,25 +2090,19 @@ function StructuredWorkoutCard({session}:{session:StructuredSession}){
  * interessa a quem acabou de treinar é o passado recente, e o histórico longo
  * fica na aba Evolução.
  */
-function RecentWorkouts({ secureStudentMode }: { secureStudentMode: boolean }) {
-  type Execucao = {
-    id: string; workout_day: string; week_start: string; status?: string;
-    classification: string; correct_percentage: number;
-    actual_minutes?: number; actual_km?: string; average_pace_seconds?: number;
-    average_heart_rate?: number; source: string; created_at: number; note?: string;
-  };
-  const [itens, setItens] = useState<Execucao[]>([]);
-  const [estado, setEstado] = useState<"carregando" | "pronto" | "vazio">("carregando");
+/** Um registro de execução, como o servidor o devolve. */
+type ExecucaoRegistrada = {
+  id: string; workout_day: string; week_start: string; status?: string;
+  classification: string; correct_percentage: number;
+  actual_minutes?: number; actual_km?: string; average_pace_seconds?: number;
+  average_heart_rate?: number; source: string; created_at: number; note?: string;
+};
 
-  useEffect(() => {
-    if (!secureStudentMode) { setEstado("vazio"); return; }
-    api.get<{ executions: Execucao[] }>("/api/student/workout-executions?days=7")
-      .then(d => { setItens(d.executions || []); setEstado((d.executions || []).length ? "pronto" : "vazio"); })
-      .catch(() => setEstado("vazio"));
-  }, [secureStudentMode]);
-
-  if (estado === "carregando") return <section className="recent-workouts"><p>Carregando…</p></section>;
-  if (estado === "vazio") return null;
+/* Os registros chegam prontos de quem já os carregou para o progresso da
+   semana: antes esta seção repetia a mesma busca só para si, e na prévia do
+   professor ela nem aparecia. */
+function RecentWorkouts({ itens }: { itens: ExecucaoRegistrada[] }) {
+  if (!itens.length) return null;
 
   const ritmo = (s?: number) => s ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : null;
   const dia = (ms: number) => new Date(Number(ms)).toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
@@ -1694,6 +2144,23 @@ function WorkoutAnalysis({secureStudentMode,weekStart,workoutDay,session}:{secur
   const [state,setState]=useState<""|"saving"|"error">("");
   const [erro,setErro]=useState("");
   const [motivoAberto,setMotivoAberto]=useState(false);
+  const [arquivoLido,setArquivoLido]=useState<{minutos:number;km:number;formato:string;pontos:number}|null>(null);
+
+  /* O arquivo é lido aqui no navegador e só o tempo e a distância seguem para o
+     servidor — os mesmos dois números que o aluno digitaria à mão. */
+  const receberArquivo=async(arquivo?:File)=>{
+    if(!arquivo)return;
+    try{
+      const lido=await leArquivoDeAtividade(arquivo);
+      if(lido.minutos>0)setActualMinutes(String(lido.minutos));
+      if(lido.km>0)setActualKm(String(lido.km));
+      setArquivoLido({minutos:lido.minutos,km:lido.km,formato:lido.formato,pontos:lido.pontos});
+      setErro("");
+    }catch(falha){
+      setArquivoLido(null);
+      setErro(falha instanceof ArquivoInvalido?falha.message:"Não foi possível ler este arquivo.");
+    }
+  };
 
   const registrar=async(action:"complete"|"skip")=>{
     setState("saving");setErro("");
@@ -1746,6 +2213,11 @@ function WorkoutAnalysis({secureStudentMode,weekStart,workoutDay,session}:{secur
           <label>Tempo realizado (min)<input type="number" min="1" value={actualMinutes} onChange={e=>setActualMinutes(e.target.value)} placeholder="Ex.: 42"/></label>
           <label>Distância realizada (km)<input type="number" min="0.1" step="0.01" value={actualKm} onChange={e=>setActualKm(e.target.value)} placeholder="Ex.: 8,20"/></label>
         </div>
+        <label className="analysis-arquivo">
+          <span>Ou envie o arquivo da atividade <small>.gpx ou .tcx, exportado do relógio ou do aplicativo</small></span>
+          <input type="file" accept=".gpx,.tcx,application/gpx+xml,application/xml,text/xml" onChange={event=>void receberArquivo(event.target.files?.[0])}/>
+        </label>
+        {arquivoLido&&<p className="analysis-arquivo-lido">Lido do arquivo {arquivoLido.formato}: {arquivoLido.minutos} min · {arquivoLido.km.toLocaleString("pt-BR",{maximumFractionDigits:2})} km · {plural(arquivoLido.pontos,"ponto")} registrados. Confira acima antes de concluir.</p>}
       </details>
 
       {motivoAberto&&<label className="analysis-note">Por que não treinou? <small>opcional</small>
@@ -1797,14 +2269,106 @@ function WorkoutAnalysis({secureStudentMode,weekStart,workoutDay,session}:{secur
 
 
 function parsedList(value:unknown){try{const result=JSON.parse(String(value||"[]"));return Array.isArray(result)?result:[]}catch{return[]}}
-function StudentTestsView({data,back}:{data:any;back:()=>void}){
+function StudentTestsView({data,back,recarregar,secureStudentMode}:{data:any;back:()=>void;recarregar:()=>void;secureStudentMode:boolean}){
   const tests=data?.tests||[];const approved=tests.filter((test:any)=>test.status==="Aprovado");const waiting=tests.filter((test:any)=>test.status!=="Aprovado");
-  return <><button className="student-back" onClick={back}>← Voltar</button><span className="overline">RITMOS INDIVIDUAIS</span><h1>Testes e zonas</h1><p>Somente ritmos revisados e liberados pelo professor são usados nos seus treinos.</p>{data===undefined?<section className="student-data-empty"><p>Carregando seus testes…</p></section>:approved.length===0?<section className="student-data-empty"><b>Ainda não há zonas liberadas</b><p>{waiting.length?"Seu teste foi registrado e está aguardando a revisão do professor.":"Quando o professor registrar e aprovar seu teste de 3 km ou 5 km, os ritmos aparecerão aqui."}</p></section>:<section className="student-tests-view">{approved.map((test:any,index:number)=>{const zones=parsedList(test.zones);const tempos=parsedList(test.tempo_runs);return <article key={test.id}><header><div><small>{index===0?"TESTE ATUAL APROVADO":"TESTE ANTERIOR"}</small><h2>{test.distance_km} km em {duration(Number(test.total_seconds))}</h2><p>{String(test.test_date).split("-").reverse().join("/")}</p></div><span>LIBERADO ✓</span></header><div className="student-test-summary"><span><small>RITMO DO TESTE</small><b>{pace(Number(test.pace_seconds))}/km</b></span><span><small>VAM</small><b>{Number(test.vam).toFixed(1)} km/h</b></span><span><small>FC MÁX.</small><b>{test.fc_max} bpm</b></span></div><h3>Zonas de ritmo</h3><div className="student-zone-cards">{zones.map((zone:any)=><span key={zone.z}><b>{zone.z}</b><em>{zone.label}</em><strong>{pace(Number(zone.slow))} – {pace(Number(zone.fast))}/km</strong></span>)}</div><h3>Tempo Run por distância</h3><div className="student-tempo-cards">{tempos.map((tempo:any)=><span key={tempo.label}><small>{tempo.label}</small><b>{pace(Number(tempo.targetPace))}/km</b></span>)}</div></article>})}{waiting.length>0&&<aside>Há {waiting.length} teste(s) aguardando revisão do professor.</aside>}</section>}</>;
+  /* O teste começa com um pedido do treinador. O aluno corre e devolve só o
+     tempo: as zonas continuam saindo da revisão dele. */
+  const pedido=tests.find((test:any)=>test.status==="Solicitado");
+  const emRevisao=tests.find((test:any)=>test.status==="Aguardando revisão");
+  const [minutos,setMinutos]=useState("");
+  const [segundos,setSegundos]=useState("");
+  const [esforco,setEsforco]=useState("");
+  const [observacao,setObservacao]=useState("");
+  const [arquivoLido,setArquivoLido]=useState<{minutos:number;km:number;formato:string;pontos:number}|null>(null);
+  const [erroDoArquivo,setErroDoArquivo]=useState("");
+  const [enviando,setEnviando]=useState(false);
+
+  /* Mesma leitura do registro de treino: o arquivo é lido aqui no navegador e
+     só o tempo e a distância seguem para o servidor. O arquivo em si não sobe.
+     É por este caminho que uma importação futura vai entrar — o que ela precisa
+     entregar são os mesmos dois números. */
+  const receberArquivo=async(arquivo?:File)=>{
+    if(!arquivo)return;
+    try{
+      const lido=await leArquivoDeAtividade(arquivo);
+      if(lido.minutos>0){setMinutos(String(Math.floor(lido.minutos)));setSegundos(String(Math.round((lido.minutos%1)*60)))}
+      setArquivoLido({minutos:lido.minutos,km:lido.km,formato:lido.formato,pontos:lido.pontos});
+      setErroDoArquivo("");
+    }catch(falha){
+      setArquivoLido(null);
+      setErroDoArquivo(falha instanceof ArquivoInvalido?falha.message:"Não foi possível ler este arquivo.");
+    }
+  };
+
+  const enviarResultado=async()=>{
+    setEnviando(true);
+    try{
+      await api.post("/api/student/performance-tests",{
+        id:pedido.id,minutes:Number(minutos)||0,seconds:Number(segundos)||0,
+        effort:esforco||undefined,note:observacao||undefined,
+        sourceFormat:arquivoLido?.formato,sourceKm:arquivoLido?.km,
+      });
+      setMinutos("");setSegundos("");setEsforco("");setObservacao("");setArquivoLido(null);recarregar();
+      avise("ok","Resultado enviado","Seu treinador vai revisar e liberar os seus ritmos.");
+    }catch(erro){
+      /* A prévia não é falha: é o treinador olhando a tela do aluno. Dizer
+         "não foi possível enviar" ali seria acusar um erro que não houve. */
+      if(erro instanceof PreviaDoTreinador){
+        avise("atencao","Isto é a prévia do professor",erro.friendlyMessage);
+        return;
+      }
+      const detalhe=(erro as {details?:{motivo?:string;saida?:string}}).details;
+      avise("erro","Não foi possível enviar",detalhe?.motivo?`${detalhe.motivo} ${detalhe.saida??""}`.trim():describeError(erro,"Confira o tempo informado."));
+    }finally{setEnviando(false)}
+  };
+  return <><button className="student-back" onClick={back}>← Voltar</button><span className="overline">RITMOS INDIVIDUAIS</span><h1>Testes e zonas</h1><p>Somente ritmos revisados e liberados pelo professor são usados nos seus treinos.</p>
+  {pedido&&<section className="student-test-request">
+    <span className="overline">SEU TREINADOR PEDIU UM TESTE</span>
+    <h2>Teste de {pedido.distance_km} km</h2>
+    <p>Corra a distância no seu melhor ritmo constante e informe o tempo total. É com ele que o treinador calcula os seus ritmos.</p>
+    <label className="test-file">
+      <span>Tem o arquivo do relógio? Anexe e o tempo é preenchido sozinho.</span>
+      <input type="file" accept=".gpx,.tcx,application/gpx+xml" onChange={event=>void receberArquivo(event.target.files?.[0])}/>
+      <em>Procurar</em>
+    </label>
+    {arquivoLido&&<p className="test-file-ok">Arquivo {arquivoLido.formato} lido · {arquivoLido.km.toLocaleString("pt-BR",{maximumFractionDigits:2})} km em {Math.floor(arquivoLido.minutos)} min. Confira abaixo antes de enviar.</p>}
+    {erroDoArquivo&&<p className="test-file-erro">{erroDoArquivo}</p>}
+    <div>
+      <label>Minutos<input type="number" min="0" max="120" value={minutos} onChange={event=>setMinutos(event.target.value)} placeholder="Ex.: 14"/></label>
+      <label>Segundos<input type="number" min="0" max="59" value={segundos} onChange={event=>setSegundos(event.target.value)} placeholder="Ex.: 30"/></label>
+    </div>
+    {/* Mesma pergunta e as mesmas três respostas do fim de um treino. Um teste é
+        um esforço máximo, e como o aluno terminou muda o que o treinador faz com
+        o número — duas escalas para a mesma coisa só dariam trabalho a ele. */}
+    <span className="overline">COMO VOCÊ TERMINOU?</span>
+    <div className="test-effort">{["Muito bem","Cansado","Sentiu dor"].map(item=>
+      <button key={item} className={esforco===item?"selected":""} onClick={()=>setEsforco(esforco===item?"":item)}>
+        {item==="Muito bem"?"🙂":item==="Cansado"?"😮‍💨":"⚠️"}<b>{item}</b>
+      </button>)}</div>
+    <label className="test-note">Quer contar algo sobre o teste?<textarea rows={2} value={observacao} onChange={event=>setObservacao(event.target.value)} placeholder="Vento forte, subida no meio, parei num semáforo…"/></label>
+    <button className="gold" disabled={enviando||!minutos} onClick={()=>void enviarResultado()}>{enviando?"Enviando…":"Enviar meu resultado"}</button>
+  </section>}
+  {emRevisao&&<section className="student-test-waiting"><b>Resultado enviado</b><span>Você correu {emRevisao.distance_km} km em {duration(Number(emRevisao.total_seconds))}. O treinador está revisando para liberar seus ritmos.</span></section>}{data===undefined?<section className="student-data-empty"><p>Carregando seus testes…</p></section>:approved.length===0?<section className="student-data-empty"><b>Ainda não há zonas liberadas</b><p>{waiting.length?"Seu teste foi registrado e está aguardando a revisão do professor.":"Quando o professor registrar e aprovar seu teste de 3 km ou 5 km, os ritmos aparecerão aqui."}</p></section>:<section className="student-tests-view">{approved.map((test:any,index:number)=>{const zones=parsedList(test.zones);const tempos=parsedList(test.tempo_runs);return <article key={test.id}><header><div><small>{index===0?"TESTE ATUAL APROVADO":"TESTE ANTERIOR"}</small><h2>{test.distance_km} km em {duration(Number(test.total_seconds))}</h2><p>{String(test.test_date).split("-").reverse().join("/")}</p></div><span>LIBERADO ✓</span></header><div className="student-test-summary"><span><small>RITMO DO TESTE</small><b>{pace(Number(test.pace_seconds))}</b></span><span><small>VAM</small><b>{Number(test.vam).toLocaleString("pt-BR",{minimumFractionDigits:1,maximumFractionDigits:1})} km/h</b></span><span><small>FC MÁX.</small><b>{test.fc_max} bpm</b></span></div><h3>Zonas de ritmo</h3><div className="student-zone-cards">{zones.map((zone:any)=><span key={zone.z}><b>{zone.z}</b><em>{zone.label}</em><strong>{paceInput(Number(zone.slow))} – {pace(Number(zone.fast))}</strong></span>)}</div><h3>Tempo Run por distância</h3><div className="student-tempo-cards">{tempos.map((tempo:any)=><span key={tempo.label}><small>{tempo.label}</small><b>{pace(Number(tempo.targetPace))}</b></span>)}</div></article>})}{waiting.length>0&&<aside>Há {plural(waiting.length, "teste")} aguardando revisão do professor.</aside>}</section>}</>;
 }
 function StudentProfileView({data,back}:{data:any;back:()=>void}){
   const days=parsedList(data?.profile?.training_days);const planning=data?.planning;
   return <><button className="student-back" onClick={back}>← Voltar</button><span className="overline">SEU CADASTRO</span><h1>Meu perfil</h1><p>Confira os dados usados pelo professor para organizar sua semana.</p>{data===undefined?<section className="student-data-empty"><p>Carregando seu cadastro…</p></section>:!data?<section className="student-data-empty"><b>Não foi possível carregar</b><p>Tente novamente em alguns instantes.</p></section>:<section className="student-profile-view"><header><i>{String(data.athlete?.name||"A").split(/\s+/).slice(0,2).map((part:string)=>part[0]).join("")}</i><div><h2>{data.athlete?.name}</h2><p>{data.athlete?.distance||data.profile?.objective||"Objetivo não informado"}</p></div></header><div className="student-profile-fields"><article><small>OBJETIVO</small><b>{data.profile?.objective||data.athlete?.distance||"Não informado"}</b></article><article><small>APLICATIVO / RELÓGIO</small><b>{data.profile?.integration||"Não informado"}</b></article><article><small>TELEFONE</small><b>{data.profile?.phone||"Não informado"}</b></article><article><small>DATA DE NASCIMENTO</small><b>{data.profile?.birth_date?String(data.profile.birth_date).split("-").reverse().join("/"):"Não informada"}</b></article></div><div className="student-training-days"><small>DIAS DISPONÍVEIS PARA TREINAR</small><div>{days.length?days.map((day:string)=><b key={day}>{day}</b>):<span>Nenhum dia informado</span>}</div></div>{planning&&<div className="student-current-plan"><span><small>PLANILHA ATUAL</small><b>{planning.plan}</b></span><span><small>FASE</small><b>{planning.phase}</b></span><span><small>SEMANA</small><b>{planning.week_number} de {planning.total_weeks}</b></span></div>}<footer>Encontrou algum dado errado? Avise o professor para que ele faça a correção no seu cadastro.</footer></section>}</>;
 }
+
+/**
+ * As seções de "Mais" numa lista só. No celular elas são os cartões da aba
+ * Mais; no computador a barra lateral as mostra abertas, porque ali há altura
+ * sobrando e obrigar o aluno a entrar numa aba para achar o financeiro seria
+ * gasto de clique. As duas telas leem daqui, então o rótulo nunca diverge.
+ */
+const SECOES_DO_ALUNO: Array<[string, string, string, string]> = [
+  ["\u2691", "Provas e recordes", "Pr\u00f3xima prova e melhores marcas", "races"],
+  ["\u25ce", "Testes e zonas", "Ritmos e frequ\u00eancia card\u00edaca", "tests"],
+  ["\u2661", "Dores e les\u00f5es", "Avise rapidamente o treinador", "pain"],
+  ["\u231a", "Integra\u00e7\u00e3o com rel\u00f3gio", "Strava, Garmin, Amazfit e Apple", "integrations"],
+  ["$", "Financeiro", "Mensalidade e chave Pix", "financial"],
+  ["\u25cb", "Meu perfil", "Cadastro e dias dispon\u00edveis", "profile"],
+];
 
 export function StudentView({ onBack, athleteName = "Everton Barbosa" }: { onBack?: () => void; athleteName?: string }) {
   const [tab, setTab] = useState("Hoje");
@@ -1837,6 +2401,10 @@ export function StudentView({ onBack, athleteName = "Everton Barbosa" }: { onBac
   useEffect(()=>{setFeedbackState("idle")},[feedback]);
   useEffect(()=>{if(!openedWeekDay)return;const timer=window.setTimeout(()=>{const detail=document.querySelector(".student-week-detail") as HTMLElement|null;detail?.scrollIntoView({behavior:"smooth",block:"start"});detail?.focus({preventScroll:true})},0);return()=>window.clearTimeout(timer)},[openedWeekDay]);
   const secureStudentMode = !onBack;
+  /* Declarado uma vez para o cliente de API. Antes cada chamada se lembrava por
+     conta própria de que a prévia não é sessão de aluno, e as que esqueciam
+     despejavam "Esta área é exclusiva do aluno" na tela do treinador. */
+  useEffect(()=>{definePreviaDoTreinador(!secureStudentMode);return()=>definePreviaDoTreinador(false)},[secureStudentMode]);
   useEffect(()=>{
     if(!secureStudentMode)return;
     let active=true;
@@ -1853,10 +2421,28 @@ export function StudentView({ onBack, athleteName = "Everton Barbosa" }: { onBac
   useEffect(()=>{const endpoint=secureStudentMode?"/api/student/races-records":`/api/races-records?athlete=${encodeURIComponent(athleteName)}`;fetch(endpoint).then(r=>r.ok?r.json():{races:[],records:[]}).then(setRaceData).catch(()=>undefined)},[moreView,athleteName,secureStudentMode]);
   const loadProviders=()=>fetch("/api/student/integrations").then(r=>r.ok?r.json():{providers:[]}).then(data=>setProviders(data.providers||[])).catch(()=>setProviders([]));
   useEffect(()=>{if(moreView!=="integrations"||!secureStudentMode)return;loadProviders()},[moreView,secureStudentMode]);
-  useEffect(()=>{if(moreView!=="financial")return;if(!secureStudentMode){setFinancialData({settings:{pix_key:"Chave Pix definida pelo professor",pix_name:"ZonasApp"},payment:{amount_cents:11000,due_date:"2026-08-15",status:"Pendente"}});return}fetch("/api/student/financial").then(r=>r.ok?r.json():null).then(setFinancialData).catch(()=>setFinancialData(null))},[moreView,secureStudentMode]);
-  useEffect(()=>{if(moreView!=="profile")return;const endpoint=secureStudentMode?"/api/student/profile":`/api/athlete-profile?athlete=${encodeURIComponent(athleteName)}`;fetch(endpoint).then(r=>r.ok?r.json():null).then(data=>setStudentProfile(secureStudentMode?data:{athlete:{name:athleteName,distance:"10 km"},profile:data?.profile??null,planning:{plan:"10 km Lion",phase:"Específica",week_number:8,total_weeks:16}})).catch(()=>setStudentProfile(null))},[moreView,secureStudentMode,athleteName]);
-  useEffect(()=>{const endpoint=secureStudentMode?"/api/student/performance-tests":`/api/performance-tests?athlete=${encodeURIComponent(athleteName)}`;fetch(endpoint).then(r=>r.ok?r.json():{tests:[]}).then(setStudentTests).catch(()=>setStudentTests({tests:[]}))},[secureStudentMode,athleteName]);
-  useEffect(()=>{if(tab!=="Evolução")return;const executionEndpoint=secureStudentMode?"/api/student/workout-executions":"";if(!executionEndpoint){setExecutionData({executions:[]});return}Promise.all([fetch(executionEndpoint).then(r=>r.ok?r.json():{executions:[]}),fetch("/api/student/profile").then(r=>r.ok?r.json():null)]).then(([executions,profile])=>{setExecutionData(executions);setStudentProfile(profile)}).catch(()=>setExecutionData({executions:[]}))},[tab,secureStudentMode]);
+  /* A prévia do professor não tem endpoint financeiro do aluno, e antes isso
+     era preenchido com uma cobrança fixa de R$ 110,00 — um número que nunca
+     existiu. Agora a prévia diz que não exibe a mensalidade. */
+  useEffect(()=>{if(moreView!=="financial")return;if(!secureStudentMode){setFinancialData({preview:true});return}fetch("/api/student/financial").then(r=>r.ok?r.json():null).then(setFinancialData).catch(()=>setFinancialData(null))},[moreView,secureStudentMode]);
+  /* O perfil passou a carregar na abertura porque a aba Evolução também usa o
+     planejamento. A prévia do professor não inventa mais plano, fase nem
+     número de semana: mostra o que o cadastro devolve, ou nada. */
+  useEffect(()=>{const endpoint=secureStudentMode?"/api/student/profile":`/api/athlete-profile?athlete=${encodeURIComponent(athleteName)}`;fetch(endpoint).then(r=>r.ok?r.json():null).then(data=>setStudentProfile(secureStudentMode?data:{athlete:{name:athleteName},profile:data?.profile??null,planning:null})).catch(()=>setStudentProfile(null))},[secureStudentMode,athleteName]);
+  const recarregarTestes=useCallback(()=>{const endpoint=secureStudentMode?"/api/student/performance-tests":`/api/performance-tests?athlete=${encodeURIComponent(athleteName)}`;return fetch(endpoint).then(r=>r.ok?r.json():{tests:[]}).then(setStudentTests).catch(()=>setStudentTests({tests:[]}))},[secureStudentMode,athleteName]);
+  useEffect(()=>{void recarregarTestes()},[recarregarTestes]);
+  /* As execuções deixaram de ser exclusivas da aba Evolução: "Hoje" e "Minha
+     semana" precisam delas para dizer o que já foi feito. É a mesma chamada,
+     uma vez na abertura, com a janela de 30 dias que o servidor aceita.
+     Na prévia do professor o caminho é o endpoint do treinador filtrado pelo
+     aluno — antes a prévia forçava lista vazia e mostrava um aluno zerado
+     mesmo quando ele tinha histórico. */
+  useEffect(()=>{
+    const carregar=secureStudentMode
+      ?fetch("/api/student/workout-executions?days=30").then(r=>r.ok?r.json():{executions:[]})
+      :fetch("/api/workout-executions").then(r=>r.ok?r.json():{executions:[]}).then((data:{executions?:Array<{athlete_name?:string}>})=>({executions:(data.executions||[]).filter(item=>item.athlete_name===athleteName)}));
+    carregar.then(setExecutionData).catch(()=>setExecutionData({executions:[]}));
+  },[secureStudentMode,athleteName]);
   const savedSessions=savedWeek?.status==="Liberada"?JSON.parse(savedWeek.sessions||"{}"):null;
   const today=brazilCalendar();
   const todaySession=completeSessionForStudent(savedSessions?.[today.key]);
@@ -1864,25 +2450,67 @@ export function StudentView({ onBack, athleteName = "Everton Barbosa" }: { onBac
   const weekDays=["SEG","TER","QUA","QUI","SEX","SÁB","DOM"];
   const showTraining=Boolean(savedWeek?.status==="Liberada"&&todaySession&&!todaySession.removed);
   const executions=executionData?.executions||[];
-  const monthKey=new Date(Date.now()-3*60*60*1000).toISOString().slice(0,7);
-  const monthExecutions=executions.filter((item:any)=>String(item.week_start||"").startsWith(monthKey));
-  const monthKm=monthExecutions.reduce((sum:number,item:any)=>sum+(Number(item.actual_km)||0),0);
-  const monthAccuracy=monthExecutions.length?Math.round(monthExecutions.reduce((sum:number,item:any)=>sum+(Number(item.correct_percentage)||0),0)/monthExecutions.length):0;
+  /* A busca pede 30 dias, então a janela é a própria lista. Antes o rótulo
+     dizia "no mês" enquanto a chamada trazia sete dias — o número nunca
+     correspondeu ao texto. Agora rótulo e janela são a mesma coisa. */
+  const janelaKm=executions.reduce((sum:number,item:ExecucaoRegistrada)=>sum+(Number(item.actual_km)||0),0);
+  const janelaAcerto=executions.length?Math.round(executions.reduce((sum:number,item:ExecucaoRegistrada)=>sum+(Number(item.correct_percentage)||0),0)/executions.length):0;
+
+  /* Plano, fase e semana. O cadastro de planejamento é a fonte; quando ele
+     ainda não existe, a própria semana liberada carrega os mesmos três dados,
+     escritos pelo treinador. É melhor que dizer "aguardando definição" tendo a
+     informação na tela ao lado. */
+  const planejamento=studentProfile?.planning
+    ?{plan:studentProfile.planning.plan,phase:studentProfile.planning.phase,label:`semana ${studentProfile.planning.week_number} de ${studentProfile.planning.total_weeks}`}
+    :savedWeek?.plan?{plan:savedWeek.plan,phase:savedWeek.phase,label:savedWeek.week_label?`semana ${savedWeek.week_label}`:""}
+    :null;
+
+  /* Zonas do teste aprovado, para o cartão do treino dizer o ritmo. */
+  const zonasAprovadas=approvedZones(studentTests);
+
+  /* Situação de cada dia da semana liberada.
+     O banco pode ter mais de um registro para o mesmo dia (o aluno corrige o
+     que informou). Para dizer "o que aconteceu na segunda" vale o registro
+     mais recente; a lista dos últimos sete dias continua mostrando todos. */
+  const execucaoDoDia=new Map<string,ExecucaoRegistrada>();
+  for(const item of [...executions].sort((a:ExecucaoRegistrada,b:ExecucaoRegistrada)=>Number(a.created_at)-Number(b.created_at))){
+    if(savedWeek?.week_start&&item.week_start===savedWeek.week_start)execucaoDoDia.set(item.workout_day,item);
+  }
+  const diasComTreino=savedSessions?weekDays.filter(day=>{const item=completeSessionForStudent(savedSessions[day]);return Boolean(item&&!item.removed)}):[];
+  const diasConcluidos=diasComTreino.filter(day=>{const item=execucaoDoDia.get(day);return Boolean(item&&item.classification!=="Não realizado")});
+  const minutosPlanejados=diasComTreino.reduce((sum,day)=>sum+(Number(completeSessionForStudent(savedSessions?.[day])?.durationMinutes)||0),0);
+  const kmPlanejados=diasComTreino.reduce((sum,day)=>sum+(Number(completeSessionForStudent(savedSessions?.[day])?.estimatedKm)||0),0);
+  const kmRealizados=diasComTreino.reduce((sum,day)=>sum+(Number(execucaoDoDia.get(day)?.actual_km)||0),0);
+
+  /* Em dia de descanso o aluno via uma caixa vazia. O próximo treino da semana
+     já está liberado e a um toque: é ele que responde "e agora?". */
+  const proximoDia=savedSessions?weekDays.slice(weekDays.indexOf(today.key)+1).find(day=>{const item=completeSessionForStudent(savedSessions[day]);return Boolean(item&&!item.removed)}):undefined;
+  const proximaSessao=proximoDia?completeSessionForStudent(savedSessions[proximoDia]):undefined;
   const recentWeeks=Array.from(new Set(executions.map((item:any)=>String(item.week_start||"")))).filter(Boolean).sort().reverse().slice(0,4).map(week=>{const items=executions.filter((item:any)=>item.week_start===week);return{week,done:items.length,accuracy:items.length?Math.round(items.reduce((sum:number,item:any)=>sum+(Number(item.correct_percentage)||0),0)/items.length):0}});
   const tenKmRecord=raceData.records?.find((record:any)=>record.distance==="10 km");
   const nextRace=raceData.races?.find((race:any)=>race.race_date>=new Date().toISOString().slice(0,10));
   const raceDays=nextRace?Math.max(0,Math.ceil((new Date(`${nextRace.race_date}T12:00:00`).getTime()-Date.now())/86400000)):null;
   const approvedTest=studentTests?.tests?.find((test:any)=>test.status==="Aprovado");
-  const waitingTest=studentTests?.tests?.find((test:any)=>test.status!=="Aprovado");
+  /* "Não aprovado" juntava dois estados que pedem coisas opostas: o teste que o
+     treinador acabou de pedir espera uma corrida do ALUNO, e o que ele devolveu
+     espera a análise do TREINADOR. Somados num aviso só, o pedido novo aparecia
+     com o texto do outro — "o professor recebeu o resultado" — antes de o aluno
+     ter corrido. */
+  type TesteDoAluno={id:string;status:string;distance_km:number};
+  const testePedido=studentTests?.tests?.find((test:TesteDoAluno)=>test.status==="Solicitado");
+  const testeEmAnalise=studentTests?.tests?.find((test:TesteDoAluno)=>test.status==="Aguardando revisão");
   const approvedRace=raceData.races?.find((race:any)=>race.status==="Aprovada");
   const studentAlerts=[
+    /* O pedido vem primeiro na lista: é o único aviso que depende de uma ação do
+       aluno, e por isso não pode ficar abaixo dos que são só informação. */
+    testePedido&&{id:`test-requested-${testePedido.id}`,tone:"gold",icon:"◎",title:`Seu treinador pediu um teste de ${testePedido.distance_km} km`,detail:"Corra no seu ritmo máximo sustentável e informe o tempo aqui. É com ele que suas zonas são calculadas.",action:"Informar o tempo do teste",exigeAcao:true,open:()=>{setTab("Mais");setMoreView("tests")}},
     savedWeek?.status==="Liberada"&&{id:`week-${savedWeek.week_start}`,tone:"released",icon:"✓",title:"Sua semana foi liberada",detail:`${savedWeek.plan} · ${savedWeek.phase} · ${savedWeek.week_label}`,action:"Abrir minha semana",open:()=>setTab("Minha semana")},
     approvedTest&&{id:`zones-${approvedTest.id}`,tone:"zones",icon:"Z",title:"Suas zonas de treino foram liberadas",detail:"Os próximos treinos já podem usar seus ritmos individuais.",action:"Ver zonas e ritmos",open:()=>{setTab("Mais");setMoreView("tests")}},
-    waitingTest&&!approvedTest&&{id:`test-waiting-${waitingTest.id}`,tone:"waiting",icon:"⌛",title:"Seu teste está em análise",detail:"O professor recebeu o resultado e ainda precisa liberar suas zonas.",action:"Acompanhar teste",open:()=>{setTab("Mais");setMoreView("tests")}},
+    testeEmAnalise&&{id:`test-waiting-${testeEmAnalise.id}`,tone:"waiting",icon:"⌛",title:"Seu teste está em análise",detail:"O professor recebeu o resultado e ainda precisa liberar suas zonas.",action:"Acompanhar teste",open:()=>{setTab("Mais");setMoreView("tests")}},
     approvedRace&&{id:`race-approved-${approvedRace.id}`,tone:"race",icon:"⚑",title:"Sua prova foi analisada",detail:`${approvedRace.name} foi incluída no planejamento como ${approvedRace.priority||"prova-alvo"}.`,action:"Ver prova",open:()=>{setTab("Mais");setMoreView("races")}},
-  ].filter(Boolean).filter((alert:any)=>!dismissedAlerts.includes(alert.id)) as Array<{id:string;tone:string;icon:string;title:string;detail:string;action:string;open:()=>void}>;
+  ].filter(Boolean).filter((alert:any)=>!dismissedAlerts.includes(alert.id)) as Array<{id:string;tone:string;icon:string;title:string;detail:string;action:string;exigeAcao?:boolean;open:()=>void}>;
   const dismissStudentAlert=(id:string)=>setDismissedAlerts(current=>{const next=[...current,id];localStorage.setItem("zonasapp:student-alerts-read",JSON.stringify(next));return next});
-  const todaySummary=<section className="student-today-summary"><button onClick={()=>setTab("Minha semana")}><small>SEMANA ATUAL</small><b>{savedWeek?.week_label?`Semana ${savedWeek.week_label}`:"Aguardando liberação"}</b><span>Ver todos os treinos →</span></button><article><small>PRÓXIMA PROVA</small><b>{nextRace?.name||"Não cadastrada"}</b><span>{raceDays!==null?`${raceDays} dias restantes`:"Cadastre em Mais"}</span></article></section>;
+  const todaySummary=<section className="student-today-summary"><button onClick={()=>setTab("Minha semana")}><small>SEMANA ATUAL</small><b>{savedWeek?.week_label?`Semana ${savedWeek.week_label}`:"Aguardando liberação"}</b><span>Ver todos os treinos →</span></button><button onClick={()=>{setTab("Mais");setMoreView("races")}}><small>PRÓXIMA PROVA</small><b>{nextRace?.name||"Nenhuma cadastrada"}</b><span>{raceDays!==null?`${plural(raceDays,"dia")} ${concordar(raceDays,"restante","restantes")} →`:"Cadastrar prova →"}</span></button></section>;
   useEffect(()=>{if(!sent||!feedback||feedbackState!=="idle")return;setFeedbackState("saving");if(!secureStudentMode){setFeedbackState("saved");return}fetch("/api/student/feedbacks",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({feeling:feedback,weekStart:savedWeek?.week_start||"",workoutDay:today.key})}).then(response=>{if(!response.ok)throw new Error();setFeedbackState("saved")}).catch(()=>{setSent(false);setFeedbackState("error")})},[sent,feedback,feedbackState,secureStudentMode,savedWeek?.week_start,today.key]);
   const sendPainReport=async()=>{
     if(!painArea||!painImpact)return;
@@ -1914,19 +2542,80 @@ export function StudentView({ onBack, athleteName = "Everton Barbosa" }: { onBac
   };
   const weekStatus = savedWeek!==undefined&&<section className={`student-week-status ${savedWeek?.status==="Liberada"?"released":"waiting"}`}><div><span className="overline">{studentWeekLabel.toUpperCase()}</span><h2>{savedWeek?.status==="Liberada"?"Semana liberada pelo treinador":"A próxima semana ainda não foi liberada"}</h2><p>{savedWeek?.status==="Liberada"?`${savedWeek.plan} · ${savedWeek.phase} · ${savedWeek.week_label}`:"Os treinos aparecerão assim que o treinador terminar a revisão."}</p></div><b>{savedWeek?.status==="Liberada"?"LIBERADA ✓":"AGUARDANDO"}</b></section>;
   const openedWeekSession=completeSessionForStudent(savedSessions?.[openedWeekDay]);
-  const weekGrid = savedSessions&&<section className="student-week-grid">{weekDays.map(day=>{const session=completeSessionForStudent(savedSessions[day]);return <article key={day} role={session?"button":undefined} tabIndex={session?0:undefined} className={`${session?"has-session":""} ${openedWeekDay===day?"selected":""}`} onClick={()=>session&&setOpenedWeekDay(day)} onKeyDown={event=>session&&(event.key==="Enter"||event.key===" ")&&setOpenedWeekDay(day)}><small>{day}</small>{session?<><b>{session.title||session.type}</b><span>{session.steps?.length?`${session.steps.length} etapas · toque para abrir`:session.description}</span><strong>Ver treino completo →</strong></>:<em>Descanso</em>}</article>})}</section>;
+  /* Antes o aluno não sabia quantos treinos da semana já tinha feito: os
+     registros existiam, mas nenhuma tela os somava. */
+  const weekProgress = savedWeek?.status==="Liberada"&&diasComTreino.length>0&&<section className="student-week-progress">
+    <header><span className="overline">SUA SEMANA</span><b>{diasConcluidos.length} de {plural(diasComTreino.length,"treino")}</b></header>
+    <div className="student-progress-bar"><span style={{width:`${Math.round(diasConcluidos.length/diasComTreino.length*100)}%`}}/></div>
+    <div className="student-week-numbers">
+      <span><small>DISTÂNCIA</small><b>{kmRealizados.toLocaleString("pt-BR",{maximumFractionDigits:1})}<em> de {kmPlanejados.toLocaleString("pt-BR",{maximumFractionDigits:1})} km</em></b></span>
+      <span><small>TEMPO PLANEJADO</small><b>{minutosPlanejados}<em> min</em></b></span>
+      <span><small>AINDA A FAZER</small><b>{diasComTreino.length-diasConcluidos.length}<em> {diasComTreino.length-diasConcluidos.length===1?"treino":"treinos"}</em></b></span>
+    </div>
+  </section>;
+
+  /* Dia sem treino programado. Antes era uma caixa de 300px dizendo que não há
+     nada; agora aponta o próximo treino, que já está liberado e a um toque. */
+  const restDay = <section className="student-rest">
+    <div><span className="overline">HOJE É DESCANSO</span><h2>{proximaSessao?"Seu próximo treino":"Semana concluída"}</h2><p>{proximaSessao?"Descansar faz parte do plano — é nele que o corpo assimila o treino.":"Não há mais treinos programados nesta semana. A próxima aparece assim que o treinador liberar."}</p></div>
+    {proximaSessao&&proximoDia&&<button onClick={()=>{setTab("Minha semana");setOpenedWeekDay(proximoDia)}}>
+      <i>{proximoDia}</i>
+      <span><b>{proximaSessao.title||proximaSessao.type}</b><small>{[proximaSessao.durationMinutes&&`${proximaSessao.durationMinutes} min`,proximaSessao.estimatedKm&&`${proximaSessao.estimatedKm} km`,proximaSessao.steps?.length&&plural(proximaSessao.steps.length,"etapa")].filter(Boolean).join(" · ")}</small></span>
+      <em>Abrir treino →</em>
+    </button>}
+  </section>;
+
+  /* A semana era uma grade de duas colunas que emparelhava dias sem relação e
+     cortava o "Ver treino completo" na borda do cartão. Agora é a sequência
+     dos sete dias, com o dia de hoje marcado e a situação de cada treino. */
+  const weekGrid = savedSessions&&<section className="student-week-list">{weekDays.map(day=>{
+    const session=completeSessionForStudent(savedSessions[day]);
+    const execucao=execucaoDoDia.get(day);
+    const naoRealizado=execucao?.classification==="Não realizado";
+    const feito=Boolean(execucao)&&!naoRealizado;
+    const hoje=day===today.key;
+    const estado=!session?"descanso":feito?"feito":naoRealizado?"faltou":"pendente";
+    return <article key={day} role={session?"button":undefined} tabIndex={session?0:undefined}
+      className={`${estado}${hoje?" hoje":""}${openedWeekDay===day?" selected":""}`}
+      onClick={()=>session&&setOpenedWeekDay(day)}
+      onKeyDown={event=>session&&(event.key==="Enter"||event.key===" ")&&setOpenedWeekDay(day)}>
+      <i>{day}{hoje&&<small>hoje</small>}</i>
+      {session
+        ?<><span><b>{session.title||session.type}</b><small>{[session.durationMinutes&&`${session.durationMinutes} min`,session.estimatedKm&&`${session.estimatedKm} km`,session.steps?.length&&plural(session.steps.length,"etapa")].filter(Boolean).join(" · ")||session.description}</small></span>
+          <strong>{feito?(execucao?.correct_percentage?`✓ ${execucao.correct_percentage}%`:"✓ concluído"):naoRealizado?"não realizado":"abrir →"}</strong></>
+        :<span><b>Descanso</b><small>Sem treino programado</small></span>}
+    </article>})}</section>;
   if(sessionInvalid)return <main className="secure-access-denied"><section><span>Z</span><small>SESSÃO ENCERRADA</small><h1>Seu acesso foi encerrado.</h1><p>Os dados desta área foram protegidos. Fale com o treinador caso precise reativar o acesso.</p><button onClick={()=>void signOut()}>Sair e voltar ao início</button></section></main>;
-  return <main className="student"><header><div className="brand"><span>Z</span><div><strong>ZONASAPP</strong><small>{tab.toUpperCase()}</small></div></div>{onBack?<button onClick={onBack}>Área do professor</button>:<button className="student-signout" onClick={()=>void signOut()}>Sair da conta</button>}</header><section className="student-content">{tab==="Hoje"&&studentAlerts.length>0&&<section className="student-notification-center"><header><span>🔔</span><div><small>NOVIDADES DO SEU TREINADOR</small><b>{studentAlerts.length} aviso(s) para você</b></div></header>{studentAlerts.slice(0,3).map(alert=><article key={alert.id} className={alert.tone}><i>{alert.icon}</i><span><b>{alert.title}</b><small>{alert.detail}</small><button onClick={alert.open}>{alert.action} →</button></span><button aria-label="Marcar aviso como lido" onClick={()=>dismissStudentAlert(alert.id)}>×</button></article>)}</section>}{tab==="Hoje"&&todaySummary}
-    {tab==="Hoje"&&<><span className="overline">{today.label.toUpperCase()}</span><h1>{showTraining?`Bom treino, ${athleteName.split(" ")[0]}.`:`Olá, ${athleteName.split(" ")[0]}.`}</h1><p>{showTraining?"Leia de cima para baixo e siga uma etapa por vez.":"Aqui aparece somente o treino liberado pelo seu treinador para hoje."}</p>{savedWeek===undefined?<section className="student-empty-week"><b>⌛</b><h2>Carregando seu treino</h2><p>Estamos conferindo a programação liberada.</p></section>:showTraining?<>{todaySession?.steps?.length?<StructuredWorkoutCard session={todaySession}/>:<article className="today-card interval-card saved-structured"><header><div><span className="pill">TREINO LIBERADO</span><h2>{todaySession.title||todaySession.description||todaySession.type}</h2><p>Programação liberada pelo treinador para hoje.</p></div><strong>{todaySession.durationMinutes||"—"}<small>min aprox.</small></strong></header><p className="structured-confirm">✓ Este treino foi liberado pelo treinador.</p></article>}<section className="quick-feedback"><span className="overline">DEPOIS DO TREINO</span><h2>Como você terminou?</h2><p>Leva poucos segundos e ajuda o treinador a ajustar o próximo treino.</p><div>{["Muito bem","Cansado","Sentiu dor"].map(item=><button key={item} className={feedback===item?"selected":""} onClick={()=>{setFeedback(item);setSent(false)}}>{item==="Muito bem"?"🙂":item==="Cansado"?"😮‍💨":"⚠️"}<b>{item}</b></button>)}</div><button className="feedback-send" disabled={!feedback||feedbackState==="saving"} onClick={()=>setSent(true)}>{feedbackState==="saving"?"Registrando…":sent?"Feedback registrado ✓":"Registrar feedback"}</button>{feedbackState==="error"&&<p className="pain-error">Não foi possível registrar. Tente novamente.</p>}</section></>:<section className="student-empty-week"><b>✓</b><h2>{savedWeek?"Hoje é dia de descanso":"Nenhum treino liberado para esta semana"}</h2><p>{savedWeek?"Não há sessão programada para hoje. Consulte “Minha semana” para ver os próximos treinos.":"Você receberá os treinos somente depois da liberação do professor."}</p></section>}</>}
-    {tab==="Minha semana"&&<><span className="overline">PLANEJAMENTO</span><h1>Minha semana</h1><p>Toque no dia para abrir aquecimento, parte principal, recuperações e desaquecimento.</p>{weekStatus}{weekGrid}{openedWeekSession&&<section className="student-week-detail" tabIndex={-1}><header><div><span className="overline">TREINO DE {openedWeekDay}</span><h2>Treino completo</h2></div><button onClick={()=>setOpenedWeekDay("")}>Fechar ×</button></header><StructuredWorkoutCard session={openedWeekSession}/><WorkoutAnalysis secureStudentMode={secureStudentMode} weekStart={savedWeek?.week_start} workoutDay={openedWeekDay} session={openedWeekSession}/></section>}{!savedSessions&&savedWeek!==undefined&&<section className="student-empty-week"><b>⌛</b><h2>Semana em revisão</h2><p>Rascunhos não aparecem para você. Aguarde a liberação do treinador.</p></section>}</>}
-    {tab==="Evolução"&&<><span className="overline">SEU PROGRESSO REAL</span><h1>Evolução</h1><p>Os números aparecem depois que você registra os resultados dos treinos liberados.</p>{executionData===undefined?<section className="student-data-empty"><p>Carregando sua evolução…</p></section>:<><section className="student-progress"><article><small>TREINOS REGISTRADOS NO MÊS</small><b>{monthExecutions.length}</b><span>{monthExecutions.length?`${monthAccuracy}% de acerto médio`:"Nenhum resultado registrado"}</span></article><article><small>VOLUME REGISTRADO NO MÊS</small><b>{monthKm.toLocaleString("pt-BR",{maximumFractionDigits:1})} <em>km</em></b><span>Somente resultados informados</span></article><article><small>RECORDE NOS 10 KM</small><b>{tenKmRecord?.result_time||"—"}</b><span>{tenKmRecord?"Melhor marca cadastrada":"Ainda não registrado"}</span></article></section>{recentWeeks.length?<section className="progress-weeks"><header><div><span className="overline">ÚLTIMAS SEMANAS COM RESULTADO</span><h2>Treinos e acerto</h2></div><b>{executions.length}</b></header>{recentWeeks.map((item:any)=><article key={item.week}><span>Semana {String(item.week).split("-").reverse().slice(0,2).join("/")}</span><div><i style={{width:`${item.accuracy}%`}}/></div><b>{item.done} · {item.accuracy}%</b></article>)}</section>:<section className="student-data-empty"><b>Sua evolução começará no primeiro treino</b><p>Depois do treino, informe tempo e distância na tela “Hoje”. A plataforma calculará a porcentagem de acerto.</p></section>}<div className="student-bottom"><article><span className="overline">PRÓXIMA PROVA</span><h3>{nextRace?.name||"Nenhuma prova cadastrada"}</h3>{nextRace&&<b>{raceDays} <small>dias</small></b>}</article><article><span className="overline">PLANEJAMENTO ATUAL</span><h3>{studentProfile?.planning?.phase||"Aguardando definição"}</h3><p>{studentProfile?.planning?`${studentProfile.planning.plan} · semana ${studentProfile.planning.week_number} de ${studentProfile.planning.total_weeks}`:"O professor ainda não definiu a fase."}</p></article></div></>}</>}
-    {tab==="Mais"&&moreView==="menu"&&<><span className="overline">CONTA E APOIO</span><h1>Mais</h1><p>O essencial para manter seus treinos atualizados.</p><section className="student-more">{[["⚑","Provas e recordes","Próxima prova e melhores marcas","races"],["◎","Testes e zonas","Ritmos e frequência cardíaca","tests"],["♡","Dores e lesões","Avise rapidamente o treinador","pain"],["⌚","Integração com relógio","Strava, Garmin, Amazfit e Apple","integrations"],["$","Financeiro","Mensalidade e chave Pix","financial"],["○","Meu perfil","Cadastro e dias disponíveis","profile"]].map(([icon,title,desc,view])=><button key={title} onClick={()=>setMoreView(view)}><i>{icon}</i><span><b>{title}</b><small>{desc}</small></span><em>›</em></button>)}</section></>}
-    {tab==="Mais"&&moreView==="tests"&&<StudentTestsView data={studentTests} back={()=>setMoreView("menu")}/>} 
+  /* Dentro de uma seção a faixa dizia "MAIS", que é o caminho e não o lugar.
+     Agora ela diz a seção — vale no celular e na barra do computador. */
+  const tituloDaFaixa = tab === "Mais" && moreView !== "menu"
+    ? (SECOES_DO_ALUNO.find(([, , , view]) => view === moreView)?.[1] ?? tab)
+    : tab;
+
+  /* No celular esta faixa é o cabeçalho e a navegação vive fixa no rodapé; no
+     computador ela inteira vira a coluna da esquerda, no mesmo esquema da área
+     do professor. É o mesmo HTML nos dois casos: o que muda é só o CSS. */
+  return <main className="student"><header className="student-rail"><div className="brand"><span>Z</span><div><strong>ZONASAPP</strong><small>{tituloDaFaixa.toUpperCase()}</small></div></div>
+    <nav className="student-nav">{[["Hoje","⌂"],["Minha semana","▤"],["Evolução","↗"],["Mais","≡"]].map(([name,icon])=><button key={name} className={`${tab===name?"active":""} ${name==="Mais"?"student-tab-more":""}`.trim()} onClick={()=>{setTab(name);if(name!=="Mais")setMoreView("menu")}}><i>{icon}</i><span>{name}</span></button>)}</nav>
+    <div className="student-rail-sections"><small>CONTA E APOIO</small>{SECOES_DO_ALUNO.map(([icon,title,,view])=><button key={title} className={tab==="Mais"&&moreView===view?"active":""} onClick={()=>{setTab("Mais");setMoreView(view)}}><i>{icon}</i><span>{title}</span></button>)}</div>
+    {onBack?<button className="student-rail-exit" onClick={onBack}>Área do professor</button>:<button className="student-rail-exit student-signout" onClick={()=>void signOut()}>Sair da conta</button>}
+  </header><section className="student-content">
+    {tab==="Hoje"&&<><span className="overline">{today.label.toUpperCase()}</span><h1>{showTraining?`Bom treino, ${athleteName.split(" ")[0]}.`:`Olá, ${athleteName.split(" ")[0]}.`}</h1><p>{showTraining?"Leia de cima para baixo e siga uma etapa por vez.":"Aqui aparece somente o treino liberado pelo seu treinador para hoje."}</p>{weekProgress}{savedWeek===undefined?<section className="student-empty-week"><b>⌛</b><h2>Carregando seu treino</h2><p>Estamos conferindo a programação liberada.</p></section>:showTraining?<>{todaySession?.steps?.length?<StructuredWorkoutCard session={todaySession} zones={zonasAprovadas}/>:<article className="today-card interval-card saved-structured"><header><div><span className="pill">TREINO LIBERADO</span><h2>{todaySession.title||todaySession.description||todaySession.type}</h2><p>Programação liberada pelo treinador para hoje.</p></div><strong>{todaySession.durationMinutes||"—"}<small>min aprox.</small></strong></header><p className="structured-confirm">✓ Este treino foi liberado pelo treinador.</p></article>}<section className="quick-feedback"><span className="overline">DEPOIS DO TREINO</span><h2>Como você terminou?</h2><p>Leva poucos segundos e ajuda o treinador a ajustar o próximo treino.</p><div>{["Muito bem","Cansado","Sentiu dor"].map(item=><button key={item} className={feedback===item?"selected":""} onClick={()=>{setFeedback(item);setSent(false)}}>{item==="Muito bem"?"🙂":item==="Cansado"?"😮‍💨":"⚠️"}<b>{item}</b></button>)}</div><button className="feedback-send" disabled={!feedback||feedbackState==="saving"} onClick={()=>setSent(true)}>{feedbackState==="saving"?"Registrando…":sent?"Feedback registrado ✓":"Registrar feedback"}</button>{feedbackState==="error"&&<p className="pain-error">Não foi possível registrar. Tente novamente.</p>}</section></>:savedWeek?restDay:<section className="student-empty-week"><b>⌛</b><h2>Nenhum treino liberado para esta semana</h2><p>Você receberá os treinos somente depois da liberação do professor.</p></section>}</>}
+    {tab==="Minha semana"&&<><span className="overline">PLANEJAMENTO</span><h1>Minha semana</h1><p>Toque no dia para abrir aquecimento, parte principal, recuperações e desaquecimento.</p>{weekStatus}{weekGrid}{openedWeekSession&&<section className="student-week-detail" tabIndex={-1}><header><div><span className="overline">TREINO DE {openedWeekDay}</span><h2>Treino completo</h2></div><button onClick={()=>setOpenedWeekDay("")}>Fechar ×</button></header><StructuredWorkoutCard session={openedWeekSession} zones={zonasAprovadas}/><WorkoutAnalysis secureStudentMode={secureStudentMode} weekStart={savedWeek?.week_start} workoutDay={openedWeekDay} session={openedWeekSession}/></section>}{!savedSessions&&savedWeek!==undefined&&<section className="student-empty-week"><b>⌛</b><h2>Semana em revisão</h2><p>Rascunhos não aparecem para você. Aguarde a liberação do treinador.</p></section>}</>}
+    {tab==="Evolução"&&<><span className="overline">SEU PROGRESSO REAL</span><h1>Evolução</h1><p>Os números aparecem depois que você registra os resultados dos treinos liberados.</p>{executionData===undefined?<section className="student-data-empty"><p>Carregando sua evolução…</p></section>:<><section className="student-progress"><article><small>TREINOS REGISTRADOS · 30 DIAS</small><b>{executions.length}</b><span>{executions.length?`${janelaAcerto}% de acerto médio`:"Nenhum resultado registrado"}</span></article><article><small>VOLUME REGISTRADO · 30 DIAS</small><b>{janelaKm.toLocaleString("pt-BR",{maximumFractionDigits:1})} <em>km</em></b><span>Somente resultados informados</span></article><article><small>RECORDE NOS 10 KM</small><b>{tenKmRecord?.result_time||"—"}</b><span>{tenKmRecord?"Melhor marca cadastrada":"Ainda não registrado"}</span></article></section>{recentWeeks.length?<section className="progress-weeks"><header><div><span className="overline">ÚLTIMAS SEMANAS COM RESULTADO</span><h2>Treinos e acerto</h2></div><b>{executions.length}</b></header>{recentWeeks.map((item:any)=><article key={item.week}><span>Semana {String(item.week).split("-").reverse().slice(0,2).join("/")}</span><div><i style={{width:`${item.accuracy}%`}}/></div><b>{item.done} · {item.accuracy}%</b></article>)}</section>:<section className="student-data-empty"><b>Sua evolução começará no primeiro treino</b><p>Depois do treino, informe tempo e distância na tela “Hoje”. A plataforma calculará a porcentagem de acerto.</p></section>}<div className="student-bottom"><article><span className="overline">PRÓXIMA PROVA</span><h3>{nextRace?.name||"Nenhuma prova cadastrada"}</h3>{nextRace&&<b>{raceDays} <small>dias</small></b>}</article><article><span className="overline">PLANEJAMENTO ATUAL</span><h3>{planejamento?.phase||"Aguardando definição"}</h3><p>{planejamento?[planejamento.plan,planejamento.label].filter(Boolean).join(" · "):"O professor ainda não definiu a fase."}</p></article></div></>}</>}
+    {tab==="Mais"&&moreView==="menu"&&<><span className="overline">CONTA E APOIO</span><h1>Mais</h1><p>O essencial para manter seus treinos atualizados.</p><section className="student-more">{SECOES_DO_ALUNO.map(([icon,title,desc,view])=><button key={title} onClick={()=>setMoreView(view)}><i>{icon}</i><span><b>{title}</b><small>{desc}</small></span><em>›</em></button>)}</section></>}
+    {tab==="Mais"&&moreView==="tests"&&<StudentTestsView data={studentTests} back={()=>setMoreView("menu")} recarregar={recarregarTestes} secureStudentMode={secureStudentMode}/>} 
     {tab==="Mais"&&moreView==="profile"&&<StudentProfileView data={studentProfile} back={()=>setMoreView("menu")}/>} 
-    {tab==="Mais"&&moreView==="financial"&&<><button className="student-back" onClick={()=>setMoreView("menu")}>← Voltar</button><span className="overline">MENSALIDADE</span><h1>Financeiro</h1><p>Aqui aparece somente a situação informada pelo professor.</p>{!financialData?<section className="student-financial-card"><p>Carregando sua mensalidade…</p></section>:!financialData.payment?<section className="student-financial-card ok"><b>Sem pendência cadastrada</b><p>Nenhuma cobrança foi lançada para você.</p></section>:<section className={`student-financial-card ${financialData.payment.status==="Pago"?"ok":"pending"}`}><span>{financialData.payment.status==="Pago"?"PAGAMENTO REGISTRADO":"PENDÊNCIA"}</span><h2>{(financialData.payment.amount_cents/100).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</h2><p>Vencimento: {new Date(`${financialData.payment.due_date}T12:00:00`).toLocaleDateString("pt-BR")}</p>{financialData.payment.status==="Pendente"&&<div><small>CHAVE PIX</small><b>{financialData.settings?.pix_key||"Aguardando o professor informar"}</b><em>{financialData.settings?.pix_name||""}</em>{financialData.settings?.pix_key&&<button onClick={()=>void copyText(financialData.settings.pix_key)}>Copiar chave Pix</button>}</div>}{financialData.payment.status==="Pago"&&<strong>✓ Pago</strong>}</section>}</>}
-    {tab==="Mais"&&moreView==="integrations"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setIntegrationState("");setAppleSetup(null)}}>← Voltar</button><span className="overline">RELÓGIO E APLICATIVOS</span><h1>Integrações</h1><p>Conecte de onde a Zonas-App deve receber seus treinos realizados. Nada é acessado sem a sua autorização, e você pode desconectar quando quiser.</p>{appleSetup&&<section className="apple-ingest"><b>Seu token do Apple Saúde</b><p>O Apple Saúde não conversa direto com servidores. No iPhone, crie um Atalho que leia seus treinos e envie para o endereço abaixo com o cabeçalho <code>x-zonas-ingest-token</code>. Este token aparece uma única vez.</p><label>Endereço<code>{appleSetup.ingestUrl}</code></label><label>Token<code>{appleSetup.ingestToken}</code></label><div><button onClick={()=>void copyText(appleSetup.ingestToken)}>Copiar token</button><button onClick={()=>setAppleSetup(null)}>Já guardei</button></div></section>}<section className="integration-center">{(providers.length?providers:PROVIDER_PREVIEW).map((provider:ProviderCard)=>{const icons:Record<string,string>={strava:"S",garmin:"G",zepp:"A",apple:"●"};const connected=provider.connection?.status==="Conectado";const preferred=integrationPreference===provider.label;return <article key={provider.id} className={connected?"selected":""}><i>{icons[provider.id]||"○"}</i><div><b>{provider.label}</b><p>{provider.notes}</p><small>{connected?"CONECTADO COM AUTORIZAÇÃO SUA":provider.connection?.status==="Suspensa"?"CONEXÃO SUSPENSA · O PROFESSOR PRECISA RECONFIGURAR O SERVIÇO":!providers.length?"VERIFICANDO DISPONIBILIDADE…":provider.available===false?"AGUARDANDO CADASTRO OFICIAL DO PROFESSOR":"DISPONÍVEL PARA CONECTAR"}</small>{provider.connection?.last_sync_at&&<em className="integration-last-sync">Última importação: {new Date(Number(provider.connection.last_sync_at)).toLocaleString("pt-BR")}</em>}</div><div className="integration-actions">{connected?<><button onClick={()=>providerAction(provider.id,"disconnect")}>Desconectar</button>{provider.id==="strava"&&<button className="connected" disabled={integrationState==="saving"} onClick={()=>providerAction(provider.id,"sync")}>Sincronizar agora</button>}</>:<button disabled={integrationState==="saving"||provider.available===false} onClick={()=>providerAction(provider.id,"connect")}>{provider.available===false?"Indisponível":provider.authType==="device"?"Gerar token":"Conectar"}</button>}{!connected&&!preferred&&<button className="integration-prefer" disabled={integrationState==="saving"} onClick={()=>saveIntegration(provider.label)}>Marcar preferência</button>}</div></article>})}<footer><b>Como funciona</b><p>Você autoriza o serviço → a Zonas-App importa a atividade concluída → ela é comparada ao treino planejado → você e o professor veem a porcentagem de acerto. A Garmin também poderá receber o treino estruturado quando as APIs forem liberadas.</p></footer>{integrationState==="saved"&&<p className="integration-success">Pronto. Suas conexões foram atualizadas.</p>}{integrationState.startsWith("sincronizado:")&&<p className="integration-success">Importação concluída: {integrationState.split(":")[1]} atividade(s) nova(s).</p>}{integrationState==="sync-unavailable"&&<p className="integration-setup">A importação automática deste serviço ainda depende da liberação oficial da API.</p>}{integrationState==="setup-required"&&<p className="integration-setup">O fluxo seguro está pronto. Falta o professor cadastrar a Zonas-App no portal deste serviço e inserir as credenciais oficiais.</p>}{integrationState==="apple-ready"&&<p className="integration-success">Token gerado. Configure o Atalho no seu iPhone com os dados acima.</p>}{integrationState==="error"&&<p className="pain-error">Não foi possível concluir. Tente novamente.</p>}</section></>}
+    {tab==="Mais"&&moreView==="financial"&&<><button className="student-back" onClick={()=>setMoreView("menu")}>← Voltar</button><span className="overline">MENSALIDADE</span><h1>Financeiro</h1><p>Aqui aparece somente a situação informada pelo professor.</p>{!financialData?<section className="student-financial-card"><p>Carregando sua mensalidade…</p></section>:financialData.preview?<section className="student-financial-card"><b>Prévia do professor</b><p>A mensalidade real do aluno não é exibida aqui. Consulte o Financeiro no seu painel.</p></section>:!financialData.payment?<section className="student-financial-card ok"><b>Sem pendência cadastrada</b><p>Nenhuma cobrança foi lançada para você.</p></section>:<section className={`student-financial-card ${financialData.payment.status==="Pago"?"ok":"pending"}`}><span>{financialData.payment.status==="Pago"?"PAGAMENTO REGISTRADO":"PENDÊNCIA"}</span><h2>{(financialData.payment.amount_cents/100).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</h2><p>Vencimento: {new Date(`${financialData.payment.due_date}T12:00:00`).toLocaleDateString("pt-BR")}</p>{financialData.payment.status==="Pendente"&&<div><small>CHAVE PIX</small><b>{financialData.settings?.pix_key||"Aguardando o professor informar"}</b><em>{financialData.settings?.pix_name||""}</em>{financialData.settings?.pix_key&&<button onClick={()=>void copyText(financialData.settings.pix_key)}>Copiar chave Pix</button>}</div>}{financialData.payment.status==="Pago"&&<strong>✓ Pago</strong>}</section>}</>}
+    {tab==="Mais"&&moreView==="integrations"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setIntegrationState("");setAppleSetup(null)}}>← Voltar</button><span className="overline">RELÓGIO E APLICATIVOS</span><h1>Integrações</h1><p>Conecte de onde a Zonas-App deve receber seus treinos realizados. Nada é acessado sem a sua autorização, e você pode desconectar quando quiser.</p>{appleSetup&&<section className="apple-ingest"><b>Seu token do Apple Saúde</b><p>O Apple Saúde não conversa direto com servidores. No iPhone, crie um Atalho que leia seus treinos e envie para o endereço abaixo com o cabeçalho <code>x-zonas-ingest-token</code>. Este token aparece uma única vez.</p><label>Endereço<code>{appleSetup.ingestUrl}</code></label><label>Token<code>{appleSetup.ingestToken}</code></label><div><button onClick={()=>void copyText(appleSetup.ingestToken)}>Copiar token</button><button onClick={()=>setAppleSetup(null)}>Já guardei</button></div></section>}<section className="integration-center">{(providers.length?providers:PROVIDER_PREVIEW).map((provider:ProviderCard)=>{const icons:Record<string,string>={strava:"S",garmin:"G",zepp:"A",apple:"●"};const connected=provider.connection?.status==="Conectado";const preferred=integrationPreference===provider.label;return <article key={provider.id} className={connected?"selected":""}><i>{icons[provider.id]||"○"}</i><div><b>{provider.label}</b><p>{provider.notes}</p><small>{connected?"CONECTADO COM AUTORIZAÇÃO SUA":provider.connection?.status==="Suspensa"?"CONEXÃO SUSPENSA · O PROFESSOR PRECISA RECONFIGURAR O SERVIÇO":!providers.length?"VERIFICANDO DISPONIBILIDADE…":provider.available===false?"AGUARDANDO CADASTRO OFICIAL DO PROFESSOR":"DISPONÍVEL PARA CONECTAR"}</small>{provider.connection?.last_sync_at&&<em className="integration-last-sync">Última importação: {new Date(Number(provider.connection.last_sync_at)).toLocaleString("pt-BR")}</em>}</div><div className="integration-actions">{connected?<><button onClick={()=>providerAction(provider.id,"disconnect")}>Desconectar</button>{provider.id==="strava"&&<button className="connected" disabled={integrationState==="saving"} onClick={()=>providerAction(provider.id,"sync")}>Sincronizar agora</button>}</>:<button disabled={integrationState==="saving"||provider.available===false} onClick={()=>providerAction(provider.id,"connect")}>{provider.available===false?"Indisponível":provider.authType==="device"?"Gerar token":"Conectar"}</button>}{!connected&&!preferred&&<button className="integration-prefer" disabled={integrationState==="saving"} onClick={()=>saveIntegration(provider.label)}>Marcar preferência</button>}</div></article>})}<footer><b>Como funciona</b><p>Você autoriza o serviço → a Zonas-App importa a atividade concluída → ela é comparada ao treino planejado → você e o professor veem a porcentagem de acerto. A Garmin também poderá receber o treino estruturado quando as APIs forem liberadas.</p></footer>{integrationState==="saved"&&<p className="integration-success">Pronto. Suas conexões foram atualizadas.</p>}{integrationState.startsWith("sincronizado:")&&<p className="integration-success">Importação concluída: {plural(Number(integrationState.split(":")[1]) || 0, "atividade nova", "atividades novas")}.</p>}{integrationState==="sync-unavailable"&&<p className="integration-setup">A importação automática deste serviço ainda depende da liberação oficial da API.</p>}{integrationState==="setup-required"&&<p className="integration-setup">O fluxo seguro está pronto. Falta o professor cadastrar a Zonas-App no portal deste serviço e inserir as credenciais oficiais.</p>}{integrationState==="apple-ready"&&<p className="integration-success">Token gerado. Configure o Atalho no seu iPhone com os dados acima.</p>}{integrationState==="error"&&<p className="pain-error">Não foi possível concluir. Tente novamente.</p>}</section></>}
     {tab==="Mais"&&moreView==="pain"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setPainState("")}}>← Voltar</button><span className="overline">AVISO AO TREINADOR</span><h1>Dores e lesões</h1><p>Preencha em menos de um minuto. O treinador receberá o aviso para revisar seu próximo treino.</p>{painState==="saved"?<section className="pain-success"><b>✓</b><h2>Aviso enviado ao treinador</h2><p>Evite treinos intensos enquanto houver dor. O treinador verá o relato antes de ajustar sua programação.</p><button onClick={()=>{setMoreView("menu");setPainState("")}}>Concluir</button></section>:<section className="pain-form"><label>Onde está o desconforto?<div className="pain-options">{["Joelho","Canela","Panturrilha","Coxa","Quadril","Pé/tornozelo","Coluna","Outro"].map(area=><button key={area} className={painArea===area?"selected":""} onClick={()=>setPainArea(area)}>{area}</button>)}</div></label><label>Intensidade da dor <b>{painIntensity}/10</b><input type="range" min="1" max="10" value={painIntensity} onChange={e=>setPainIntensity(+e.target.value)}/><div className="range-labels"><span>Leve</span><span>Forte</span></div></label><label>A dor atrapalhou o treino?<div className="pain-impact">{["Não treinei","Parei durante","Reduzi o ritmo","Consegui terminar"].map(item=><button key={item} className={painImpact===item?"selected":""} onClick={()=>setPainImpact(item)}>{item}</button>)}</div></label><label>Observação <small>opcional</small><textarea value={painNote} onChange={e=>setPainNote(e.target.value)} placeholder="Conte rapidamente quando começou ou qual movimento incomoda." maxLength={240}/></label>{painState==="error"&&<p className="pain-error">Não foi possível enviar. Tente novamente.</p>}<button className="pain-send" disabled={!painArea||!painImpact||painState==="saving"} onClick={sendPainReport}>{painState==="saving"?"Enviando…":"Avisar meu treinador"}</button><small className="pain-guidance">Em caso de dor intensa, inchaço importante ou dificuldade para caminhar, procure atendimento de saúde.</small></section>}</>}
-    {tab==="Mais"&&moreView==="races"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setRaceState("")}}>← Voltar</button><span className="overline">OBJETIVOS E MARCAS</span><h1>Provas e recordes</h1><p>Cadastre sua prova. O treinador analisa e confirma como ela entra no planejamento.</p><section className="race-record-head"><article><small>RECORDE NOS 10 KM</small><b>{raceData.records?.find((r:any)=>r.distance==="10 km")?.result_time||"33:28"}</b><span>Melhor marca registrada</span></article><article><small>PRÓXIMA PROVA</small><b>{raceData.races?.[0]?.name||"Corrida do SESI"}</b><span>{raceData.races?.[0]?`${raceData.races[0].race_date} · ${raceData.races[0].distance}`:"23/08/2026 · 10 km"}</span></article></section><section className="race-record-form"><span className="overline">NOVA PROVA</span><h2>Quero correr esta prova</h2><div className="race-fields"><label>Nome da prova<input value={raceForm.name} onChange={e=>setRaceForm({...raceForm,name:e.target.value})} placeholder="Ex.: Meia de Pomerode"/></label><label>Data<input type="date" value={raceForm.raceDate} onChange={e=>setRaceForm({...raceForm,raceDate:e.target.value})}/></label><label>Distância<select value={raceForm.distance} onChange={e=>setRaceForm({...raceForm,distance:e.target.value})}>{["5 km","10 km","21,1 km","42,2 km","Outra"].map(d=><option key={d}>{d}</option>)}</select></label><label>Cidade <small>opcional</small><input value={raceForm.city} onChange={e=>setRaceForm({...raceForm,city:e.target.value})}/></label><label className="full">Objetivo <small>opcional</small><input value={raceForm.goal} onChange={e=>setRaceForm({...raceForm,goal:e.target.value})} placeholder="Concluir, buscar recorde ou tempo desejado"/></label></div><button disabled={!raceForm.name||!raceForm.raceDate||raceState==="saving"} onClick={()=>saveRaceRecord("race")}>{raceState==="race-saved"?"Prova enviada para análise ✓":"Enviar prova ao treinador"}</button></section><section className="race-record-form compact"><span className="overline">NOVO RECORDE PESSOAL</span><h2>Registrar melhor marca</h2><div className="race-fields"><label>Distância<select value={recordForm.distance} onChange={e=>setRecordForm({...recordForm,distance:e.target.value})}>{["1,5 km","3 km","5 km","10 km","21,1 km","42,2 km"].map(d=><option key={d}>{d}</option>)}</select></label><label>Tempo<input value={recordForm.resultTime} onChange={e=>setRecordForm({...recordForm,resultTime:e.target.value})} placeholder="00:38:25"/></label><label>Data <small>opcional</small><input type="date" value={recordForm.raceDate} onChange={e=>setRecordForm({...recordForm,raceDate:e.target.value})}/></label><label>Prova <small>opcional</small><input value={recordForm.eventName} onChange={e=>setRecordForm({...recordForm,eventName:e.target.value})}/></label></div>{raceState==="error"&&<p className="pain-error">Não foi possível salvar. Tente novamente.</p>}<button disabled={!recordForm.resultTime||raceState==="saving"} onClick={()=>saveRaceRecord("record")}>{raceState==="record-saved"?"Recorde registrado ✓":"Salvar recorde"}</button></section></>}
-    {tab==="Hoje"&&showTraining&&<WorkoutAnalysis secureStudentMode={secureStudentMode} weekStart={savedWeek?.week_start} workoutDay={today.key} session={todaySession}/>}{tab==="Hoje"&&<RecentWorkouts secureStudentMode={secureStudentMode}/>}  
-  </section><nav className="student-nav">{[["Hoje","⌂"],["Minha semana","▤"],["Evolução","↗"],["Mais","≡"]].map(([name,icon])=><button key={name} className={tab===name?"active":""} onClick={()=>{setTab(name);if(name!=="Mais")setMoreView("menu")}}><i>{icon}</i><span>{name}</span></button>)}</nav></main>
+    {tab==="Mais"&&moreView==="races"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setRaceState("")}}>← Voltar</button><span className="overline">OBJETIVOS E MARCAS</span><h1>Provas e recordes</h1><p>Cadastre sua prova. O treinador analisa e confirma como ela entra no planejamento.</p><section className="race-record-head"><article><small>RECORDE NOS 10 KM</small><b>{raceData.records?.find((r:any)=>r.distance==="10 km")?.result_time||"—"}</b><span>{raceData.records?.some((r:any)=>r.distance==="10 km")?"Melhor marca registrada":"Nenhuma marca registrada"}</span></article><article><small>PRÓXIMA PROVA</small><b>{raceData.races?.[0]?.name||"Nenhuma cadastrada"}</b><span>{raceData.races?.[0]?`${String(raceData.races[0].race_date).split("-").reverse().join("/")} · ${raceData.races[0].distance}`:"Cadastre abaixo para o professor analisar"}</span></article></section><section className="race-record-form"><span className="overline">NOVA PROVA</span><h2>Quero correr esta prova</h2><div className="race-fields"><label>Nome da prova<input value={raceForm.name} onChange={e=>setRaceForm({...raceForm,name:e.target.value})} placeholder="Ex.: Meia de Pomerode"/></label><label>Data<input type="date" value={raceForm.raceDate} onChange={e=>setRaceForm({...raceForm,raceDate:e.target.value})}/></label><label>Distância<select value={raceForm.distance} onChange={e=>setRaceForm({...raceForm,distance:e.target.value})}>{["5 km","10 km","21,1 km","42,2 km","Outra"].map(d=><option key={d}>{d}</option>)}</select></label><label>Cidade <small>opcional</small><input value={raceForm.city} onChange={e=>setRaceForm({...raceForm,city:e.target.value})}/></label><label className="full">Objetivo <small>opcional</small><input value={raceForm.goal} onChange={e=>setRaceForm({...raceForm,goal:e.target.value})} placeholder="Concluir, buscar recorde ou tempo desejado"/></label></div><button disabled={!raceForm.name||!raceForm.raceDate||raceState==="saving"} onClick={()=>saveRaceRecord("race")}>{raceState==="race-saved"?"Prova enviada para análise ✓":"Enviar prova ao treinador"}</button></section><section className="race-record-form compact"><span className="overline">NOVO RECORDE PESSOAL</span><h2>Registrar melhor marca</h2><div className="race-fields"><label>Distância<select value={recordForm.distance} onChange={e=>setRecordForm({...recordForm,distance:e.target.value})}>{["1,5 km","3 km","5 km","10 km","21,1 km","42,2 km"].map(d=><option key={d}>{d}</option>)}</select></label><label>Tempo<input value={recordForm.resultTime} onChange={e=>setRecordForm({...recordForm,resultTime:e.target.value})} placeholder="00:38:25"/></label><label>Data <small>opcional</small><input type="date" value={recordForm.raceDate} onChange={e=>setRecordForm({...recordForm,raceDate:e.target.value})}/></label><label>Prova <small>opcional</small><input value={recordForm.eventName} onChange={e=>setRecordForm({...recordForm,eventName:e.target.value})}/></label></div>{raceState==="error"&&<p className="pain-error">Não foi possível salvar. Tente novamente.</p>}<button disabled={!recordForm.resultTime||raceState==="saving"} onClick={()=>saveRaceRecord("record")}>{raceState==="record-saved"?"Recorde registrado ✓":"Salvar recorde"}</button></section></>}
+    {tab==="Hoje"&&showTraining&&<WorkoutAnalysis secureStudentMode={secureStudentMode} weekStart={savedWeek?.week_start} workoutDay={today.key} session={todaySession}/>}
+    {tab==="Hoje"&&studentAlerts.length>0&&<section className="student-notification-center"><header><span>🔔</span><div><small>NOVIDADES DO SEU TREINADOR</small><b>{plural(studentAlerts.length, "aviso")} para você</b></div></header>{studentAlerts.slice(0,3).map(alert=><article key={alert.id} className={alert.tone}><i>{alert.icon}</i><span><b>{alert.title}</b><small>{alert.detail}</small><button onClick={alert.open}>{alert.action} →</button></span>{!alert.exigeAcao&&<button aria-label="Marcar aviso como lido" onClick={()=>dismissStudentAlert(alert.id)}>×</button>}</article>)}</section>}{tab==="Hoje"&&todaySummary}{tab==="Hoje"&&<RecentWorkouts itens={executions.filter((item:ExecucaoRegistrada)=>Number(item.created_at)>=Date.now()-7*86_400_000)}/>}  
+  </section>
+  {/* A Central de avisos só existia no painel do treinador e no diagnóstico, e
+      a área do aluno chamava `avise()` sem ter onde mostrar: o envio do teste
+      acontecia — ou falhava — sem uma palavra na tela. */}
+  <CentralDeAvisos />
+  </main>
 }

@@ -27,7 +27,21 @@ const LOCK_WINDOW_MS = 15 * 60 * 1000;
  * DEV_INITIAL_PASSWORD estiverem definidas no ambiente, e todo acesso dela fica
  * registrado no log de segurança.
  */
-export type UserRole = "coach" | "student" | "dev";
+export type UserRole = "coach" | "student" | "dev" | "owner";
+
+/**
+ * Ordem de autoridade: dev > proprietário > treinador > aluno.
+ *
+ * O proprietário é um treinador com duas atribuições a mais: criar as contas
+ * dos outros treinadores e conferir a área deles. Ele não é manutenção — não
+ * alcança o diagnóstico, os erros nem o banco. Quem responde por isso é o dev.
+ */
+export const HIERARQUIA: Record<UserRole, number> = { dev: 3, owner: 2, coach: 1, student: 0 };
+
+/** Um papel alcança o que o outro alcança? */
+export function alcanca(papel: UserRole | undefined, minimo: UserRole): boolean {
+  return papel !== undefined && HIERARQUIA[papel] >= HIERARQUIA[minimo];
+}
 
 export type UserAccount = {
   id: string;
@@ -50,6 +64,11 @@ export type SessionIdentity =
    * momento; quem age continua sendo a própria conta de manutenção.
    */
   | { role: "dev"; email: string; userId: string; name: string; mustChangePassword: boolean; visitando?: { email: string; name: string; userId: string } }
+  /**
+   * Proprietário. `visitando` diz qual treinador da equipe ele está conferindo;
+   * como na manutenção, quem age continua sendo a conta do proprietário.
+   */
+  | { role: "owner"; email: string; userId: string; name: string; mustChangePassword: boolean; visitando?: { email: string; name: string; userId: string } }
   | { role: "coach"; email: string; userId: string; name: string; mustChangePassword: boolean }
   | { role: "student"; email: string; userId: string; name: string; athleteName: string; mustChangePassword: boolean };
 
@@ -226,16 +245,26 @@ export async function identityFromRequest(db: AuthDatabase, request: Request): P
   await db.prepare("UPDATE user_sessions SET last_seen_at = ? WHERE token_hash = ?").bind(now, tokenHash).run();
 
   const mustChangePassword = Number(account.must_change_password) === 1;
+
+  /* A visita é resolvida aqui para que o resto do sistema receba a identidade
+     já pronta, sem precisar saber que existe manutenção ou proprietário. A
+     manutenção pode visitar qualquer treinador, inclusive o proprietário; o
+     proprietário só visita treinador comum — visitar a si mesmo ou a quem está
+     acima dele não teria sentido, e abriria caminho para escalar papel. */
+  const resolveVisita = async (papeisVisitaveis: string[]) => {
+    if (!session.impersonating_user_id) return undefined;
+    const marcadores = papeisVisitaveis.map(() => "?").join(",");
+    const alvo = await db.prepare(`SELECT id, email, name FROM user_accounts WHERE id = ? AND role IN (${marcadores}) LIMIT 1`)
+      .bind(session.impersonating_user_id, ...papeisVisitaveis).first() as { id?: string; email?: string; name?: string } | null;
+    if (!alvo?.id || !alvo.email) return undefined;
+    return { userId: alvo.id, email: alvo.email, name: alvo.name ?? alvo.email };
+  };
+
   if (account.role === "dev") {
-    // A visita é resolvida aqui para que o resto do sistema receba a identidade
-    // já pronta, sem precisar saber que existe manutenção.
-    let visitando: { email: string; name: string; userId: string } | undefined;
-    if (session.impersonating_user_id) {
-      const alvo = await db.prepare("SELECT id, email, name, role FROM user_accounts WHERE id = ? AND role = 'coach' LIMIT 1")
-        .bind(session.impersonating_user_id).first() as { id?: string; email?: string; name?: string } | null;
-      if (alvo?.id && alvo.email) visitando = { userId: alvo.id, email: alvo.email, name: alvo.name ?? alvo.email };
-    }
-    return { role: "dev", email: account.email, userId: account.id, name: account.name, mustChangePassword, visitando };
+    return { role: "dev", email: account.email, userId: account.id, name: account.name, mustChangePassword, visitando: await resolveVisita(["coach", "owner"]) };
+  }
+  if (account.role === "owner") {
+    return { role: "owner", email: account.email, userId: account.id, name: account.name, mustChangePassword, visitando: await resolveVisita(["coach"]) };
   }
   if (account.role === "coach") {
     return { role: "coach", email: account.email, userId: account.id, name: account.name, mustChangePassword };
@@ -283,12 +312,18 @@ export function isValidEmail(email: string): boolean {
 }
 
 /**
- * Identificador de login aceito para a conta de manutenção. Diferente das
- * contas de treinador e aluno, não precisa ser um e-mail — é um nome curto que
- * o dono digita, e nunca recebe mensagem nenhuma.
+ * Identificador de login aceito para a conta de manutenção.
+ *
+ * Aceita um nome curto — a conta não recebe mensagem nenhuma — ou um e-mail,
+ * porque quem instala costuma preferir o próprio endereço. O e-mail precisa
+ * ser diferente do usado pela conta de treinador: `user_accounts.email` tem
+ * índice único, e repetir o endereço converteria a conta existente em conta de
+ * manutenção. Um sufixo `+dev` resolve, e chega na mesma caixa de entrada.
  */
 export function isValidDevLogin(login: string): boolean {
-  return /^[a-zA-Z0-9._-]{1,60}$/.test(login);
+  const valor = login.trim();
+  if (valor.length < 1 || valor.length > 254) return false;
+  return /^[a-zA-Z0-9._-]{1,60}$/.test(valor) || isValidEmail(valor);
 }
 
 /**
@@ -305,17 +340,71 @@ export async function ensureDevAccount(
   if (!devLogin || !isValidDevLogin(devLogin)) return "not_configured";
   if (!devPassword || devPassword.length < MIN_PASSWORD_LENGTH) return "not_configured";
   const login = devLogin.trim().toLowerCase();
-  const existente = await db.prepare("SELECT id FROM user_accounts WHERE email = ? AND role = 'dev' LIMIT 1").bind(login).first();
-  if (existente) return "ready";
-  await createAccount(db, {
-    email: login,
-    name: "Desenvolvimento",
-    role: "dev",
-    password: devPassword,
-    mustChangePassword: false,
-    status: "Ativo",
-  });
-  return "created";
+
+  const existente = await db.prepare("SELECT id FROM user_accounts WHERE email = ? AND role = 'dev' LIMIT 1").bind(login).first() as { id?: string } | null;
+  let idConfigurado = existente?.id ?? "";
+  let resultado: "ready" | "created" = "ready";
+
+  if (idConfigurado) {
+    /* A manutenção é o topo da cadeia — dev acima do treinador, treinador acima
+       do aluno — e por isso a conta apontada pelo ambiente se conserta sozinha.
+       Sem isso não sobra caminho de volta dentro do aplicativo: quem
+       destrancaria é justamente quem ficou trancado.
+
+       Só o bloqueio administrativo é desfeito. A trava por tentativas erradas
+       (`locked_until`) fica de pé e expira sozinha: limpá-la a cada requisição
+       deixaria a conta mais poderosa do sistema sem defesa contra tentativa e
+       erro de senha. */
+    await db.prepare(
+      "UPDATE user_accounts SET status = 'Ativo', updated_at = ? WHERE id = ? AND status <> 'Ativo'",
+    ).bind(Date.now(), idConfigurado).run();
+  } else {
+    const criada = await createAccount(db, {
+      email: login,
+      name: "Desenvolvimento",
+      role: "dev",
+      password: devPassword,
+      mustChangePassword: false,
+      status: "Ativo",
+    });
+    idConfigurado = criada.id;
+    resultado = "created";
+  }
+
+  /* Trocar DEV_LOGIN deixava a conta anterior ativa, com a senha antiga ainda
+     valendo: cada mudança de login somava mais uma porta de acesso irrestrito.
+     A anterior é fechada — mas só depois que a conta configurada existe e está
+     ativa, e nunca antes. A ordem importa: fechar primeiro e criar depois foi o
+     que bloqueou as duas contas de manutenção de uma vez e deixou o sistema
+     sem nenhum acesso. */
+  const anteriores = await db.prepare(
+    "SELECT id, email FROM user_accounts WHERE role = 'dev' AND id <> ? AND status <> 'Bloqueado'",
+  ).bind(idConfigurado).all();
+  for (const conta of (anteriores.results ?? []) as Array<{ id: string; email: string }>) {
+    await db.prepare("UPDATE user_accounts SET status = 'Bloqueado', updated_at = ? WHERE id = ?").bind(Date.now(), conta.id).run();
+    await destroySessionsForUser(db, conta.id);
+    /* Bloqueio automático sem registro é invisível: quando isto aconteceu, não
+       havia no histórico de segurança nada que explicasse a porta fechada. */
+    await registraFechamentoDeManutencao(db, conta.email, login);
+  }
+
+  return resultado;
+}
+
+/**
+ * Deixa rastro do fechamento automático de uma conta de manutenção.
+ *
+ * Falhar aqui não pode impedir a autenticação de seguir: o registro é
+ * importante, mas menos do que conseguir entrar.
+ */
+async function registraFechamentoDeManutencao(db: AuthDatabase, fechada: string, atual: string): Promise<void> {
+  try {
+    await db.prepare(
+      "INSERT INTO security_events (id, actor_email, event_type, route, details, created_at) VALUES (?, 'sistema', 'Conta de manutenção anterior fechada', 'ensureDevAccount', ?, ?)",
+    ).bind(crypto.randomUUID(), `Conta ${fechada} · DEV_LOGIN passou a ser ${atual}`, Date.now()).run();
+  } catch {
+    // Tabela ainda não criada nesta instalação: seguir sem registro.
+  }
 }
 
 export async function createAccount(
@@ -378,7 +467,12 @@ export async function ensureCoachAccount(
   initialPassword: string | undefined,
   coachName = "Treinador",
 ): Promise<CoachAccountState> {
-  const existing = await db.prepare("SELECT id FROM user_accounts WHERE role = 'coach' LIMIT 1").first();
+  /* O proprietário conta como treinador aqui, e a razão é concreta: promover o
+     único treinador a proprietário deixava zero contas com role 'coach', esta
+     verificação achava que não havia treinador e recriava a conta configurada —
+     e como `createAccount` sobrescreve o papel no upsert, a promoção era
+     desfeita no boot seguinte, sem nada no log dizendo por quê. */
+  const existing = await db.prepare("SELECT id FROM user_accounts WHERE role IN ('coach', 'owner') LIMIT 1").first();
   if (existing) return "ready";
   if (!coachEmail || !isValidEmail(coachEmail)) return "not_configured";
   if (!initialPassword || passwordProblem(initialPassword)) return "not_configured";

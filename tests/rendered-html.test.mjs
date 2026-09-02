@@ -54,15 +54,26 @@ const coachCookie = { cookie: `zonas_session=${COACH_SESSION}` };
 const studentCookie = { cookie: `zonas_session=${STUDENT_SESSION}` };
 const blockedCookie = { cookie: `zonas_session=${BLOCKED_SESSION}` };
 
-function statement(resolveFirst, onRun) {
+function statement(resolveFirst, onRun, resolveAll) {
   return {
     values: [],
     bind(...values) { this.values = values; return this; },
     async first() { return resolveFirst(this.values); },
-    async all() { return { results: [] }; },
+    async all() { return { results: resolveAll ? resolveAll(this.values) : [] }; },
     async run() { onRun?.(this.values); return { success: true, meta: { changes: 1 } }; },
   };
 }
+
+/**
+ * A biblioteca do treinador da sessão nos testes.
+ *
+ * As planilhas deixaram de ser constantes do cliente e viraram dado de cada
+ * treinador. O treinador principal recebe as dez de fábrica na migração, então
+ * é isso que o dublê devolve — e um nome fora desta lista é recusado, que é
+ * exatamente a separação que se quer provar.
+ */
+const BIBLIOTECA_DO_TREINADOR = ["Iniciantes", "5 km Bronze", "5 km Prata", "5 km Ouro", "5 km Elite",
+  "10 km Lion", "Meia Start", "Meia Finish", "One Marathon", "Full Marathon"].map((name) => ({ name }));
 
 /** Responde às consultas de sessão e delega todo o resto ao banco do teste. */
 function withSession(prepare) {
@@ -78,6 +89,13 @@ function withSession(prepare) {
       return statement(([id]) => Object.values(SESSION_ACCOUNTS).find((account) => account.id === id) ?? null);
     }
     if (sql.startsWith("UPDATE user_sessions")) return statement(() => null);
+    if (sql.includes("FROM custom_plans WHERE coach_email")) return statement(() => null, undefined, () => BIBLIOTECA_DO_TREINADOR);
+    /* Gravar sobre um aluno passou a exigir que ele seja da carteira de quem
+       pede. Nos testes o aluno é do treinador da sessão; os que provam a recusa
+       montam o próprio dublê e não passam por aqui. */
+    if (sql.includes("SELECT coach_email FROM athletes WHERE name")) {
+      return statement(() => ({ coach_email: "treinador@exemplo.com" }));
+    }
     return prepare(sql);
   };
 }
@@ -169,6 +187,372 @@ test("uses a computer-first workspace for weekly programming and workout buildin
   assert.match(css, /width:min\(1120px,calc\(100vw - 260px\)\)/);
 });
 
+test("names the data controller the privacy law requires", async () => {
+  const privacidade = await readFile(new URL("../app/privacy/page.tsx", import.meta.url), "utf8");
+
+  /* A LGPD (arts. 9º, I e 41) exige que quem trata dado pessoal se identifique a
+     quem é tratado. Enquanto a constante estava vazia, a página dizia que o dado
+     era obtido com o treinador — verdade, mas não substitui a identificação
+     formal num serviço aberto ao público. */
+  assert.doesNotMatch(privacidade, /const CONTROLADOR=\{nome:"",documento:"",encarregado:"",email:""\}/);
+  assert.match(privacidade, /nome:"[^"]+"/);
+  assert.match(privacidade, /documento:"(CPF|CNPJ)[^"]+"/);
+  assert.match(privacidade, /encarregado:"[^"]+"/);
+  assert.match(privacidade, /email:"[^"@]+@[^"]+"/);
+
+  // E a página precisa continuar mostrando os quatro ao visitante.
+  for (const campo of ["CONTROLADOR.nome", "CONTROLADOR.documento", "CONTROLADOR.encarregado", "CONTROLADOR.email"]) {
+    assert.ok(privacidade.includes(campo), `a página não mostra ${campo}`);
+  }
+});
+
+test("keeps the deploy config in step with the development bindings", async () => {
+  const wranglerRaw = await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8");
+  const viteConfig = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
+  const hosting = JSON.parse(await readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"));
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+
+  /* O desenvolvimento não lê o wrangler.jsonc: o plugin da Cloudflare recebe a
+     configuração embutida no vite.config.ts. As duas precisam concordar nos
+     bindings — se divergirem, funciona em desenvolvimento e quebra em produção,
+     que é o pior lugar para descobrir. */
+  const wrangler = JSON.parse(wranglerRaw.replace(/^\s*\/\/.*$/gm, ""));
+
+  assert.equal(wrangler.main, "./worker/index.ts");
+  assert.match(viteConfig, /main: "\.\/worker\/index\.ts"/);
+  assert.deepEqual(wrangler.compatibility_flags, ["nodejs_compat"]);
+  assert.match(viteConfig, /compatibility_flags: \["nodejs_compat"\]/);
+  assert.equal(wrangler.d1_databases[0].binding, hosting.d1);
+  assert.equal(wrangler.assets.binding, "ASSETS");
+
+  /* Todo binding que o worker usa precisa existir na configuração de deploy.
+     `env.ASSETS` e `env.IMAGES` são da plataforma; `env.DB` é o banco. Um
+     binding esquecido só aparece como erro em produção. */
+  const bindingsUsados = new Set((worker.match(/env\.(ASSETS|IMAGES|DB)\b/g) ?? []).map(m => m.split(".")[1]));
+  const bindingsDeclarados = new Set([
+    wrangler.assets?.binding,
+    wrangler.images?.binding,
+    ...(wrangler.d1_databases ?? []).map(d => d.binding),
+  ].filter(Boolean));
+  for (const binding of bindingsUsados) {
+    assert.ok(bindingsDeclarados.has(binding), `o worker usa env.${binding}, que não está no wrangler.jsonc`);
+  }
+
+  /* `vars` guarda configuração — chaves que ligam comportamento e não têm valor
+     sigiloso. Segredo nunca: o repositório é público, e segredo entra por
+     `wrangler secret put`, que grava na conta. */
+  assert.ok(wrangler.vars && typeof wrangler.vars === "object");
+
+  /* O ensaio precisa de banco PRÓPRIO. Um ambiente de teste apontando para o
+     banco de produção é pior que não ter ambiente de teste: dá a sensação de
+     estar isolado enquanto se escreve em cima dos alunos de verdade. */
+  const ensaio = wrangler.env?.ensaio;
+  assert.ok(ensaio, "falta o ambiente de ensaio no wrangler.jsonc");
+  assert.notEqual(ensaio.name, wrangler.name);
+  assert.notEqual(ensaio.d1_databases[0].database_name, wrangler.d1_databases[0].database_name);
+  assert.notEqual(ensaio.d1_databases[0].database_id, wrangler.d1_databases[0].database_id);
+  // E os mesmos bindings, senão o mesmo código não roda nos dois.
+  assert.equal(ensaio.d1_databases[0].binding, wrangler.d1_databases[0].binding);
+  assert.equal(ensaio.images.binding, wrangler.images.binding);
+  for (const proibido of ["DEV_INITIAL_PASSWORD", "COACH_INITIAL_PASSWORD", "STRAVA_CLIENT_SECRET", "GARMIN_CONSUMER_SECRET", "ZEPP_APP_SECRET", "STRAVA_TOKEN_ENCRYPTION_KEY"]) {
+    assert.doesNotMatch(wranglerRaw, new RegExp(`"${proibido}"\\s*:`), `${proibido} não pode estar no wrangler.jsonc`);
+  }
+});
+
+test("keeps the coach preview out of student-only routes, from one place", async () => {
+  const apiClient = await readFile(new URL("../app/api-client.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+
+  /* Na prévia o treinador continua sendo ele, e /api/student/* recusa com 403.
+     Cada chamada da área do aluno vinha se lembrando disso por conta própria; as
+     que esqueciam falhavam — umas caladas, outras despejando "Esta área é
+     exclusiva do aluno" na tela do treinador, uma por clique. Agora a decisão é
+     uma só: quem esquecer não quebra, porque a chamada nem sai. */
+  assert.match(apiClient, /if \(modoPrevia && path\.startsWith\("\/api\/student\/"\)\) throw new PreviaDoTreinador\(path\)/);
+  assert.match(apiClient, /export class PreviaDoTreinador extends Error/);
+  assert.match(client, /definePreviaDoTreinador\(!secureStudentMode\)/);
+
+  // Prévia não é falha: dizer "não foi possível enviar" acusaria um erro que não
+  // houve. Ela se identifica como prévia.
+  assert.match(client, /avise\("atencao","Isto é a prévia do professor",erro\.friendlyMessage\)/);
+});
+
+test("animates notices out instead of making the stack jump", async () => {
+  const avisos = await readFile(new URL("../app/avisos.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+
+  /* O aviso sumia no mesmo quadro do clique. Com vários empilhados, fechar um
+     fazia os de baixo saltarem para cima sem que se enxergasse qual saiu. */
+  assert.match(avisos, /avisosNaTela = avisosNaTela\.map\(item => item\.id === id \? \{ \.\.\.item, saindo: true \} : item\)/);
+  assert.match(avisos, /const DURACAO_DA_SAIDA = 180/);
+  // Clicar duas vezes no mesmo × não pode agendar duas remoções.
+  assert.match(avisos, /if \(avisosNaTela\.some\(item => item\.id === id && item\.saindo\)\) return/);
+
+  assert.match(css, /@keyframes aviso-entra/);
+  assert.match(css, /\.avisos-do-sistema article\.saindo\{/);
+  // `max-height` não anima a partir de `none`: sem teto de partida a saída
+  // pularia direto para altura zero, que é o salto que se queria remover.
+  assert.match(css, /\.avisos-do-sistema article\{[^}]*max-height:320px/);
+  assert.match(css, /@media \(prefers-reduced-motion:reduce\)\{[^@]*\.avisos-do-sistema article\.saindo\{animation:none;transition:none\}/);
+});
+
+test("records enough about a failure to find the line that caused it", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+
+  /* O log guardava área, código, método e status — o suficiente para saber que
+     algo falhou e insuficiente para saber o quê. A exceção era descartada nos
+     `catch` e nunca chegava ao registro. */
+  assert.match(schema, /route: text\("route"\)/);
+  assert.match(schema, /message: text\("message"\)/);
+  assert.match(schema, /stack: text\("stack"\)/);
+  assert.doesNotMatch(worker, /catch \{ return await applicationFailure/);
+  assert.match(worker, /catch \(falha\) \{ return await applicationFailure\(env, request, "[^"]+", "[^"]+", falha\); \}/);
+  assert.match(worker, /erro\?\.stack \? erro\.stack\.slice\(0, LIMITE_DA_PILHA\) : null/);
+
+  /* Identidade não entra num log técnico: para diagnosticar basta o papel de
+     quem esbarrou, e guardar o e-mail seria dado pessoal sem necessidade. */
+  assert.match(worker, /identidade\?\.role \?\? "anônimo"/);
+  assert.doesNotMatch(worker, /INSERT INTO application_errors[^)]*actor_email/);
+
+  // E dá para abrir o erro e copiar tudo, nos dois painéis.
+  assert.match(client, /className="monitor-detalhe"/);
+  assert.match(client, /const copiar=async\(error:AppError\)=>\{/);
+  assert.match(client, /aria-expanded=\{estaAberto\}/);
+
+  /* O painel dev tinha a própria consulta e a própria tabela, e ficou para trás
+     quando o log foi detalhado: mostrava área, código e status, sem como abrir.
+     É onde a manutenção olha, então é onde o detalhe mais falta. A pilha tem
+     dezenas de linhas e não cabe numa célula: abre numa tela própria. */
+  const dev = await readFile(new URL("../app/DevDashboard.tsx", import.meta.url), "utf8");
+  assert.match(dev, /function ErroAberto\(\{ erro, fechar \}: \{ erro: Erro; fechar: \(\) => void \}\)/);
+  assert.match(dev, /role="dialog" aria-modal="true"/);
+  assert.match(dev, /onClick=\{\(\) => setErroAberto\(e\)\}>Abrir<\/button>/);
+  assert.match(dev, /className="erro-pilha"/);
+  // Esc fecha: quem investiga chega de teclado, lê e sai.
+  assert.match(dev, /if \(evento\.key === "Escape"\) fechar\(\)/);
+  // As duas consultas do log precisam trazer os mesmos campos.
+  assert.equal(worker.match(/SELECT id, area, error_code, method, status_code, route, message, stack, actor_role, created_at FROM application_errors/g)?.length, 2);
+});
+
+test("lets the student send a test result the same way they finish a workout", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+
+  /* O envio não dava sinal nenhum, por dois motivos somados.
+     O primeiro: `CentralDeAvisos` só estava montada no painel do treinador e no
+     diagnóstico. A área do aluno chamava `avise()` sem ter onde mostrar, então o
+     envio acontecia — ou falhava — sem uma palavra na tela.
+     O segundo: na prévia do treinador não há sessão de aluno, e /api/student/*
+     recusa com 403. O botão parecia morto porque as duas coisas se somavam. */
+  assert.match(client, /<CentralDeAvisos \/>\n {2}<\/main>/);
+  /* A guarda saiu do envio e virou uma decisão só, no cliente de API: cada
+     chamada da área do aluno vinha se lembrando por conta própria de que a
+     prévia não é sessão de aluno, e as que esqueciam despejavam "Esta área é
+     exclusiva do aluno" na tela do treinador. */
+  assert.match(client, /useEffect\(\(\)=>\{definePreviaDoTreinador\(!secureStudentMode\)/);
+  assert.match(client, /if\(erro instanceof PreviaDoTreinador\)\{/);
+  assert.match(client, /<StudentTestsView data=\{studentTests\}[\s\S]{0,120}?secureStudentMode=\{secureStudentMode\}/);
+
+  // Entregar o teste passou a ter a forma de concluir um treino: anexo do
+  // relógio, tempo, como terminou e uma observação.
+  assert.match(client, /const receberArquivo=async\(arquivo\?:File\)=>\{/);
+  assert.match(client, /className="test-effort"/);
+  assert.match(client, /\["Muito bem","Cansado","Sentiu dor"\]/);
+  assert.match(client, /sourceFormat:arquivoLido\?\.formato,sourceKm:arquivoLido\?\.km/);
+
+  // O arquivo não sobe: é lido no navegador e só o que ele mede segue.
+  assert.match(client, /leArquivoDeAtividade\(arquivo\)/);
+  assert.doesNotMatch(worker, /"\/api\/student\/performance-tests": new Set\(\["id","minutes","seconds"\]\)/);
+  assert.match(worker, /"\/api\/student\/performance-tests": new Set\(\["id","minutes","seconds","effort","note","sourceFormat","sourceKm"\]\)/);
+
+  // E o treinador precisa ver o que o aluno contou: o número sozinho não conta
+  // tudo, porque um teste feito com dor pede outra leitura dos ritmos.
+  assert.match(schema, /effort: text\("effort"\)/);
+  assert.match(schema, /athleteNote: text\("athlete_note"\)/);
+  assert.match(client, /className="test-back-esforco"/);
+  assert.match(worker, /status,effort,athlete_note,source_format,source_km FROM performance_tests/);
+});
+
+test("tells the student a test was requested, separately from one under review", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+
+  /* Dois defeitos no mesmo aviso. O primeiro: "não aprovado" juntava o teste que
+     o treinador acabou de pedir — que espera uma corrida do ALUNO — com o que já
+     foi devolvido, que espera a análise do TREINADOR. O pedido novo aparecia com
+     o texto do outro, "o professor recebeu o resultado", antes de o aluno correr.
+     O segundo: `waitingTest && !approvedTest` escondia o aviso inteiro sempre que
+     houvesse qualquer teste aprovado no histórico — e é o caso de todo aluno que
+     já tem zonas liberadas, ou seja, exatamente quem recebe um teste novo. */
+  assert.match(client, /const testePedido=studentTests\?\.tests\?\.find\(\(test:TesteDoAluno\)=>test\.status==="Solicitado"\)/);
+  assert.match(client, /const testeEmAnalise=studentTests\?\.tests\?\.find\(\(test:TesteDoAluno\)=>test\.status==="Aguardando revisão"\)/);
+  assert.doesNotMatch(client, /waitingTest&&!approvedTest/);
+
+  // O aviso do pedido diz a distância e leva ao lugar de informar o tempo.
+  assert.match(client, /Seu treinador pediu um teste de \$\{testePedido\.distance_km\} km/);
+  assert.match(client, /action:"Informar o tempo do teste"/);
+
+  /* É pendência, não notícia: sai quando for cumprido, não quando for lido.
+     Dispensável, o aluno esconderia para sempre uma obrigação em aberto. */
+  assert.match(client, /action:"Informar o tempo do teste",exigeAcao:true/);
+  assert.match(client, /\{!alert\.exigeAcao&&<button aria-label="Marcar aviso como lido"/);
+});
+
+test("every coach-facing endpoint scopes athlete data to the coach's portfolio", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+
+  /* O vínculo aluno→treinador (`athletes.coach_email`) sempre esteve certo; o
+     que faltava era cada endpoint respeitá-lo. Sete não respeitavam, e na área
+     de um treinador apareciam os alunos de todos — foi assim que a Central de
+     avisos mostrou relatos de dor de aluno alheio.
+     Esta lista é o contrato: um handler novo que sirva o painel do treinador e
+     não recorte quebra aqui, em vez de vazar em silêncio. */
+  const HANDLERS_DO_TREINADOR = [
+    "painReportsApi", "trainingWeeksApi", "feedbacksApi", "workoutExecutionsApi",
+    "racesRecordsApi", "integrationOverviewApi",
+    "athletesApi", "athleteProfileApi", "athletePlanningApi", "performanceTestsApi",
+    "customPlansApi", "planTemplateOverridesApi", "financialApi", "coachAccountsApi",
+    "athleteAccessApi", "integrationsCoachApi",
+  ];
+
+  const semRecorte = HANDLERS_DO_TREINADOR.filter((nome) => {
+    const inicio = worker.indexOf(`async function ${nome}(`);
+    if (inicio < 0) return true;
+    const proximo = worker.indexOf("\nasync function ", inicio + 1);
+    const corpo = worker.slice(inicio, proximo < 0 ? worker.length : proximo);
+    return !/recorteDaCarteira|recorteDeAlunos|foraDaCarteira|carteiraDe\(request\)/.test(corpo);
+  });
+  assert.deepEqual(semRecorte, [], `estes handlers do treinador não recortam por carteira: ${semRecorte.join(", ")}`);
+
+  // Os dois lados do recorte: um filtra o que se lê, o outro barra o que se
+  // escreve. Só o primeiro deixaria o treinador gravar sobre o aluno de outro.
+  assert.match(worker, /function recorteDaCarteira\(carteira: string \| null, coluna = "athlete_name"\)/);
+  assert.match(worker, /\$\{coluna\} IN \(SELECT name FROM athletes WHERE coach_email = \?\)/);
+  assert.match(worker, /async function foraDaCarteira\(env: Env, request: Request, athleteName: string\)/);
+  assert.match(worker, /error: "athlete_not_in_portfolio"/);
+
+  /* `accessRequestsCoachApi` fica fora da lista de propósito. O pedido de acesso
+     é de quem ainda NÃO é aluno — a tabela não tem `athlete_name`, e recortar
+     por carteira ali não significa nada. O que ela precisava era do vínculo na
+     outra ponta: quem aprova o pedido vira dono do aluno criado. Sem isso o
+     aluno nascia órfão e `atribuiAlunosSemDono` o entregava ao treinador
+     principal, fosse quem fosse que tivesse aprovado. */
+  assert.match(worker, /INSERT INTO athletes \([^)]*coach_email[^)]*\)/);
+  assert.match(worker, /integration,coach_email,created_at\)/);
+
+  // Nenhuma leitura das tabelas do treinador pode sobrar sem WHERE.
+  for (const tabela of ["pain_reports", "training_weeks", "training_feedbacks", "workout_executions", "athlete_races"]) {
+    assert.doesNotMatch(worker, new RegExp(`SELECT \\* FROM ${tabela} ORDER BY`),
+      `${tabela} está sendo lida sem recorte de carteira`);
+  }
+});
+
+test("keeps role badges out of the layout class namespace", async () => {
+  const dev = await readFile(new URL("../app/DevDashboard.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+
+  // O badge de papel escrevia `dev-role ${c.role}`, o que punha no elemento uma
+  // classe com o nome do papel. "student" e "coach" já eram classes de layout:
+  // `.student` é a raiz da área do aluno e `.coach` é o cartão de perfil da
+  // barra lateral. O badge herdava as regras delas.
+  //
+  // Ficou latente enquanto `.student` só trazia `min-height: 100vh`, que um
+  // elemento em linha ignora. No dia em que `.student` virou `display: grid` na
+  // versão de computador, o badge virou uma grade de 1642px de altura dentro da
+  // célula da tabela, esticando a linha inteira.
+  assert.match(dev, /<span className="dev-role" data-papel=\{c\.role\}>/);
+  assert.doesNotMatch(dev, /className=\{`dev-role \$\{c\.role\}`\}/);
+
+  // Um atributo não colide com seletor de classe nenhum, agora nem depois.
+  for (const papel of ["dev", "owner", "coach", "student"]) {
+    assert.match(css, new RegExp(`\\.dev-role\\[data-papel="${papel}"\\]`));
+  }
+  assert.doesNotMatch(css, /\.dev-role\.(dev|owner|coach|student)\b/);
+
+  // Display próprio é a segunda tranca: nada que venha de fora estica o badge.
+  assert.match(css, /\.dev-role\{display:inline-block/);
+});
+
+test("gives each coach their own athletes and their own base plans", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+
+  // A hierarquia é dev > proprietário > treinador > aluno. O proprietário é um
+  // treinador com duas atribuições a mais: criar as contas dos treinadores e
+  // conferir a área deles. Ele não alcança o diagnóstico — isso é do dev.
+  assert.match(auth, /export type UserRole = "coach" \| "student" \| "dev" \| "owner"/);
+  assert.match(auth, /HIERARQUIA: Record<UserRole, number> = \{ dev: 3, owner: 2, coach: 1, student: 0 \}/);
+  assert.match(worker, /identity\.role !== "dev" && identity\.role !== "owner"/);
+  assert.match(worker, /error: "owner_access_required"/);
+
+  // Sem visita, o proprietário vê a própria carteira — não a soma da equipe.
+  assert.match(worker, /if \(identity\?\.role === "owner"\) return identity\.visitandoEmail \?\? identity\.email/);
+
+  // As planilhas eram globais: sem dono nas duas tabelas, e o índice único por
+  // nome. Dois treinadores com uma "Base Inverno" cada um colidiam, e a semana 3
+  // de uma sobrescrevia a da outra.
+  assert.match(schema, /custom_plans_coach_name_idx"\)\.on\(table\.coachEmail, table\.name\)/);
+  assert.match(schema, /plan_template_overrides_coach_plan_week_idx"\)\.on\(table\.coachEmail, table\.planName, table\.weekNumber\)/);
+  assert.match(worker, /FROM custom_plans WHERE coach_email = \? ORDER BY name/);
+  assert.match(worker, /FROM plan_template_overrides WHERE coach_email=\? AND plan_name=\? AND week_number=\?/);
+
+  // Mandar o id da planilha de outro treinador não pode tomá-la: o WHERE no
+  // ON CONFLICT é o que impede o UPDATE de gravar sobre linha alheia.
+  assert.match(worker, /WHERE custom_plans\.coach_email = excluded\.coach_email/);
+
+  // Um treinador criado agora começa sem aluno e sem planilha; as dez de fábrica
+  // são semeadas uma única vez, e só para o treinador principal.
+  assert.match(worker, /async function semeiaPlanilhasDeFabrica/);
+  // A pergunta é "já foi semeado?", não "tem alguma planilha?": o passo que dá
+  // dono às planilhas existentes já deixa a contagem diferente de zero, e as
+  // dez nunca chegariam.
+  assert.match(worker, /if \(!Number\(jaSemeado\?\.total \?\? 0\)\) await semeiaPlanilhasDeFabrica\(env, principal\)/);
+  assert.match(worker, /role: "coach", password: senhaFinal/);
+
+  // A aba Equipe é a única diferença de navegação entre proprietário e treinador.
+  assert.match(client, /const navDoProprietario = \[\.\.\.nav, "Equipe"\]/);
+  assert.match(client, /active === "Equipe" && ehProprietario && <TeamCenter \/>/);
+
+  // Promover é ato do dev, e o papel aceito é curto: ninguém vira manutenção por aqui.
+  assert.match(worker, /if \(papel !== "owner" && papel !== "coach"\) return Response\.json\(\{ error: "invalid_role" \}/);
+  assert.match(worker, /if \(conta\.role === "dev"\) return Response\.json\(\{ error: "cannot_change_dev_role" \}/);
+});
+
+test("gives the student area a desktop shell instead of a stretched phone", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const globals = await readCss("../app/globals.css");
+  const overrides = await readCss("../app/overrides.css");
+
+  // A tela do aluno era só a versão de celular esticada: uma coluna de 800px
+  // parada no meio de 1920px, com a navegação boiando no rodapé. Agora o mesmo
+  // HTML monta a barra à esquerda no computador, como na área do professor.
+  assert.match(client, /<header className="student-rail">/);
+  assert.match(client, /<nav className="student-nav">/);
+  assert.match(client, /className="student-rail-sections"/);
+  assert.match(client, /className="student-rail-exit"/);
+  assert.match(globals, /@media \(min-width:900px\)/);
+  assert.match(globals, /\.student\{display:grid;grid-template-columns:var\(--nav-width\) minmax\(0,1fr\)\}/);
+  assert.match(globals, /\.student-rail\{position:sticky/);
+
+  // A barra já lista as seções, então a aba "Mais" e o "← Voltar" mostrariam a
+  // mesma navegação duas vezes na mesma tela.
+  assert.match(globals, /\.student-nav \.student-tab-more,\.student-content \.student-back\{display:none\}/);
+
+  // O vidro fosco do cabeçalho tem de ficar num pseudoelemento: com o
+  // backdrop-filter na própria barra ela vira bloco-contentor dos filhos fixos,
+  // e a navegação do celular — que agora mora dentro dela — se ancorava no
+  // cabeçalho de 64px em vez da janela, indo parar no topo da tela.
+  assert.match(overrides, /\.student-rail::before\{[^}]*backdrop-filter:blur\(14px\)/);
+  assert.doesNotMatch(overrides, /\.student-rail\{[^}]*backdrop-filter/);
+
+  // A faixa dizia "MAIS" mesmo dentro de uma seção: o caminho, não o lugar.
+  assert.match(client, /const tituloDaFaixa = tab === "Mais" && moreView !== "menu"/);
+});
+
 test("gives the student a polished mobile-first workout experience", async () => {
   const css = await readCss("../app/overrides.css");
   const globals = await readCss("../app/globals.css");
@@ -195,10 +579,11 @@ test("lets the coach preview the exact experience of any selected athlete", asyn
 test("opens and reveals the complete workout when a student taps a week day", async () => {
   const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   const css = await readCss("../app/overrides.css");
+  const base = await readCss("../app/globals.css");
   assert.match(source, /detail\?\.scrollIntoView\(\{behavior:"smooth",block:"start"\}\)/);
   assert.match(source, /detail\?\.focus\(\{preventScroll:true\}\)/);
   assert.match(source, /className="student-week-detail" tabIndex=\{-1\}/);
-  assert.match(css, /\.student-week-grid article\.selected/);
+  assert.match(base, /\.student-week-list article\.selected/);
   assert.match(css, /scroll-margin-top/);
 });
 
@@ -214,9 +599,11 @@ test("requires a second confirmation for sensitive coach actions", async () => {
   assert.match(source, /Confirmar bloqueio de/);
   assert.match(source, /Confirmar: trancar semana/);
   assert.match(source, /Os treinos deixarão de aparecer imediatamente na área do aluno/);
-  assert.match(source, /window\.confirm\(`CONFERÊNCIA AUTOMÁTICA/);
-  assert.match(source, /Liberar esta semana para o aluno\?/);
-  assert.match(source, /Complete os treinos estruturados antes de liberar/);
+  // A conferência antes de liberar continua obrigatória; o que mudou é que ela
+  // deixou de ser um `window.confirm` e virou um diálogo da própria interface.
+  assert.match(source, /titulo:`Liberar esta semana para \$\{selected\.split\(" "\)\[0\]\}\?`/);
+  assert.match(source, /confirmar:"Liberar para o aluno →"/);
+  assert.match(source, /Falta estruturar treino antes de liberar/);
 });
 
 test("advances a plan week only after explicit coach approval", async () => {
@@ -249,7 +636,10 @@ test("uses permanent library edits when loading or advancing an athlete week", a
   assert.match(source, /data\.override\?\.sessions/);
   assert.match(source, /await sessionsForSavedPlanWeek\(current\.plan,nextPlanningWeek,current\.days\)/);
   assert.match(worker, /plan_template_overrides/);
-  assert.match(worker, /ON CONFLICT\(plan_name,week_number\) DO UPDATE/);
+  // O conflito passou a ser por dono + planilha + semana. Sem o dono, dois
+  // treinadores editando a semana 3 de planilhas homônimas gravavam na mesma
+  // linha e um apagava o treino do outro sem aviso.
+  assert.match(worker, /ON CONFLICT\(coach_email,plan_name,week_number\) DO UPDATE/);
 });
 
 test("links the structured workout to an athlete and shows the released steps to the student", async () => {
@@ -356,7 +746,9 @@ test("saves and reloads each athlete profile through protected persistence", asy
   const headers = { "content-type":"application/json", ...coachCookie };
   const save = await worker.fetch(new Request("https://zonasapp.example/api/athlete-profile", {method:"POST",headers,body:JSON.stringify({athleteName:"Everton Barbosa",phone:"47999990000",birthDate:"1997-11-11",objective:"10 km",integration:"Garmin",trainingDays:["Ter","Qui","Sáb"]})}), env, {waitUntil(){},passThroughOnException(){}});
   assert.equal(save.status, 200);
-  assert.ok(writes.some(({sql,values}) => sql.includes("INSERT INTO athlete_profiles") && values.includes("Everton Barbosa") && values.includes('["Ter","Qui","Sáb"]')));
+  // Os dias são gravados sempre em maiúsculas: o calendário, a semana e o
+  // perfil comparam como texto, e "Ter" nunca casaria com "TER".
+  assert.ok(writes.some(({sql,values}) => sql.includes("INSERT INTO athlete_profiles") && values.includes("Everton Barbosa") && values.includes('["TER","QUI","SÁB"]')));
   const load = await worker.fetch(new Request("https://zonasapp.example/api/athlete-profile?athlete=Everton%20Barbosa", {headers:{...coachCookie}}), env, {waitUntil(){},passThroughOnException(){}});
   assert.equal(load.status, 200);
   assert.equal((await load.json()).profile.integration, "Garmin");
@@ -683,8 +1075,9 @@ test("simplifies finance, refreshes student visuals, and exports recovery backup
   assert.match(client, /Última cópia há/);
   assert.match(worker, /zonasapp-backup-v1/);
   assert.match(worker, /content-disposition/);
-  assert.match(visual, /\.student-week-grid/);
   assert.match(visual, /grid-template-columns:1fr/);
+  const base = await readCss("../app/globals.css");
+  assert.match(base, /\.student-week-list/);
 });
 
 test("persists student workout feedback for coach review", async () => {
@@ -1026,8 +1419,12 @@ test("uses the current calendar week when the coach previews the student area", 
 test("opens the student's real profile and only coach-approved training zones", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
-  assert.match(client, /\["◎","Testes e zonas","Ritmos e frequência cardíaca","tests"\]/);
-  assert.match(client, /\["○","Meu perfil","Cadastro e dias disponíveis","profile"\]/);
+  // As seções de "Mais" saíram de dentro do JSX para uma constante, porque a
+  // barra lateral do computador lê a mesma lista que os cartões do celular.
+  assert.match(client, /const SECOES_DO_ALUNO: Array<\[string, string, string, string\]> = \[/);
+  assert.match(client, /"Testes e zonas", "Ritmos e frequ\\u00eancia card\\u00edaca", "tests"/);
+  assert.match(client, /"Meu perfil", "Cadastro e dias dispon\\u00edveis", "profile"/);
+  assert.match(client, /<section className="student-more">\{SECOES_DO_ALUNO\.map/);
   assert.match(client, /\/api\/student\/performance-tests/);
   assert.match(client, /test\.status==="Aprovado"/);
   assert.match(client, /Somente ritmos revisados e liberados pelo professor/);
@@ -1044,13 +1441,486 @@ test("builds student evolution from recorded workouts instead of demonstration n
   assert.match(client, /REALIZADO/);
   assert.match(client, /ÚLTIMOS RETORNOS REAIS/);
   assert.match(client, /Este aluno ainda não registrou resultados ou feedbacks/);
-  assert.match(client, /const monthExecutions=executions\.filter/);
+  // O rótulo dizia "no mês" enquanto a busca trazia sete dias. Agora a janela
+  // pedida ao servidor e o texto na tela são a mesma coisa.
+  assert.match(client, /workout-executions\?days=30/);
+  assert.match(client, /const janelaKm=executions\.reduce/);
   assert.match(client, /correct_percentage/);
-  assert.match(client, /VOLUME REGISTRADO NO MÊS/);
+  assert.match(client, /VOLUME REGISTRADO · 30 DIAS/);
   assert.match(client, /Sua evolução começará no primeiro treino/);
   assert.doesNotMatch(client, /86,4 <em>km<\/em>/);
   assert.doesNotMatch(client, /83% concluídos/);
   assert.doesNotMatch(client, /\[\["20–26 jul",3,3\]/);
+});
+
+test("tells the student the pace of the zone the workout asks for", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // O treino liberado guarda a zona ("Z2"), não o ritmo, e o cartão exibia a
+  // frase "zona aprovada" no lugar do número. O ritmo já existia no teste
+  // aprovado, a duas telas de distância.
+  assert.match(client, /function approvedZones\(tests:unknown\)/);
+  assert.match(client, /const zonasAprovadas=approvedZones\(studentTests\)/);
+  assert.match(client, /<StructuredWorkoutCard session=\{todaySession\} zones=\{zonasAprovadas\}\/>/);
+  assert.match(client, /<StructuredWorkoutCard session=\{openedWeekSession\} zones=\{zonasAprovadas\}\/>/);
+  assert.match(client, /Ritmo individual ainda não liberado/);
+  assert.doesNotMatch(client, /"zona aprovada"/);
+});
+
+test("answers what comes next on a rest day", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // Antes o dia sem treino era uma caixa vazia de 300px. O próximo treino da
+  // semana já está liberado e responde "e agora?".
+  assert.match(client, /const proximaSessao=/);
+  assert.match(client, /HOJE É DESCANSO/);
+  assert.match(client, /Semana concluída/);
+  assert.match(css, /\.student-rest/);
+  assert.doesNotMatch(client, /Hoje é dia de descanso/);
+});
+
+test("adds up the week the student already ran", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // Os registros de execução existiam; nenhuma tela do aluno os somava.
+  assert.match(client, /const diasConcluidos=diasComTreino\.filter/);
+  assert.match(client, /className="student-week-progress"/);
+  assert.match(client, /className="student-progress-bar"/);
+  assert.match(css, /\.student-progress-bar span/);
+  // A situação de cada dia aparece na semana, incluindo o dia de hoje.
+  assert.match(client, /const estado=!session\?"descanso":feito\?"feito":naoRealizado\?"faltou":"pendente"/);
+  assert.match(css, /\.student-week-list article\.feito/);
+});
+
+test("never shows the student a number that is not theirs", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Com a tabela vazia a tela exibia um recorde e uma prova inventados, e a
+  // prévia do professor mostrava uma cobrança fixa e um planejamento fixo.
+  assert.doesNotMatch(client, /"33:28"/);
+  assert.doesNotMatch(client, /Corrida do SESI/);
+  assert.doesNotMatch(client, /amount_cents:11000/);
+  assert.doesNotMatch(client, /week_number:8,total_weeks:16/);
+  // A prévia diz que é prévia em vez de preencher com um valor qualquer.
+  assert.match(client, /A mensalidade real do aluno não é exibida aqui/);
+  // E a unidade do ritmo aparece uma vez, não duas.
+  assert.doesNotMatch(client, /\{pace\(Number\(zone\.fast\)\)\}\/km/);
+  assert.doesNotMatch(client, /\{pace\(Number\(tempo\.targetPace\)\)\}\/km/);
+});
+
+test("reads the athlete training days from a single source", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // `training_days` estava gravado em `athletes` e em `athlete_profiles`. A
+  // cópia em `athletes` nasce do pedido de acesso e envelhece: com ela vazia o
+  // calendário marcava os sete dias como indisponíveis, mesmo com a semana
+  // liberada e o aluno vendo os treinos.
+  assert.match(worker, /LEFT JOIN athlete_profiles ON athlete_profiles\.athlete_name = athletes\.name/);
+  assert.match(worker, /athlete_profiles\.training_days AS profile_training_days/);
+  assert.match(worker, /training_days: dias && dias !== "\[\]"/);
+  // E a coluna auxiliar não vaza para a resposta.
+  assert.match(worker, /const \{ profile_training_days: diasDoPerfil, \.\.\.aluno \} = linha/);
+  assert.match(worker, /Response\.json\(\{ athletes: alunos/);
+});
+
+test("counts programmed workouts, not available days", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // O rodapé do calendário dizia "N treinos programados" contando os dias
+  // disponíveis do aluno: o número aparecia mesmo com a semana em branco.
+  assert.match(client, /plural\(readyWorkoutCount,"treino programado","treinos programados"\)/);
+  assert.doesNotMatch(client, /\{current\.days\.length\} treinos programados/);
+  // Sem dias cadastrados a tela explica o que falta em vez de mostrar sete
+  // quadros apagados sem motivo.
+  assert.match(client, /Nenhum dia de treino cadastrado para este aluno/);
+  assert.match(client, /available-note\$\{current\.days\.length\?"":" sem-dias"\}/);
+});
+
+test("keeps a single Pix form on the finance screen", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // Havia dois formulários de chave Pix: o do passo a passo, que funciona, e um
+  // segundo bloco completo que o CSS escondia com display:none.
+  assert.doesNotMatch(client, /className="financial-settings"/);
+  assert.doesNotMatch(css, /\.financial-quick-setup~\.financial-settings/);
+  assert.match(client, /className="financial-quick-setup"/);
+  assert.match(client, /Chave Pix<input value=\{pixKey\}/);
+});
+
+test("lets the coach find an athlete by name", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // Eram 22 botões de filtro e nenhuma busca, num painel mais alto que a lista.
+  assert.match(client, /className="filtro-busca"/);
+  assert.match(client, /a\.name\.toLocaleLowerCase\("pt-BR"\)\.includes\(termo\)/);
+  assert.match(client, /Nenhum aluno com/);
+  // Planilha-base sem aluno nenhum fica recolhida atrás de um botão.
+  assert.match(client, /sem aluno`/);
+  assert.match(css, /\.filters \.filtro-busca input/);
+});
+
+test("never asks or warns through a browser dialog", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // `window.confirm` devolve "não" na hora, e sem aparecer, depois que o
+  // navegador oferece "impedir que esta página crie caixas de diálogo
+  // adicionais". Era o que fazia "Liberar semana para o aluno" parar de
+  // responder: a rotina no servidor estava certa, a pergunta é que sumia.
+  const dev = await readFile(new URL("../app/DevDashboard.tsx", import.meta.url), "utf8");
+  const avisos = await readFile(new URL("../app/avisos.tsx", import.meta.url), "utf8");
+  const nativos = `${client}${dev}`.match(/window\.(alert|confirm)\(/g) ?? [];
+  assert.equal(nativos.length, 0, "nenhum diálogo do navegador deve restar");
+  // O aviso é uma peça compartilhada: mora em módulo próprio e é montada tanto
+  // na área do treinador quanto no painel de manutenção.
+  assert.match(avisos, /export function CentralDeAvisos\(\)/);
+  assert.match(client, /<CentralDeAvisos \/>/);
+  assert.match(dev, /<CentralDeAvisos \/>/);
+  assert.match(css, /\.avisos-do-sistema/);
+  assert.match(css, /\.confirmacao-sistema/);
+});
+
+test("always answers the coach after a release attempt", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Antes, cancelar a conferência devolvia ao calendário sem mensagem nenhuma
+  // e sem mudar nada na tela: era impossível saber se a ação tinha falhado.
+  assert.match(client, /const aceitou=await pergunte\(\{/);
+  assert.match(client, /avise\("atencao","Liberação cancelada"/);
+  assert.match(client, /const liberou=await saveWeek\("Liberada"/);
+  assert.match(client, /liberou\?"Semana liberada":"Não foi possível liberar a semana"/);
+});
+
+test("lets the coach switch accounts from the sidebar", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // Sair só existia no topo da tela. Junto do perfil é onde se procura quando a
+  // intenção é trocar de login, e por isso o bloco passou a mostrar o e-mail da
+  // conta em uso em vez do papel.
+  assert.match(client, /className="coach-exit"/);
+  assert.match(client, /aria-label="Sair e entrar com outra conta"/);
+  assert.match(client, /<small>\{session\.email\}<\/small>/);
+  assert.match(css, /\.coach-exit/);
+});
+
+test("counts dev diagnostics without stopping at the table limit", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const dev = await readFile(new URL("../app/DevDashboard.tsx", import.meta.url), "utf8");
+  // Os cartões do resumo usavam o tamanho das listas exibidas: 80 erros e 40
+  // sessões. O número parava de crescer justamente quando passava do limite.
+  assert.match(worker, /SELECT COUNT\(\*\) AS total FROM application_errors WHERE created_at > \?/);
+  assert.match(worker, /SELECT COUNT\(\*\) AS total FROM user_sessions WHERE expires_at > \?/);
+  assert.doesNotMatch(worker, /errosUltimas24h: errosRecentes\.length/);
+  assert.doesNotMatch(worker, /sessoesAtivas: sessoes\.results\.length/);
+  // E "integrações" contava provedores com atividade importada — no máximo
+  // quatro — em vez de conexões de verdade.
+  assert.match(worker, /FROM external_integrations WHERE status = 'Conectado'/);
+  assert.match(dev, /relógios e aplicativos conectados/);
+});
+
+test("accepts an e-mail as the maintenance login and closes the previous one", async () => {
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // O login de manutenção só aceitava nome curto: escrever um e-mail em
+  // DEV_LOGIN devolvia "not_configured" e a conta simplesmente não existia,
+  // enquanto o painel continuava mostrando "DEV_LOGIN ✓".
+  assert.match(auth, /return \/\^\[a-zA-Z0-9\._-\]\{1,60\}\$\/\.test\(valor\) \|\| isValidEmail\(valor\)/);
+  assert.match(worker, /devLoginConfigurado: Boolean\(env\.DEV_LOGIN\) && isValidDevLogin\(String\(env\.DEV_LOGIN\)\)/);
+  // E trocar o login deixava a conta anterior de pé, com a senha antiga
+  // valendo: cada troca somava uma porta de acesso irrestrito.
+  assert.match(auth, /WHERE role = 'dev' AND id <> \? AND status <> 'Bloqueado'/);
+  assert.match(auth, /UPDATE user_accounts SET status = 'Bloqueado'/);
+  assert.match(auth, /await destroySessionsForUser\(db, conta\.id\)/);
+});
+
+test("never leaves the system without a maintenance account", async () => {
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+  // A primeira versão fechava as contas antigas ANTES de garantir a nova, e
+  // comparava por e-mail. Com o ambiente lido pela metade, isso bloqueou as
+  // duas contas de manutenção de uma vez e deixou o sistema sem nenhum acesso
+  // de dev — que é o topo da cadeia e quem destrancaria os outros.
+  const corpo = auth.slice(auth.indexOf("export async function ensureDevAccount"), auth.indexOf("async function registraFechamentoDeManutencao"));
+  const criaOuReativa = Math.min(corpo.indexOf("idConfigurado = criada.id"), corpo.indexOf("UPDATE user_accounts SET status = 'Ativo'"));
+  const fecha = corpo.indexOf("WHERE role = 'dev' AND id <> ?");
+  assert.ok(criaOuReativa > -1 && fecha > criaOuReativa, "a conta configurada precisa existir e estar ativa antes de fechar as outras");
+  // A conta apontada pelo ambiente se conserta sozinha se estiver bloqueada.
+  assert.match(auth, /UPDATE user_accounts SET status = 'Ativo', updated_at = \? WHERE id = \? AND status <> 'Ativo'/);
+  // Mas a trava por tentativa e erro de senha continua valendo.
+  assert.doesNotMatch(corpo, /locked_until = NULL/);
+  // E o fechamento automático deixa rastro: sem registro, era invisível.
+  assert.match(auth, /Conta de manutenção anterior fechada/);
+});
+
+test("lets maintenance manage any account, and refuses the deletions that orphan data", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const dev = await readFile(new URL("../app/DevDashboard.tsx", import.meta.url), "utf8");
+  // O /api/accounts do treinador só alcança alunos: cria sempre com papel de
+  // aluno e recusa bloquear um treinador. A manutenção precisa de outro alcance.
+  assert.match(worker, /async function devAccountsApi/);
+  assert.match(worker, /url\.pathname === "\/api\/dev\/accounts"/);
+  assert.match(worker, /acao === "reset_password"/);
+  assert.match(worker, /acao === "delete"/);
+  // Excluir é a única ação sem volta, e por isso é a mais restrita.
+  assert.match(worker, /cannot_delete_self/);
+  assert.match(worker, /configured_coach/);
+  assert.match(worker, /last_dev_account/);
+  assert.match(worker, /coach_has_athletes/);
+  // Cada recusa diz o motivo e a saída — "não foi possível" obrigaria a adivinhar.
+  assert.match(worker, /motivo: string; saida: string/);
+  assert.match(dev, /acaoNaConta\(c, "delete"\)/);
+  assert.match(dev, /detalhe\?\.motivo \? "Não é possível excluir esta conta"/);
+});
+
+test("keeps the privacy policy compliant with the LGPD", async () => {
+  const privacy = await readFile(new URL("../app/privacy/page.tsx", import.meta.url), "utf8");
+  const auth = await readFile(new URL("../app/AuthGate.tsx", import.meta.url), "utf8");
+  const entry = await readFile(new URL("../app/StudentEntry.tsx", import.meta.url), "utf8");
+  // O documento existia, mas sem o que a lei pede: controlador, base legal de
+  // cada tratamento, prazo de guarda, direitos completos e suboperadores.
+  assert.match(privacy, /Encarregado pelo tratamento de dados pessoais/);
+  assert.match(privacy, /Base legal: execução do contrato/);
+  assert.match(privacy, /São dados sensíveis de saúde/);
+  assert.match(privacy, /Por quanto tempo guardamos/);
+  assert.match(privacy, /portabilidade dos seus dados a outro fornecedor/);
+  assert.match(privacy, /Cloudflare, Inc\./);
+  assert.match(privacy, /Transferência internacional/);
+  assert.match(privacy, /Menores de 18 anos/);
+  // E precisa ser alcançável antes de entrar e antes de cadastrar.
+  assert.match(auth, /href="\/privacy"/);
+  assert.match(entry, /href="\/privacy"/);
+});
+
+test("reads the exported activity file in the browser", async () => {
+  const leitor = await readFile(new URL("../app/atividade-arquivo.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Ler a página pública de uma atividade seria raspagem, proibida pelos termos
+  // da API. O arquivo exportado não depende de aprovação de fabricante nenhum.
+  assert.match(leitor, /function leTcx/);
+  assert.match(leitor, /function leGpx/);
+  assert.match(leitor, /TotalTimeSeconds/);
+  assert.match(leitor, /trkpt/);
+  assert.match(leitor, /haversine/);
+  // O arquivo não sobe: sobem tempo e distância, como se digitados.
+  assert.match(leitor, /A leitura acontece aqui, no navegador/);
+  assert.match(client, /className="analysis-arquivo"/);
+  assert.match(client, /accept="\.gpx,\.tcx/);
+});
+
+test("prices by class without rewriting what was already agreed", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  // O valor raramente é igual para todo mundo, e só existia um padrão único.
+  assert.match(schema, /export const priceClasses = sqliteTable\("price_classes"/);
+  assert.match(schema, /priceClass: text\("price_class"\)/);
+  assert.match(worker, /action==="save_class"/);
+  assert.match(worker, /action==="assign_class"/);
+  // Um botão de gerar, com o alcance escolhido antes.
+  assert.match(worker, /alcance==="class"/);
+  assert.match(worker, /alcance==="athletes"/);
+  assert.match(client, /\["all","Todos os alunos ativos"\],\["class","Uma classe"\],\["athletes","Alunos marcados"\]/);
+  // Cobrança já lançada é compromisso combinado: a geração não a reescreve.
+  assert.match(worker, /INSERT OR IGNORE INTO student_payments/);
+  // E apagar uma classe devolve os alunos ao padrão em vez de deixá-los órfãos.
+  assert.match(worker, /UPDATE athletes SET price_class=NULL WHERE price_class=\?/);
+});
+
+test("keeps the payment receipt small enough to live in the database", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const reducao = await readFile(new URL("../app/comprovante.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  // Não há bucket de arquivos no projeto: o comprovante fica no próprio banco,
+  // e por isso é reduzido no navegador antes de subir.
+  assert.match(schema, /receiptImage: text\("receipt_image"\)/);
+  assert.match(reducao, /A redução acontece no navegador/);
+  assert.match(reducao, /for \(const qualidade of \[0\.72, 0\.6, 0\.48, 0\.36\]\)/);
+  // O servidor confere de novo: tipo e tamanho, antes de gravar.
+  assert.match(worker, /imagem\.startsWith\("data:image\/"\)\|\|imagem\.length>420_000/);
+  // A lista não carrega as imagens: só se existem.
+  assert.match(worker, /\(student_payments\.receipt_image IS NOT NULL\) AS has_receipt/);
+  // O teto geral de 12 mil caracteres continua valendo para todo o resto.
+  assert.match(worker, /const longBodyFields: Record<string, Set<string>> = \{/);
+  assert.match(worker, /if \(typeof value === "string"\) return value\.length <= 12_000;/);
+});
+
+test("shows the coach only the students of their own portfolio", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  // A consulta não tinha recorte: cada treinador via todas as contas do sistema,
+  // as de manutenção e os alunos das outras carteiras.
+  assert.match(worker, /WHERE user_accounts\.role = 'student'\$\{recorte\.clausula\}/);
+  assert.match(worker, /JOIN athletes ON athletes\.name = user_accounts\.athlete_name/);
+  // E `reset_password` não conferia o papel do alvo: bastava trocar o e-mail no
+  // corpo para redefinir a senha de uma conta de manutenção.
+  assert.match(worker, /async function foraDaCarteiraDoTreinador/);
+  assert.match(worker, /student_accounts_only/);
+  assert.match(worker, /athlete_not_in_portfolio/);
+  const corpo = worker.slice(worker.indexOf("async function coachAccountsApi"), worker.indexOf("async function athletesApi"));
+  for (const acao of ['action === "reset_password"', 'action === "block" || action === "unblock"']) {
+    const trecho = corpo.slice(corpo.indexOf(acao));
+    assert.ok(trecho.indexOf("foraDaCarteiraDoTreinador") > -1 && trecho.indexOf("foraDaCarteiraDoTreinador") < trecho.indexOf("return Response.json({ reset") + 400, `${acao} precisa checar a carteira antes de agir`);
+  }
+});
+
+test("registers the requests refused at the door", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // O envelope recusa antes do handler, então nada passava por
+  // `applicationFailure`: um cadastro de aluno vinha sendo recusado por campo
+  // desconhecido e não aparecia em lugar nenhum do diagnóstico.
+  assert.match(worker, /async function recusaNaPorta/);
+  // A recusa na porta tinha um INSERT próprio, escrito à mão, que não ganhou os
+  // campos novos quando o log foi detalhado: essas recusas apareciam sem rota,
+  // sem mensagem e sem quem chamou, enquanto as falhas de dentro apareciam
+  // completas. A mesma gravação em dois lugares diverge na primeira mudança.
+  assert.match(worker, /await recordApplicationError\(env, request, `envelope \$\{url\.pathname\}`, codigo, status,/);
+  assert.doesNotMatch(worker, /INSERT INTO application_errors \(id, area, error_code, method, status_code, created_at\)/);
+  assert.doesNotMatch(worker, /return Response\.json\(\{ error: "unexpected_field" \}, \{ status: 400 \}\)/);
+  // E o cadastro manda só o que a rota aceita: `plan`, `next` e `flag` existem
+  // apenas na tela e faziam o envelope recusar o corpo inteiro.
+  assert.doesNotMatch(client, /body: JSON\.stringify\(\{ \.\.\.athlete, nextWorkout/);
+  assert.match(client, /body: JSON\.stringify\(\{ name: athlete\.name, initials: athlete\.initials/);
+});
+
+test("keeps one vocabulary for the training days", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Havia quatro leituras do mesmo campo: umas aceitavam qualquer texto, outra
+  // descartava em silêncio o que não estivesse em maiúsculas. O formulário
+  // gravava "Seg" e o resto do sistema procurava "SEG".
+  assert.match(worker, /function diasDeTreino\(valor: unknown\): string\[\]/);
+  assert.equal((worker.match(/const trainingDays = diasDeTreino\(input\.trainingDays\);/g) ?? []).length, 4);
+  assert.doesNotMatch(worker, /input\.trainingDays\.map\(day => boundedText\(day, 12\)\)/);
+  assert.match(client, /const weekDays = \["SEG", "TER", "QUA", "QUI", "SEX", "SÁB", "DOM"\]/);
+  // E o cadastro pelo treinador passou a gravar o perfil, como a aprovação de
+  // pedido de acesso já fazia: é de lá que saem os dias disponíveis.
+  assert.match(worker, /INSERT INTO athlete_profiles \(athlete_name, phone, birth_date, objective, integration, training_days, updated_at\)/);
+});
+
+test("assumes an athlete may train without a target race", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  // Sem esta marca, quem não corre prova ficava para sempre como "cadastro
+  // incompleto" e o painel seguia cobrando um dado que não existe.
+  assert.match(schema, /noTargetRace: integer\("no_target_race"\)/);
+  assert.match(client, /Este aluno treina sem prova-alvo no momento/);
+  assert.match(worker, /UPDATE athletes SET no_target_race = \? WHERE name = \?/);
+  // Assumida a ausência, o aviso sai — e volta se o treinador desmarcar.
+  assert.match(worker, /UPDATE athletes SET status = NULL WHERE name = \? AND status = 'Cadastro incompleto'/);
+});
+
+test("moves a workout by dragging it to another day", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // Arrastar e o botão "Mover" chamam a mesma troca: duas regras de troca
+  // acabariam divergindo.
+  assert.match(client, /const trocarDias=\(origem:string,destino:string\)=>/);
+  assert.match(client, /trocarDias\(moveFrom,moveTo\)/);
+  // A origem vem do evento, não do estado: entre o início do arrasto e a
+  // soltura o React ainda não propagou o estado.
+  assert.match(client, /evento\.dataTransfer\.getData\("text\/plain"\)/);
+  assert.match(client, /draggable/);
+  assert.match(css, /\.week>article\.alvo-do-arrasto/);
+});
+
+test("lets the coach create and edit their own base plans", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  // As dez originais vivem no código; quando o treinador muda o método precisa
+  // criar a própria.
+  assert.match(schema, /export const customPlans = sqliteTable\("custom_plans"/);
+  assert.match(worker, /async function customPlansApi/);
+  assert.match(worker, /url\.pathname === "\/api\/plans"/);
+  assert.match(client, /\+ Nova planilha/);
+  // As semanas usam o mesmo caminho de edição das planilhas de fábrica — e o
+  // endpoint precisa aceitar o nome delas, senão a planilha própria nasce
+  // vazia e continua vazia, sem porta para o primeiro treino.
+  assert.match(worker, /DELETE FROM plan_template_overrides WHERE plan_name = \?/);
+  assert.match(worker, /SELECT name FROM custom_plans/);
+  // A lista aceita era "as dez de fábrica mais tudo o que houver no banco", sem
+  // dono: um treinador lia e gravava a semana da planilha de outro só sabendo o
+  // nome. Agora a lista é a biblioteca de quem pede, e nada além dela.
+  assert.match(worker, /SELECT name FROM custom_plans WHERE coach_email=\?/);
+  assert.match(worker, /const allowedPlans=\(proprias\.results as Array<\{name:string\}>\)\.map\(linha=>linha\.name\)/);
+  // Zero treinos é um estado legítimo: é como se esvazia uma semana.
+  assert.doesNotMatch(worker, /sessions\.length<1\|\|sessions\.length>10/);
+  // E a tela tem por onde lançar o primeiro treino, sem inventar exemplos.
+  assert.match(client, /className="template-add"/);
+  // A distinção entre "planilha própria" e "de fábrica" acabou: toda planilha é
+  // de um treinador, e as semanas vêm inteiras do servidor. O retorno para o
+  // conteúdo guardado no cliente saiu porque vazaria os treinos das dez
+  // originais para quem só usasse o mesmo nome.
+  assert.match(client, /const effectiveTemplate=templateEdits\[week\]\|\|null/);
+  assert.doesNotMatch(client, /planWeekTemplates\[plan\.name\]/);
+  // Os treinos de exemplo ilustravam as planilhas de fábrica. Sem elas no
+  // cliente, semana sem treino mostra que está sem treino.
+  assert.match(client, /\(effectiveTemplate\|\|\[\]\)\.map/);
+  // E excluir uma planilha em uso é recusado com o motivo.
+  assert.match(worker, /plan_in_use/);
+});
+
+test("makes the injury assessment an action, not a label", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  // A avaliação existia só como texto escrito de passagem ao trocar a situação
+  // do caso: não havia como saber, depois, o que o treinador decidiu fazer.
+  assert.match(schema, /assessmentConduct: text\("assessment_conduct"\)/);
+  assert.match(worker, /acao === "assess"/);
+  assert.match(worker, /const CONDUTAS_DE_LESAO = \[/);
+  assert.match(worker, /reviewed_by = \?, reviewed_at = \?, assessment_conduct = \?/);
+  // A conduta escolhida no cliente é uma das que o servidor aceita.
+  assert.match(client, /const CONDUTAS = \[/);
+  assert.match(client, /action: "assess", conduct: conduta/);
+  // E o quadro passa a mostrar a conduta, não o texto livre.
+  assert.match(client, /<small>AVALIAÇÃO<\/small>\{caso\.assessment_conduct \|\| "ainda não"\}/);
+});
+
+test("keeps a single place to generate the month charges", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // A geração chegou a existir no cartão do topo e num cartão próprio logo
+  // abaixo, com o mesmo botão: duas portas para a mesma ação convidam a gerar
+  // duas vezes sem perceber.
+  assert.doesNotMatch(client, /className="financial-generate"/);
+  assert.match(client, /className="financial-quick-setup"/);
+  assert.match(client, /2\. QUEM RECEBE A COBRANÇA/);
+  assert.match(client, /3\. Gerar cobranças do mês/);
+  assert.equal((client.match(/action:"generate_month"/g) ?? []).length, 1);
+  // E o controle nativo de arquivo some da vista sem sair do alcance do teclado.
+  assert.match(client, /clipPath:"inset\(50%\)"/);
+  assert.doesNotMatch(client, /"Anexar comprovante"/);
+});
+
+test("runs the performance test as a round trip", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Antes o treinador digitava o resultado inteiro sozinho e o aluno não tinha
+  // como saber que precisava correr um teste. Agora o teste tem um começo.
+  assert.match(worker, /action === "request"/);
+  assert.match(worker, /'Solicitado'/);
+  assert.match(worker, /test_already_pending/);
+  // O aluno devolve só o tempo; as zonas continuam saindo da revisão.
+  // O aluno passou a devolver o teste como conclui um treino: além do tempo, como
+  // terminou, uma observação e, se anexou o arquivo do relógio, a origem do número.
+  assert.match(worker, /SET total_seconds = \?, effort = \?, athlete_note = \?, source_format = \?, source_km = \?, status = 'Aguardando revisão'/);
+  assert.match(worker, /const esforcosAceitos = \["Muito bem", "Cansado", "Sentiu dor"\]/);
+  assert.match(worker, /error: "invalid_effort"/);
+  assert.match(worker, /AND status = 'Solicitado' LIMIT 1/);
+  assert.match(client, /className="student-test-request"/);
+  // No pedido o treinador informa só a distância: o tempo é medido pelo aluno.
+  assert.match(client, /action:"request",athleteName,distanceKm:distanciaPedida/);
+  assert.doesNotMatch(client, /action:"request".*minutes/);
+  // E quando o teste volta, distância e tempo são leitura na calculadora.
+  assert.match(client, /zonasapp:test-returned/);
+  assert.match(client, /readOnly=\{Boolean\(devolvido\)\}/);
+  assert.match(client, /Distância e tempo vieram do aluno e não se editam aqui/);
+});
+
+test("marks the days the athlete can train but has no workout", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+  // O buraco da semana é o dia disponível e vazio: é o que falta preencher.
+  assert.match(client, /const vazioEDisponivel=podeReceber&&\(!sessions\[day\]\|\|sessions\[day\]\.removed\)/);
+  assert.match(css, /\.week>article\.dia-vazio/);
+  // E o arrasto recusa o dia em que o aluno não treina, dizendo isso.
+  assert.match(client, /if\(podeReceber\)\{evento\.preventDefault\(\)/);
+  assert.match(client, /!current\.days\.includes\(destino\)\)return/);
+  assert.match(css, /\.week>article\.recusa-arrasto/);
 });
 
 test("uses real coach dashboard counts and reviews every registered race", async () => {
@@ -1061,7 +1931,9 @@ test("uses real coach dashboard counts and reviews every registered race", async
   assert.match(client, /fetch\("\/api\/races-records"\)/);
   assert.match(client, /action:"review_race"/);
   assert.match(client, /Aprovar e usar no planejamento/);
-  assert.match(worker, /SELECT \* FROM athlete_races ORDER BY race_date ASC/);
+  // A lista de provas passou a ser recortada pela carteira de quem pede: sem
+  // isso, o treinador via as provas dos alunos de todos os outros.
+  assert.match(worker, /SELECT \* FROM athlete_races WHERE \$\{carteira\.clausula\} ORDER BY race_date ASC/);
   assert.match(worker, /UPDATE athlete_races SET status = \?, priority = \?/);
   assert.doesNotMatch(client, /<b>48<\/b>/);
   assert.doesNotMatch(client, /31<em>\/48<\/em>/);
@@ -1069,49 +1941,53 @@ test("uses real coach dashboard counts and reviews every registered race", async
 
 test("applies a selected base plan, phase and week to a real athlete", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const fabrica = await readFile(new URL("../db/planilhas-de-fabrica.ts", import.meta.url), "utf8");
   const css = await readCss("../app/globals.css");
   assert.match(client, /className="template-athlete-select"/);
   assert.match(client, /const applyPlan=async/);
-  assert.match(client, /const meiaStartPlanWeeks/);
-  assert.match(client, /"Meia Start":meiaStartPlanWeeks/);
-  assert.match(client, /Primeira meia maratona/);
+  // As dez de fábrica saíram do cliente para um módulo que o worker também lê:
+  // ele precisa delas para semear a biblioteca do treinador principal uma vez.
+  assert.match(client, /from "@\/db\/planilhas-de-fabrica"/);
+  assert.match(fabrica, /const meiaStartPlanWeeks/);
+  assert.match(fabrica, /"Meia Start":meiaStartPlanWeeks/);
+  assert.match(fabrica, /Primeira meia maratona/);
   assert.match(client, /adaptedTemplate/);
   assert.match(client, /Ver e editar treino/);
   assert.match(client, /editingTemplateIndex/);
   assert.match(client, /onSave=\{saveTemplateEdit\}/);
   assert.match(client, /effectiveTemplate\[editingTemplateIndex\]/);
   assert.match(client, /As alterações serão usadas neste rascunho/);
-  assert.match(client, /const meiaFinishPlanWeeks/);
-  assert.match(client, /"Meia Finish":meiaFinishPlanWeeks/);
-  assert.match(client, /Tempo Run combinado 5 km e meia/);
-  assert.match(client, /Prova-alvo de meia maratona/);
-  assert.match(client, /const oneMarathonPlanWeeks/);
-  assert.match(client, /"One Marathon":oneMarathonPlanWeeks/);
-  assert.match(client, /Longão principal com ritmo/);
+  assert.match(fabrica, /const meiaFinishPlanWeeks/);
+  assert.match(fabrica, /"Meia Finish":meiaFinishPlanWeeks/);
+  assert.match(fabrica, /Tempo Run combinado 5 km e meia/);
+  assert.match(fabrica, /Prova-alvo de meia maratona/);
+  assert.match(fabrica, /const oneMarathonPlanWeeks/);
+  assert.match(fabrica, /"One Marathon":oneMarathonPlanWeeks/);
+  assert.match(fabrica, /Longão principal com ritmo/);
   assert.match(client, /Primeira maratona/);
-  assert.match(client, /const fullMarathonPlanWeeks/);
-  assert.match(client, /"Full Marathon":fullMarathonPlanWeeks/);
-  assert.match(client, /Maior longão específico/);
-  assert.match(client, /Maratona-alvo Full/);
+  assert.match(fabrica, /const fullMarathonPlanWeeks/);
+  assert.match(fabrica, /"Full Marathon":fullMarathonPlanWeeks/);
+  assert.match(fabrica, /Maior longão específico/);
+  assert.match(fabrica, /Maratona-alvo Full/);
   assert.match(client, /athleteName:targetAthlete,plan:plan\.name,phase:planningPhaseFor\(week\),weekNumber:week,totalWeeks:plan\.weeks/);
   assert.match(client, /Aplicar base, fase e semana/);
   assert.match(client, /Semana \{week\} criada como rascunho em/);
-  assert.match(client, /const beginnerPlanWeeks/);
-  assert.match(client, /const bronzePlanWeeks/);
-  assert.match(client, /const prataPlanWeeks/);
-  assert.match(client, /const ouroPlanWeeks/);
-  assert.match(client, /const elitePlanWeeks/);
-  assert.match(client, /const lion10kPlanWeeks/);
-  assert.match(client, /"5 km Bronze":bronzePlanWeeks/);
-  assert.match(client, /"5 km Prata":prataPlanWeeks/);
-  assert.match(client, /"5 km Ouro":ouroPlanWeeks/);
-  assert.match(client, /"5 km Elite":elitePlanWeeks/);
-  assert.match(client, /"10 km Lion":lion10kPlanWeeks/);
-  assert.match(client, /Prova-alvo de 10 km/);
-  assert.match(client, /Prova-alvo de 5 km Elite/);
-  assert.match(client, /Prova-alvo de 5 km Ouro/);
-  assert.match(client, /Prova-alvo de 5 km/);
-  assert.match(client, /Desafio ou prova de 5 km/);
+  assert.match(fabrica, /const beginnerPlanWeeks/);
+  assert.match(fabrica, /const bronzePlanWeeks/);
+  assert.match(fabrica, /const prataPlanWeeks/);
+  assert.match(fabrica, /const ouroPlanWeeks/);
+  assert.match(fabrica, /const elitePlanWeeks/);
+  assert.match(fabrica, /const lion10kPlanWeeks/);
+  assert.match(fabrica, /"5 km Bronze":bronzePlanWeeks/);
+  assert.match(fabrica, /"5 km Prata":prataPlanWeeks/);
+  assert.match(fabrica, /"5 km Ouro":ouroPlanWeeks/);
+  assert.match(fabrica, /"5 km Elite":elitePlanWeeks/);
+  assert.match(fabrica, /"10 km Lion":lion10kPlanWeeks/);
+  assert.match(fabrica, /Prova-alvo de 10 km/);
+  assert.match(fabrica, /Prova-alvo de 5 km Elite/);
+  assert.match(fabrica, /Prova-alvo de 5 km Ouro/);
+  assert.match(fabrica, /Prova-alvo de 5 km/);
+  assert.match(fabrica, /Desafio ou prova de 5 km/);
   assert.match(client, /Treinos reais cadastrados em todas as semanas/);
   assert.match(client, /status:"Rascunho"/);
   assert.match(client, /Escolha a base em três passos/);
@@ -1187,34 +2063,14 @@ test("serves one coach panel at every width, with a single pending queue", async
   // o detalhe do aviso em vez de se perder.
   assert.match(client, /item\.note\|\|item\.training_impact/);
 
-  // "Treinos hoje" também só existia no celular: desceu para os números do
-  // painel com o cálculo intacto.
-  assert.match(client, /const workoutsToday=athletes\.filter\(athlete=>!String\(athlete\.next\)\.includes\("Aguardando"\)\)\.length/);
-  assert.match(client, /<small>TREINOS HOJE<\/small><b>\{workoutsToday\}<\/b>/);
+  // A contagem que só existia no celular sobreviveu na faixa da semana, com o
+  // mesmo cálculo de antes.
+  assert.match(client, /const comTreino=athletes\.filter\(athlete=>!String\(athlete\.next\)\.includes\("Aguardando"\)\)\.length/);
+  assert.match(client, /com treino programado/);
 
-  // Cinco números não cabem lado a lado em telas estreitas: encolhem em etapas.
-  assert.match(css, /\.stats\{display:grid;grid-template-columns:repeat\(5,1fr\)/);
-  assert.match(css, /\.stats,\.groups\{grid-template-columns:repeat\(3,1fr\)\}/);
-  assert.match(css, /\.stats\{grid-template-columns:repeat\(2,1fr\)\}/);
-  const css = await readCss("app/globals.css");
-  assert.match(client, /VISÃO DO PROFESSOR/);
-  assert.match(client, /Olá, \{coachName\.split\(" "\)\[0\]\}/);
-  assert.match(client, /Treinos hoje/);
-  assert.match(client, /Pendentes/);
-  assert.match(client, /Concluídos/);
-  assert.match(client, /Novo treino/);
-  assert.match(client, /Atividade recente/);
-  assert.match(client, /Transforme cada treino em evolução/);
-  assert.match(mobileCss, /\.mobile-coach-home/);
-  assert.match(mobileCss, /\.sidebar nav button:nth-child\(n\+5\)\{display:none\}/);
-  // A barra flutuante precisa ser declarada em globals.css: overrides.css é
-  // importado na primeira linha dele e perde qualquer empate de especificidade.
-  // Enquanto ela morava só em overrides.css, `position:static` a anulava.
-  assert.match(css, /\.sidebar\{position:fixed;z-index:50;top:auto;left:10px;right:10px;bottom:10px/);
-  assert.doesNotMatch(css, /\.sidebar\{position:static/);
-  assert.doesNotMatch(mobileCss, /\.sidebar\{position:fixed/);
-  // O conteúdo reserva o espaço da barra.
-  assert.match(css, /\.content\{padding:0 14px 92px\}/);
+  // E a faixa encolhe em uma coluna quando não cabe lado a lado.
+  assert.match(css, /\.coach-week\{display:grid/);
+  assert.match(css, /@media\(max-width:1080px\)\{\.coach-week\{grid-template-columns:1fr/);
 });
 
 test("opens the student on today's workout with a friendlier mobile experience", async () => {
@@ -1224,7 +2080,7 @@ test("opens the student on today's workout with a friendlier mobile experience",
   assert.match(client, /\[\["Hoje","⌂"\],\["Minha semana","▤"\]/);
   assert.match(css, /\.student-instructions>article/);
   assert.match(css, /\.quick-feedback/);
-  assert.match(css, /\.student-week-grid/);
+  assert.match(await readCss("app/globals.css"), /\.student-week-list/);
   assert.match(css, /\.student-nav\{left:10px/);
 });
 
@@ -1362,8 +2218,12 @@ test("blocks a student account and drops its active sessions", async () => {
   workerUrl.searchParams.set("block-account", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
   const writes = [];
+  /* O aluno precisa pertencer à carteira de quem pede: bloquear a conta de um
+     aluno de outro treinador passou a ser recusado. */
   const prepare = (sql) => statement(() => (sql.includes("FROM user_accounts WHERE email")
     ? { id: "student-account", email: "everton.teste@example.com", role: "student", athlete_name: "Everton Barbosa", status: "Ativo" }
+    : sql.includes("SELECT coach_email FROM athletes")
+    ? { coach_email: "treinador@exemplo.com" }
     : null), (values) => writes.push({ sql, values }));
   const env = {
     ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
@@ -1505,7 +2365,11 @@ test("seeds the coach account only while none exists", async () => {
   const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
   // O seed é ignorado assim que existe uma conta de treinador, então trocar
   // COACH_INITIAL_PASSWORD depois disso não reabre o acesso.
-  assert.match(auth, /SELECT id FROM user_accounts WHERE role = 'coach' LIMIT 1/);
+  // O proprietário conta como treinador: promover o único treinador deixava zero
+  // contas 'coach', o seed achava que não havia nenhuma e recriava a conta
+  // configurada — e o upsert de `createAccount` sobrescreve o papel, desfazendo
+  // a promoção no boot seguinte.
+  assert.match(auth, /SELECT id FROM user_accounts WHERE role IN \('coach', 'owner'\) LIMIT 1/);
   assert.match(auth, /if \(existing\) return "ready";/);
   assert.match(auth, /mustChangePassword: true/);
 });
@@ -1676,12 +2540,47 @@ test("keeps the install prompt below open dialogs", async () => {
 test("gives the invite buttons one shared shape", async () => {
   const css = await readCss("../app/globals.css");
   // O botão do WhatsApp não tinha .gold nem .outline, então não herdava raio
-  // nem espaçamento e destoava em altura dos vizinhos.
-  assert.match(css, /\.invite-link-actions button\{[^}]*border-radius:9px/);
-  assert.match(css, /\.invite-link-actions button\{[^}]*padding:11px 16px/);
+  // nem espaçamento e destoava em altura dos vizinhos. O raio deixou de ser um
+  // 9px avulso e passa pelo sistema: verificar o token em vez do número mantém
+  // o propósito do teste e ainda garante que a forma não saia da escala.
+  // WhatsApp e e-mail viraram <a>, então a forma tem de valer para os dois
+  // tipos de elemento — é o mesmo propósito, agora cobrindo mais um caso.
+  assert.match(css, /\.invite-link-actions button,\.invite-link-actions a\{[^}]*border-radius:var\(--radius-md\)/);
+  assert.match(css, /\.invite-link-actions button,\.invite-link-actions a\{[^}]*padding:11px 16px/);
+  // Altura mínima igual em todos, senão o link fica mais baixo que o botão.
+  assert.match(css, /\.invite-link-actions button,\.invite-link-actions a\{[^}]*min-height:var\(--control-lg\)/);
   assert.match(css, /\.account-issued-actions\{display:flex/);
   // Um provedor indisponível não pode ter o mesmo peso visual de uma ação real.
   assert.match(css, /\.integration-center article button:disabled\{[^}]*cursor:not-allowed/);
+});
+
+test("offers a working way to send the invite on every browser", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // O recorte começa nos auxiliares de nível de módulo que o componente usa
+  // para ler o navegador, e não na função em si.
+  const convite = client.slice(client.indexOf("const semAssinatura"), client.indexOf("function AccessRequests"));
+
+  // O botão "Outras opções" chamava navigator.share e, sem a API, caía no
+  // copiar gravando um estado que muda o rótulo do botão vizinho — para quem
+  // clicava, ele não fazia nada. navigator.share não existe no Chrome de Linux
+  // nem no Firefox, então o caminho nativo não pode ser o único oferecido.
+  assert.match(convite, /wa\.me\/\?text=/, "o convite precisa de um caminho por WhatsApp");
+  assert.match(convite, /mailto:\?subject=/, "o convite precisa de um caminho por e-mail");
+  assert.match(convite, /copyText\(message\)/, "o convite precisa de um caminho por cópia");
+
+  // O compartilhamento do sistema (AirDrop no Apple, Quick Share no Android)
+  // só pode aparecer quando o navegador realmente o oferece.
+  assert.match(convite, /typeof navigator\.share === "function"/);
+  assert.match(convite, /temShareNativo && <button/, "o botão nativo tem de ser condicional");
+
+  // WhatsApp e e-mail precisam ser <a>: a abertura por script é barrada por
+  // bloqueador de pop-up e não responde a Ctrl/Cmd+clique. O parêntese é
+  // proposital — procura a chamada, não a menção dela num comentário.
+  assert.doesNotMatch(convite, /window\.open\(/);
+
+  // A origem só existe no navegador; lê-la no corpo do componente faria o
+  // servidor renderizar um link vazio e o cliente outro.
+  assert.doesNotMatch(convite, /typeof window!=="undefined"\?window\.location\.origin/);
 });
 
 test("greets the coach by the name on the account, not a name baked into the code", async () => {
@@ -1731,7 +2630,11 @@ test("scopes the training weeks query to the requested athlete", async () => {
   const leitura = consultas.find(({ sql }) => sql.includes("SELECT * FROM training_weeks") && !sql.includes("LIMIT 1"));
   assert.ok(leitura, "deve haver uma leitura da tabela de semanas");
   assert.match(leitura.sql, /WHERE athlete_name = \?/);
-  assert.deepEqual(leitura.values, ["Ana Souza"]);
+  // O recorte por carteira entrou depois: além do aluno pedido, a consulta
+  // confirma que ele é de quem está pedindo. Na área de um treinador apareciam
+  // os alunos de todos, porque sete endpoints não cruzavam `coach_email`.
+  assert.match(leitura.sql, /athlete_name IN \(SELECT name FROM athletes WHERE coach_email = \?\)/);
+  assert.deepEqual(leitura.values, ["Ana Souza", "treinador@exemplo.com"]);
 });
 
 test("lets the student finish a workout without typing any number", async () => {
@@ -1813,7 +2716,10 @@ test("keeps one single source of truth for the database schema", async () => {
   assert.doesNotMatch(semComentarios(integrations), /CREATE TABLE IF NOT EXISTS/);
   assert.doesNotMatch(worker, /const create[A-Z]\w*Sql/);
   assert.match(worker, /import \* as schema from "\.\.\/db\/schema"/);
-  assert.match(worker, /import \{ tableColumns, tableSql \} from "\.\.\/db\/sql"/);
+  // Criar tabela, completar colunas, e só então criar índices: um índice novo
+  // sobre coluna nova era criado antes de a coluna existir, e o batch caía.
+  assert.match(worker, /import \{ createIndexesSql, createTableSql, tableColumns, tableSql \} from "\.\.\/db\/sql"/);
+  assert.match(worker, /const indices = pendentes\.flatMap\(tabela => createIndexesSql\(tabela\)\)/);
   // Conferir o esquema é trabalho de uma vez por instância, não de toda chamada.
   assert.match(worker, /const tabelasConferidas = new Set<string>\(\)/);
   assert.match(worker, /if \(!pendentes\.length\) return;/);
@@ -1976,11 +2882,14 @@ test("keeps the visit on the session, not in the browser", async () => {
   // Quem decide o recorte é o servidor; a interface não escolhe o que vê.
   assert.match(schema, /impersonatingUserId: text\("impersonating_user_id"\)/);
   assert.match(auth, /export async function setImpersonation/);
-  assert.match(auth, /AND role = 'coach' LIMIT 1/);
+  // A manutenção passou a poder visitar também o proprietário, então o papel
+  // aceito virou uma lista — e é ela que impede o proprietário de visitar um par.
+  assert.match(auth, /WHERE id = \? AND role IN \(\$\{marcadores\}\) LIMIT 1/);
   // Visitar a área de outra pessoa deixa rastro.
   assert.match(worker, /Manutenção visitou um treinador/);
   // Só a manutenção alcança a rota.
-  assert.match(worker, /url\.pathname === "\/api\/dev\/coaches"[\s\S]{0,120}requireDevApiAccess/);
+  // A rota passou a atender também o proprietário, então a porta é o nível dele.
+  assert.match(worker, /url\.pathname === "\/api\/dev\/coaches" \|\| url\.pathname === "\/api\/equipe"[\s\S]{0,120}requireOwnerApiAccess/);
 });
 
 test("says out loud whose area is open", async () => {
@@ -2091,17 +3000,46 @@ test("drops resolved injuries out of the notice board", async () => {
 test("makes every number on the panel lead somewhere", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   const css = await readCss("../app/globals.css");
-  // Um número que indica pendência e não leva a lugar nenhum obriga a
-  // procurar no menu o que já estava na tela.
-  const cartoes = client.match(/<button className="stat-card"/g) ?? [];
-  assert.equal(cartoes.length, 5, "os cinco números do painel precisam ser clicáveis");
-  assert.match(client, /className="stat-card" onClick=\{\(\)=>go\("Alunos"\)\}/);
-  assert.match(client, /className="stat-card" onClick=\{\(\)=>go\("Provas"\)\}/);
-  assert.match(client, /className="stat-card" onClick=\{\(\)=>go\("Calendário"\)\}/);
-  // O de dor abre a lesão em vez de mandar para a lista de alunos.
-  assert.match(client, /openPain\(\{id:painReports\[0\]\.id,athleteName:painReports\[0\]\.athlete_name\}\)/);
-  assert.match(css, /\.stats \.stat-card\{/);
+  // Um número que não leva a lugar nenhum obriga a procurar no menu o que já
+  // estava na tela.
+  assert.match(client, /<button onClick=\{\(\)=>go\("Alunos"\)\}><small>Alunos ativos<\/small>/);
+  assert.match(client, /<button onClick=\{\(\)=>go\("Provas"\)\}><small>Próxima prova<\/small>/);
+  // E cada grupo de treinamento abre a lista já filtrada por aquela distância.
+  assert.match(client, /onClick=\{\(\)=>chooseDistance\(group\.name\)\}/);
+  assert.match(css, /\.coach-week-facts button\{/);
 });
+
+test("keeps a single queue for what needs the coach decision", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Um único relato de dor chegava a ocupar cinco blocos do painel ao mesmo
+  // tempo. A Central de avisos é a fila; o resto da tela é contexto que não se
+  // repete. Cada bloco abaixo era uma cópia do mesmo aviso.
+  assert.match(client, /className="coach-notification-center"/);
+  assert.doesNotMatch(client, /className="stat-card"/);
+  assert.doesNotMatch(client, /className="attention"/);
+  assert.doesNotMatch(client, /className="coach-feedbacks"/);
+  assert.doesNotMatch(client, /className="dashboard-pending-zones"/);
+  // E a dobra do painel informa em vez de vender.
+  assert.doesNotMatch(client, /Treinos claros/);
+});
+
+test("does not report a percentage for a workout nobody measured", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // O servidor grava 0/0 quando o aluno conclui sem informar tempo nem
+  // distância. Exibir "0% certo" acusaria um erro que ninguém mediu.
+  assert.match(client, /item\.classification==="Concluído sem medição"\?<div className="accuracy-numbers"><em>Sem medição<\/em><\/div>/);
+  // A conferência mostra os maiores desvios e guarda a lista inteira atrás de
+  // um clique, em vez de ocupar um terço da página.
+  assert.match(client, /const destaque=\[\.\.\.foraDoPlano\].*\.slice\(0,3\)/);
+  assert.match(client, /className="accuracy-toggle"/);
+});
+
+test("agrees the verb with the number of pending situations", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  // Saía "1 situação precisam da sua decisão": plural() flexiona o substantivo
+  // e deixava o verbo sempre no plural.
+  assert.match(client, /const concordar = \(quantidade: number/);
+  assert.match(client, /concordar\(pendencias,"precisa","precisam"\)/);});
 
 test("leaves only an undo on a race that was already approved", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");

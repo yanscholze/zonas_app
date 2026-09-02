@@ -91,11 +91,35 @@ async function readBody(response: Response): Promise<unknown> {
   }
 }
 
+/**
+ * A prévia do treinador não é uma sessão de aluno.
+ *
+ * Quando o treinador escolhe "Ver como aluno", ele continua sendo ele: as rotas
+ * `/api/student/*` recusam com 403 `student_access_required`. Cada chamada da
+ * área do aluno vinha se lembrando disso por conta própria, e as que esqueciam
+ * falhavam — umas em silêncio, outras despejando "Esta área é exclusiva do
+ * aluno" na tela do treinador.
+ *
+ * A decisão passa a ser uma só, aqui. Quem esquecer não quebra: a chamada é
+ * recusada antes de sair, com uma explicação do que é a prévia.
+ */
+let modoPrevia = false;
+export function definePreviaDoTreinador(ativa: boolean) { modoPrevia = ativa; }
+
+export class PreviaDoTreinador extends Error {
+  readonly friendlyMessage = "O envio real acontece na conta do aluno. Aqui os campos funcionam, mas nada é gravado.";
+  constructor(path: string) {
+    super(`prévia do treinador: ${path} não é chamada`);
+    this.name = "PreviaDoTreinador";
+  }
+}
+
 async function request<T = Record<string, unknown>>(
   method: string,
   path: string,
   body?: unknown,
 ): Promise<ApiResult<T>> {
+  if (modoPrevia && path.startsWith("/api/student/")) throw new PreviaDoTreinador(path);
   let response: Response;
   try {
     response = await fetch(path, {

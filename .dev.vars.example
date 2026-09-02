@@ -10,6 +10,10 @@ COACH_INITIAL_PASSWORD=
 
 # Conta de manutenção (dashboard de diagnóstico), com acesso irrestrito.
 # Deixe em branco para que ela simplesmente não exista.
+# Aceita um nome curto ou um e-mail. Se usar e-mail, ele PRECISA ser diferente
+# do COACH_EMAIL: o login é único no banco, e repetir o endereço converteria a
+# conta de treinador em conta de manutenção. Um sufixo +dev resolve e continua
+# chegando na mesma caixa de entrada. Ex.: voce+dev@gmail.com
 DEV_LOGIN=
 DEV_INITIAL_PASSWORD=
 

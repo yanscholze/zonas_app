@@ -12,7 +12,6 @@
    A cascata final e: tailwind -> este arquivo -> o corpo de globals.css.
    ============================================================================= */
 
-
 /* -----------------------------------------------------------------------------
    mobile-dashboard.css
    Painel do treinador no celular: deita a barra lateral e reduz a navegação aos
@@ -26,195 +25,6 @@
    ----------------------------------------------------------------------------- */
 
 @media(max-width:760px) {
-  .sidebar {
-    position: fixed;
-    z-index: 50;
-    left: 10px;
-    right: 10px;
-    bottom: 10px;
-    width: auto;
-    height: 67px;
-    padding: 8px 10px;
-    border: 1px solid #3d3930;
-    border-radius: 18px;
-    background: #171718eb;
-    box-shadow: 0 14px 40px #000;
-  }
-  .mobile-coach-home {
-    display: block;
-    margin: 0 -14px;
-    padding: 4px 18px 30px;
-    background: linear-gradient(180deg,#15130f,#0c0c0d);
-  }
-  .mobile-coach-home~.hero,
-  .mobile-coach-home~.stats,
-  .mobile-coach-home~.section-title,
-  .mobile-coach-home~.groups,
-  .mobile-coach-home~.coach-feedbacks {
-    display: none;
-  }
-  .mobile-coach-home>header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 8px 0 22px;
-  }
-  .mobile-coach-home>header small {
-    color: var(--gold);
-    font-size: 8px;
-    font-weight: 900;
-    letter-spacing: .14em;
-  }
-  .mobile-coach-home>header h2 {
-    margin: 7px 0 2px;
-    font: 500 27px Georgia;
-  }
-  .mobile-coach-home>header p {
-    margin: 0;
-    color: var(--muted);
-    font-size: 11px;
-  }
-  .mobile-coach-home>header button {
-    width: 43px;
-    height: 43px;
-    border: 1px solid #68552e;
-    border-radius: 50%;
-    background: #2c261a;
-    color: var(--gold2);
-    font-weight: 900;
-  }
-  .mobile-coach-stats {
-    display: grid;
-    grid-template-columns: repeat(3,1fr);
-    gap: 9px;
-  }
-  .mobile-coach-stats article {
-    display: grid;
-    place-items: center;
-    min-height: 118px;
-    padding: 12px 6px;
-    border: 1px solid #38352e;
-    border-radius: 15px;
-    background: #19191a;
-    text-align: center;
-  }
-  .mobile-coach-stats i {
-    width: 28px;
-    height: 28px;
-    display: grid;
-    place-items: center;
-    border-radius: 9px;
-    background: #302819;
-    color: var(--gold2);
-    font-style: normal;
-    font-weight: 900;
-  }
-  .mobile-coach-stats b {
-    font: 600 28px Georgia;
-  }
-  .mobile-coach-stats span {
-    color: var(--muted);
-    font-size: 9px;
-  }
-  .mobile-new-workout {
-    width: 100%;
-    margin: 14px 0 22px;
-    padding: 15px;
-    border: 0;
-    border-radius: 12px;
-    background: var(--gold);
-    color: #15120c;
-    font-size: 14px;
-    font-weight: 900;
-  }
-  .mobile-recent>header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-  .mobile-recent h3 {
-    font-size: 16px;
-  }
-  .mobile-recent header button {
-    border: 0;
-    background: transparent;
-    color: var(--gold);
-    font-size: 10px;
-    font-weight: 800;
-  }
-  .mobile-recent>article {
-    display: grid;
-    grid-template-columns: 34px 1fr auto;
-    gap: 10px;
-    align-items: center;
-    padding: 15px;
-    border: 1px solid #44382a;
-    border-radius: 12px;
-    background: #1a1815;
-  }
-  .mobile-recent>article>i {
-    width: 32px;
-    height: 32px;
-    display: grid;
-    place-items: center;
-    border-radius: 50%;
-    background: #46241f;
-    color: #ff9b85;
-    font-style: normal;
-  }
-  .mobile-recent article b,
-  .mobile-recent article small {
-    display: block;
-  }
-  .mobile-recent article b {
-    font-size: 11px;
-  }
-  .mobile-recent article small {
-    margin-top: 5px;
-    color: var(--muted);
-    font-size: 9px;
-  }
-  .mobile-recent>div {
-    display: grid;
-    place-items: center;
-    min-height: 170px;
-    padding: 20px;
-    border: 1px dashed #3b3934;
-    border-radius: 14px;
-    text-align: center;
-  }
-  .mobile-recent>div i {
-    width: 36px;
-    height: 36px;
-    display: grid;
-    place-items: center;
-    border-radius: 50%;
-    background: #193426;
-    color: #83d6a4;
-    font-style: normal;
-  }
-  .mobile-recent>div b {
-    margin-top: 10px;
-    font-size: 12px;
-  }
-  .mobile-recent>div span {
-    margin-top: 5px;
-    color: var(--muted);
-    font-size: 9px;
-  }
-  .mobile-coach-home>footer {
-    margin-top: 28px;
-    color: #6f6b62;
-    font: italic 13px Georgia;
-    text-align: center;
-  }
-  /*
-     A forma da barra (fixed, cantos, fundo, sombra) e o `padding-bottom` que o
-     `.content` reserva para ela vivem no bloco @media(max-width:760px) de
-     globals.css. Declarar aqui não adiantava: globals.css importa este arquivo
-     na primeira linha, então em empate de especificidade ele vence. O que
-     sobrou nesta seção são as regras que globals.css não contradiz.
-  */
   .sidebar>.brand,
   .sidebar>.coach,
   .sidebar>.student-switch {
@@ -228,7 +38,6 @@
   }
 }
 
-
 /* -----------------------------------------------------------------------------
    student-mobile.css
    Área do aluno no celular: cabecalho, navegacao inferior e cartao do treino do dia.
@@ -239,39 +48,50 @@
     background: linear-gradient(180deg,#f8f4e9,#f2efe7);
     padding-bottom: 20px;
   }
-  .student>header {
+  .student-rail {
     position: sticky;
     top: 0;
     z-index: 9;
     height: 68px;
     padding: 0 17px;
     border-bottom: 1px solid #e3dccb;
+    background: transparent;
+  }
+  /* O vidro fosco fica num pseudoelemento, não na própria barra. Com o
+     backdrop-filter na barra ela virava bloco-contentor dos filhos fixos, e a
+     navegação inferior — que agora mora dentro dela — passava a se ancorar no
+     cabeçalho de 64px em vez da janela: ia parar no topo da tela. */
+  .student-rail::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
     background: #fffdf8e8;
     backdrop-filter: blur(14px);
   }
-  .student>header .brand>span {
+  .student-rail .brand>span {
     border: 0;
-    border-radius: 11px;
+    border-radius:var(--radius-md);
     background: #171717;
     color: #e6bd54;
     transform: none;
     font: 800 20px Georgia;
     box-shadow: 0 5px 16px #3d2c1218;
   }
-  .student>header .brand strong {
-    font-size: 12px;
+  .student-rail .brand strong {
+    font-size:var(--fs-sm);
     color: #25221d;
   }
-  .student>header .brand small {
-    font-size: 7px;
+  .student-rail .brand small {
+    font-size:var(--fs-overline);
     color: #9b7421;
   }
   .student-signout {
     padding: 8px 10px;
-    border-radius: 9px;
+    border-radius:var(--radius-md);
     background: #f2ead8;
     color: #795b1b!important;
-    font-size: 9px;
+    font-size:var(--fs-xs);
     text-decoration: none;
   }
   .student>section {
@@ -280,10 +100,10 @@
   .student-content>.overline {
     display: inline-flex;
     padding: 6px 9px;
-    border-radius: 999px;
+    border-radius:var(--radius-pill);
     background: #eee4ca;
     color: #84621a;
-    font-size: 8px;
+    font-size:var(--fs-overline);
   }
   .student>section>h1 {
     margin: 12px 0 7px;
@@ -292,14 +112,14 @@
   }
   .student>section>p {
     margin: 0 0 20px;
-    font-size: 12px;
+    font-size:var(--fs-sm);
     line-height: 1.55;
     color: #777065;
   }
   .today-card {
     margin-top: 18px;
     padding: 20px;
-    border-radius: 22px;
+    border-radius:var(--radius-xl);
     background: linear-gradient(150deg,#1b1a17,#090909);
     box-shadow: 0 18px 45px #4b351d2b;
   }
@@ -308,11 +128,11 @@
     gap: 12px;
   }
   .today-card h2 {
-    font-size: 25px;
+    font-size:var(--fs-xl);
     line-height: 1.08;
   }
   .today-card>header>strong {
-    font-size: 35px;
+    font-size: var(--fs-display);
     white-space: nowrap;
   }
   .today-card .pill {
@@ -330,7 +150,7 @@
     gap: 12px;
     padding: 15px;
     border: 1px solid #38352f;
-    border-radius: 14px;
+    border-radius:var(--radius-lg);
     background: #171717;
   }
   .student-instructions>article.repeat-step {
@@ -341,24 +161,24 @@
     width: 38px;
     height: 38px;
     background: #3b3020;
-    font-size: 11px;
+    font-size:var(--fs-sm);
   }
   .student-instructions h3 {
-    font-size: 17px;
+    font-size:var(--fs-md);
     line-height: 1.2;
   }
   .student-instructions b {
-    font-size: 11px;
+    font-size:var(--fs-sm);
     line-height: 1.45;
   }
   .student-instructions em {
     padding: 10px;
-    border-radius: 8px;
-    font-size: 10px;
+    border-radius:var(--radius-md);
+    font-size:var(--fs-xs);
   }
   .structured-tempo,
   .structured-confirm {
-    font-size: 10px;
+    font-size:var(--fs-xs);
     line-height: 1.45;
   }
   .structured-confirm {
@@ -369,14 +189,14 @@
   .quick-feedback {
     margin-top: 14px;
     padding: 19px 16px;
-    border-radius: 18px;
+    border-radius:var(--radius-xl);
     box-shadow: 0 8px 24px #57431f12;
   }
   .quick-feedback h2 {
-    font-size: 23px;
+    font-size:var(--fs-xl);
   }
   .quick-feedback>p {
-    font-size: 11px;
+    font-size:var(--fs-sm);
   }
   .quick-feedback>div {
     gap: 7px;
@@ -384,75 +204,42 @@
   .quick-feedback>div button {
     min-height: 78px;
     padding: 10px 5px;
-    border-radius: 12px;
-    font-size: 18px;
+    border-radius:var(--radius-lg);
+    font-size:var(--fs-lg);
   }
   .quick-feedback>div button b {
-    font-size: 9px;
+    font-size:var(--fs-xs);
   }
   .feedback-send {
     min-height: 48px;
-    border-radius: 11px;
-    font-size: 12px;
+    border-radius:var(--radius-md);
+    font-size:var(--fs-sm);
   }
   .student-workout-analysis {
-    border-radius: 18px!important;
+    border-radius: var(--radius-xl)!important;
   }
   .student-empty-week {
     min-height: 260px;
     margin-top: 18px;
-    border-radius: 20px;
+    border-radius:var(--radius-xl);
     background: #fffdf8;
   }
   .student-empty-week h2 {
-    font-size: 22px;
+    font-size:var(--fs-xl);
   }
   .student-week-status {
     display: grid;
     gap: 12px;
     padding: 17px;
-    border-radius: 17px;
+    border-radius:var(--radius-xl);
   }
   .student-week-status>b {
     width: max-content;
   }
-  .student-week-grid {
-    grid-template-columns: 1fr;
-    gap: 9px;
-  }
-  .student-week-grid article,
-  .student-week-grid article:last-child {
-    grid-column: auto;
-    min-height: 0;
-    padding: 15px;
-    border-radius: 14px;
-  }
-  .student-week-grid article.has-session {
-    grid-template-columns: 42px 1fr auto;
-    align-items: center;
-    background: #fff;
-    border-color: #d5b66e;
-  }
-  .student-week-grid article.has-session small {
-    grid-row: 1/4;
-    display: grid;
-    place-items: center;
-    width: 39px;
-    height: 39px;
-    border-radius: 50%;
-    background: #f2e8cf;
-    color: #8b681e;
-    font-weight: 900;
-  }
-  .student-week-grid article.has-session b,
-  .student-week-grid article.has-session span,
-  .student-week-grid article.has-session strong {
-    grid-column: 2/4;
-  }
   .student-week-detail {
     margin: 14px -4px;
     padding: 14px;
-    border-radius: 18px;
+    border-radius:var(--radius-xl);
     background: #fffaf0;
   }
   .student-week-detail .today-card {
@@ -467,19 +254,19 @@
     height: 70px;
     padding: 6px;
     border: 1px solid #ded7c7;
-    border-radius: 20px;
+    border-radius:var(--radius-xl);
     background: #fffdfaf2;
     box-shadow: 0 14px 35px #2e251e38;
     backdrop-filter: blur(16px);
   }
   .student-nav button {
-    border-radius: 15px;
+    border-radius:var(--radius-lg);
   }
   .student-nav button i {
-    font-size: 19px;
+    font-size:var(--fs-lg);
   }
   .student-nav button span {
-    font-size: 9px;
+    font-size:var(--fs-xs);
   }
   .student-nav button.active {
     background: #f2e7c9;
@@ -491,7 +278,6 @@
     background: transparent;
   }
 }
-
 
 /* -----------------------------------------------------------------------------
    student-polish.css
@@ -506,19 +292,22 @@
     background: radial-gradient(circle at 85% 4%,#ead9ad 0,transparent 24%),linear-gradient(180deg,#faf7ef 0,#f0ece2 100%);
     color: var(--student-ink);
   }
-  .student>header {
+  .student-rail {
     height: 72px;
     padding: 0 18px;
-    background: #fffdf8f2;
     box-shadow: 0 4px 24px #4c3b1c0d;
   }
-  .student>header .brand {
+  /* Quem pinta a barra é o pseudoelemento; um fundo aqui cobriria o fosco. */
+  .student-rail::before {
+    background: #fffdf8f2;
+  }
+  .student-rail .brand {
     gap: 10px;
   }
-  .student>header .brand>span {
+  .student-rail .brand>span {
     width: 40px;
     height: 40px;
-    border-radius: 13px;
+    border-radius:var(--radius-lg);
     background: linear-gradient(145deg,#24221e,#090909);
     color: #efc75f;
     box-shadow: 0 8px 22px #15100a2b;
@@ -549,7 +338,7 @@
     max-width: 520px;
     margin-bottom: 22px;
     color: #6f685f;
-    font-size: 13px;
+    font-size:var(--fs-base);
   }
   .today-card {
     position: relative;
@@ -557,7 +346,7 @@
     margin-top: 17px;
     padding: 22px 19px 19px;
     border: 1px solid #34312b;
-    border-radius: 25px;
+    border-radius:var(--radius-xl);
     background: radial-gradient(circle at 95% 0,#644d1f 0,transparent 32%),linear-gradient(150deg,#201e1a,#080808 72%);
     box-shadow: 0 22px 48px #21170b30;
   }
@@ -581,27 +370,27 @@
   }
   .today-card h2 {
     margin: 13px 0 7px;
-    font-size: 27px;
+    font-size: var(--fs-xl);
   }
   .today-card>header p {
     margin: 0;
     color: #aaa195;
-    font-size: 10px;
+    font-size:var(--fs-xs);
     line-height: 1.4;
   }
   .today-card>header>strong {
     padding: 5px 0 0;
     color: #f2cd71;
-    font-size: 38px;
+    font-size: var(--fs-display);
   }
   .student-workout-note {
     margin: 16px 0 0;
     padding: 13px;
     border: 1px solid #5e4e2e;
-    border-radius: 11px;
+    border-radius:var(--radius-md);
     background: #2a241a;
     color: #e9dbc0;
-    font-size: 11px;
+    font-size:var(--fs-sm);
     line-height: 1.5;
   }
   .student-instructions {
@@ -625,7 +414,7 @@
     gap: 12px;
     padding: 16px 14px;
     border-color: #3f3b34;
-    border-radius: 16px;
+    border-radius:var(--radius-xl);
     background: #171716;
     box-shadow: 0 7px 18px #0003;
   }
@@ -639,26 +428,26 @@
     border: 2px solid #c89c3b;
     background: #211d17;
     color: #f0cc72;
-    font-size: 12px;
+    font-size:var(--fs-sm);
   }
   .student-instructions h3 {
     margin: 7px 0 6px;
-    font-size: 18px;
+    font-size:var(--fs-lg);
     line-height: 1.22;
   }
   .student-instructions b {
     color: #f5f0e5;
-    font-size: 11px;
+    font-size:var(--fs-sm);
     line-height: 1.5;
   }
   .student-instructions em {
     margin-top: 11px;
     padding: 11px;
     border: 0;
-    border-radius: 9px;
+    border-radius:var(--radius-md);
     background: #173524;
     color: #9be0b5;
-    font-size: 10px;
+    font-size:var(--fs-xs);
   }
   .structured-confirm {
     margin-bottom: 0;
@@ -700,30 +489,23 @@
     background: #fffdf9;
     box-shadow: 0 15px 35px #513c1710;
   }
-  .student-week-grid article.has-session {
-    box-shadow: 0 9px 22px #4c371218;
-  }
-  .student-week-grid article.has-session strong {
-    color: #956b16;
-    font-size: 10px;
-  }
   .student-nav {
     height: 74px;
     padding: 7px;
     border-color: #d8cfbd;
-    border-radius: 23px;
+    border-radius:var(--radius-xl);
     background: #fffefbed;
     box-shadow: 0 15px 38px #2b211638;
   }
   .student-nav button {
-    border-radius: 17px;
+    border-radius:var(--radius-xl);
     transition: background .2s,color .2s;
   }
   .student-nav button i {
-    font-size: 20px;
+    font-size:var(--fs-lg);
   }
   .student-nav button span {
-    font-size: 9px;
+    font-size:var(--fs-xs);
   }
   .student-nav button.active {
     background: linear-gradient(145deg,#27241f,#111);
@@ -741,13 +523,12 @@
   }
   .student-workout-analysis>button {
     min-height: 49px;
-    border-radius: 12px;
+    border-radius:var(--radius-lg);
     background: #1c1b18!important;
     color: #f1cc70!important;
     font-weight: 800;
   }
 }
-
 
 /* -----------------------------------------------------------------------------
    student-visual-review.css
@@ -759,7 +540,7 @@
     padding-top: 22px!important;
   }
   .student-notification-center {
-    border-radius: 20px;
+    border-radius:var(--radius-xl);
     padding: 16px;
     box-shadow: 0 14px 35px #6c4d1617;
   }
@@ -771,7 +552,7 @@
   .student-today-summary>article {
     min-height: 106px;
     padding: 16px;
-    border-radius: 18px;
+    border-radius:var(--radius-xl);
     border: 1px solid #ded4c0;
     background: #fffdf9;
     box-shadow: 0 10px 26px #4d361010;
@@ -785,70 +566,30 @@
     color: #e8c66e;
   }
   .student-today-summary b {
-    font-size: 14px;
+    font-size:var(--fs-base);
     line-height: 1.25;
   }
   .student-today-summary span {
     margin-top: auto;
-    font-size: 9px;
+    font-size:var(--fs-xs);
   }
   .student-content>.overline {
     display: inline-flex;
     margin-top: 2px;
   }
   .student-content>h1 {
-    font-size: 34px!important;
+    font-size:var(--fs-display)!important;
     line-height: 1.02!important;
   }
   .student-week-status {
     padding: 17px;
-    border-radius: 18px;
+    border-radius:var(--radius-xl);
     box-shadow: 0 10px 28px #513b1512;
-  }
-  .student-week-grid {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 10px;
-  }
-  .student-week-grid>article {
-    min-height: 0;
-    padding: 17px;
-    border-radius: 17px;
-    grid-template-columns: 48px 1fr auto;
-    align-items: center;
-  }
-  .student-week-grid>article>small {
-    display: grid;
-    place-items: center;
-    width: 42px;
-    height: 42px;
-    border-radius: 13px;
-    background: #eee7d8;
-    color: #725516;
-    font-weight: 900;
-  }
-  .student-week-grid>article.has-session {
-    border-color: #d3b66e;
-    background: #fffdf8;
-  }
-  .student-week-grid>article.has-session>small {
-    background: #22201c;
-    color: #efc85f;
-  }
-  .student-week-grid>article b {
-    font-size: 13px;
-  }
-  .student-week-grid>article span {
-    font-size: 9px;
-  }
-  .student-week-grid>article strong {
-    align-self: center;
-    white-space: nowrap;
   }
   .student-week-detail {
     margin-top: 18px;
     padding: 16px;
-    border-radius: 20px;
+    border-radius:var(--radius-xl);
     background: #f8f3e8;
   }
   .student-more-menu {
@@ -856,12 +597,11 @@
   }
   .student-more-menu>button {
     min-height: 82px;
-    border-radius: 17px;
+    border-radius:var(--radius-xl);
     background: #fffdf9;
     box-shadow: 0 9px 22px #5039140f;
   }
 }
-
 
 /* -----------------------------------------------------------------------------
    test-release.css
@@ -872,7 +612,7 @@
   margin-bottom: 16px;
   padding: 18px;
   border: 2px solid var(--gold);
-  border-radius: 14px;
+  border-radius:var(--radius-lg);
   background: #1b180f;
 }
 
@@ -890,15 +630,15 @@
 .pending-test-center header p {
   margin: 0;
   color: var(--muted);
-  font-size: 10px;
+  font-size:var(--fs-xs);
 }
 
 .pending-test-center header>b {
   padding: 8px 10px;
-  border-radius: 16px;
+  border-radius:var(--radius-xl);
   background: #3a2e1c;
   color: var(--gold2);
-  font-size: 8px;
+  font-size:var(--fs-overline);
 }
 
 .pending-test-center>label {
@@ -906,7 +646,7 @@
   max-width: 360px;
   margin: 15px 0;
   color: var(--muted);
-  font-size: 9px;
+  font-size:var(--fs-xs);
 }
 
 .pending-test-center select {
@@ -915,7 +655,7 @@
   margin-top: 5px;
   padding: 10px;
   border: 1px solid #514837;
-  border-radius: 8px;
+  border-radius:var(--radius-md);
   background: #161617;
   color: var(--text);
 }
@@ -938,20 +678,20 @@
 .pending-test-center article small,
 .pending-test-center article span {
   color: var(--muted);
-  font-size: 9px;
+  font-size:var(--fs-xs);
 }
 
 .pending-test-center article strong {
-  font-size: 14px;
+  font-size:var(--fs-base);
 }
 
 .pending-test-empty,
 .zones-release-success {
   padding: 13px;
-  border-radius: 9px;
+  border-radius:var(--radius-md);
   background: #20221d;
   color: var(--muted);
-  font-size: 10px;
+  font-size:var(--fs-xs);
 }
 
 .zones-release-success {
@@ -988,7 +728,6 @@
   }
 }
 
-
 /* -----------------------------------------------------------------------------
    test-release-flow.css
    Confirmacao de sucesso ao liberar as zonas.
@@ -1020,7 +759,6 @@
     width: 100%;
   }
 }
-
 
 /* -----------------------------------------------------------------------------
    desktop-workout.css
@@ -1055,10 +793,10 @@
     padding: 12px;
   }
   .weekly-planner .session b {
-    font-size: 12px;
+    font-size:var(--fs-sm);
   }
   .weekly-planner .session span {
-    font-size: 10px;
+    font-size:var(--fs-xs);
     line-height: 1.45;
   }
   .overlay:has(.workout-drawer) {
@@ -1099,19 +837,18 @@
     padding: 19px;
   }
   .workout-drawer>.student-builder-preview h3 {
-    font-size: 16px;
+    font-size:var(--fs-md);
   }
   .workout-drawer>.student-builder-preview article {
     padding: 13px;
   }
   .workout-drawer>.student-builder-preview strong {
-    font-size: 13px;
+    font-size:var(--fs-base);
   }
   .workout-drawer>footer {
     margin-top: 20px;
   }
 }
-
 
 /* -----------------------------------------------------------------------------
    coach-student-preview.css
@@ -1128,7 +865,7 @@
   gap: 12px;
   padding: 10px 12px;
   border: 1px solid #5f4c26;
-  border-radius: 13px;
+  border-radius:var(--radius-lg);
   background: #171717ed;
   color: #f5f1e7;
   box-shadow: 0 14px 35px #0005;
@@ -1142,18 +879,18 @@
 
 .coach-student-preview div small {
   color: #d7aa39;
-  font-size: 7px;
+  font-size:var(--fs-overline);
   letter-spacing: .1em;
 }
 
 .coach-student-preview div b {
   margin-top: 4px;
-  font-size: 10px;
+  font-size:var(--fs-xs);
 }
 
 .coach-student-preview label {
   color: #aaa49a;
-  font-size: 8px;
+  font-size:var(--fs-overline);
 }
 
 .coach-student-preview select {
@@ -1162,7 +899,7 @@
   margin-top: 4px;
   padding: 8px;
   border: 1px solid #554a35;
-  border-radius: 8px;
+  border-radius:var(--radius-md);
   background: #242321;
   color: #fff;
 }
@@ -1170,10 +907,10 @@
 .coach-student-preview button {
   padding: 9px 11px;
   border: 1px solid #705b2c;
-  border-radius: 8px;
+  border-radius:var(--radius-md);
   background: #d7aa39;
   color: #17130b;
-  font-size: 9px;
+  font-size:var(--fs-xs);
   font-weight: 900;
 }
 
@@ -1190,7 +927,7 @@
     display: none;
   }
   .coach-student-preview label {
-    font-size: 7px;
+    font-size:var(--fs-overline);
   }
   .coach-student-preview select {
     min-width: 0;
@@ -1206,23 +943,6 @@
   }
 }
 
-
-/* -----------------------------------------------------------------------------
-   student-week-open.css
-   Detalhe da semana aberta pelo aluno.
-   ----------------------------------------------------------------------------- */
-
-.student-week-grid article.selected {
-  border-color: #9c711a;
-  background: #fff7e4;
-  box-shadow: 0 0 0 2px #d4ab50 inset;
-}
-
-.student-week-grid article.selected small {
-  background: #1e1c18!important;
-  color: #efc969!important;
-}
-
 .student-week-detail {
   scroll-margin-top: 88px;
   outline: none;
@@ -1234,7 +954,7 @@
   z-index: 4;
   padding: 11px 12px;
   border: 1px solid #dfd2b7;
-  border-radius: 12px;
+  border-radius:var(--radius-lg);
   background: #fffdf8ed;
   backdrop-filter: blur(12px);
   box-shadow: 0 8px 22px #3c2c1114;
@@ -1243,7 +963,7 @@
 .student-week-detail>header button {
   padding: 8px 10px;
   border: 1px solid #d9c69c;
-  border-radius: 9px;
+  border-radius:var(--radius-md);
   background: #fff6df;
   color: #795814;
   font-weight: 800;

@@ -6,6 +6,8 @@ import InstallApp from "./InstallApp";
 export type Session =
   /** Conta de manutenção: acesso irrestrito, com diagnóstico do sistema. */
   | { authenticated: true; role: "dev"; email: string; name: string; mustChangePassword: boolean }
+  /** Proprietário: treinador que também cria e confere os treinadores da equipe. */
+  | { authenticated: true; role: "owner"; email: string; name: string; mustChangePassword: boolean }
   | { authenticated: true; role: "coach"; email: string; name: string; mustChangePassword: boolean }
   | { authenticated: true; role: "student"; email: string; name: string; athleteName: string; mustChangePassword: boolean };
 
@@ -191,6 +193,9 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             </button>
           )}
           <small>Esqueceu a senha? O professor redefine para você pelo painel.</small>
+          {/* A LGPD pede que a política esteja acessível antes do cadastro, não
+              só depois de entrar: é aqui que o consentimento começa. */}
+          <small className="auth-legal"><a href="/privacy">Política de Privacidade</a> · <a href="/terms">Termos de Uso</a></small>
         </footer>
 
         <InstallApp inline />
