@@ -126,8 +126,16 @@ export async function hashPassword(password: string): Promise<{ hash: string; sa
   return { hash, salt: toBase64(salt), iterations: PASSWORD_ITERATIONS };
 }
 
-/** Compara sem sair mais cedo, para não vazar quanto do hash bateu. */
-function constantTimeEquals(left: string, right: string): boolean {
+/**
+ * Compara sem sair mais cedo, para não vazar quanto do segredo bateu.
+ *
+ * Exportada porque a senha não é o único segredo comparado no sistema: o token
+ * do webhook do Strava era conferido com `!==`, que devolve na primeira letra
+ * diferente. Quem chama o endpoint mede o tempo da resposta e descobre o token
+ * caractere a caractere — e com ele inscreve o próprio endereço para receber as
+ * atividades dos alunos. Toda comparação de segredo passa por aqui.
+ */
+export function constantTimeEquals(left: string, right: string): boolean {
   if (left.length !== right.length) return false;
   let difference = 0;
   for (let index = 0; index < left.length; index += 1) {

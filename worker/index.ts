@@ -5,6 +5,7 @@ import {
   MIN_PASSWORD_LENGTH,
   accountByEmail,
   createAccount,
+  constantTimeEquals,
   createSession,
   destroySession,
   destroySessionsForUser,
@@ -2489,8 +2490,11 @@ async function stravaWebhookApi(request: Request, url: URL, env: Env, ctx: Execu
     const token = url.searchParams.get("hub.verify_token");
     const desafio = url.searchParams.get("hub.challenge");
     if (modo !== "subscribe" || !desafio) return Response.json({ error: "invalid_subscription" }, { status: 400 });
-    // Sem o token combinado, qualquer um poderia inscrever um endpoint nosso.
-    if (!env.STRAVA_WEBHOOK_VERIFY_TOKEN || token !== env.STRAVA_WEBHOOK_VERIFY_TOKEN) {
+    /* Sem o token combinado, qualquer um poderia inscrever um endpoint nosso.
+       A comparação é em tempo constante: com `!==`, que para na primeira letra
+       diferente, quem chama mede o tempo da resposta e descobre o token
+       caractere a caractere. */
+    if (!env.STRAVA_WEBHOOK_VERIFY_TOKEN || !constantTimeEquals(token ?? "", env.STRAVA_WEBHOOK_VERIFY_TOKEN)) {
       return Response.json({ error: "invalid_verify_token" }, { status: 403 });
     }
     return Response.json({ "hub.challenge": desafio });

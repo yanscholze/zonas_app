@@ -187,6 +187,37 @@ test("uses a computer-first workspace for weekly programming and workout buildin
   assert.match(css, /width:min\(1120px,calc\(100vw - 260px\)\)/);
 });
 
+test("hardens the supply chain and keeps example passwords out of the docs", async () => {
+  const npmrc = await readFile(new URL("../.npmrc", import.meta.url), "utf8");
+  const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+  const pacote = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+
+  /* Sem idade mínima, um `npm install` feito no dia em que um pacote é
+     comprometido traz a versão maliciosa. Sete dias é a janela em que esses
+     ataques costumam ser descobertos e despublicados — e o custo é só não
+     estrear uma versão no dia em que ela sai. */
+  assert.match(npmrc, /minimum-release-age=10080/);
+
+  /* O README trazia "minha-nova-senha-2026" como exemplo, duas vezes. Não era
+     credencial nenhuma, mas dispara scanner de segredo — e um marcador ensina
+     melhor que uma senha inventada, que alguém acaba copiando. */
+  assert.doesNotMatch(readme, /minha-nova-senha-2026/);
+  assert.match(readme, /coach:reset-password -- "<SUA_NOVA_SENHA>"/);
+
+  /* postcss e sharp vinham presos dentro do next, nas versões com CVE. Subir o
+     next sozinho não os solta, porque ele os fixa: o override alcança a árvore
+     inteira. Se o next voltar a fixá-los, isto quebra e alguém olha. */
+  assert.ok(pacote.overrides?.postcss, "falta o override do postcss");
+  assert.ok(pacote.overrides?.sharp, "falta o override do sharp");
+
+  const lock = JSON.parse(await readFile(new URL("../package-lock.json", import.meta.url), "utf8"));
+  const versoes = (alvo) => Object.entries(lock.packages ?? {})
+    .filter(([caminho]) => caminho.endsWith(`node_modules/${alvo}`))
+    .map(([, info]) => info.version).filter(Boolean);
+  assert.ok(!versoes("postcss").includes("8.4.31"), "postcss 8.4.31 voltou à árvore");
+  assert.ok(!versoes("sharp").includes("0.34.5"), "sharp 0.34.5 voltou à árvore");
+});
+
 test("names the data controller the privacy law requires", async () => {
   const privacidade = await readFile(new URL("../app/privacy/page.tsx", import.meta.url), "utf8");
 
@@ -3152,7 +3183,14 @@ test("answers the Strava subscription handshake and refuses a wrong token", asyn
   // token combinado, qualquer um poderia inscrever um endpoint nosso.
   assert.match(worker, /async function stravaWebhookApi/);
   assert.match(worker, /"hub\.challenge": desafio/);
-  assert.match(worker, /token !== env\.STRAVA_WEBHOOK_VERIFY_TOKEN/);
+  /* A comparação era `!==`, que para na primeira letra diferente: quem chama o
+     endpoint mede o tempo da resposta e descobre o token caractere a caractere —
+     e com ele inscreve o próprio endereço para receber as atividades dos alunos.
+     Toda comparação de segredo passa pelo mesmo laço de tempo constante. */
+  assert.match(worker, /!constantTimeEquals\(token \?\? "", env\.STRAVA_WEBHOOK_VERIFY_TOKEN\)/);
+  assert.doesNotMatch(worker, /token !== env\.STRAVA_WEBHOOK_VERIFY_TOKEN/);
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+  assert.match(auth, /export function constantTimeEquals\(left: string, right: string\): boolean/);
   // O evento diz de quem é a atividade pelo id do atleta no Strava.
   assert.match(worker, /external_athlete_id = \? AND status = 'Conectado'/);
   // Exclusão no Strava tira a atividade daqui também.
