@@ -14591,3 +14591,120 @@ p, span, b, strong, small, em, li, td, th, label {
 }
 
 .monitor-copiar:hover { border-color: var(--gold); }
+
+/* -----------------------------------------------------------------------------
+   O erro aberto numa tela própria.
+
+   A pilha aponta arquivo e linha, e tem dezenas de linhas: não cabe numa célula
+   da tabela sem tornar a lista ilegível. Aqui ela tem espaço, e o texto é
+   preservado como veio — quebrar uma linha da pilha no meio troca o número da
+   linha de lugar.
+   ----------------------------------------------------------------------------- */
+.erro-aberto {
+  display: grid;
+  align-content: start;
+  gap: var(--space-4);
+  width: min(760px, 100%);
+}
+
+.erro-aberto>header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: var(--space-4);
+}
+
+.erro-aberto>header small {
+  color: var(--gold);
+  font-size: var(--fs-overline);
+  letter-spacing: var(--tracking-overline);
+}
+
+.erro-aberto>header h2 {
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-lg);
+}
+
+.erro-aberto>header p {
+  margin: var(--space-1) 0 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.erro-fatos {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.erro-fatos dt {
+  color: var(--muted);
+  font-size: var(--fs-overline);
+  letter-spacing: var(--tracking-overline);
+  text-transform: uppercase;
+}
+
+.erro-fatos dd {
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.erro-aberto section {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.erro-aberto section>b {
+  color: var(--muted);
+  font-size: var(--fs-overline);
+  letter-spacing: var(--tracking-overline);
+  text-transform: uppercase;
+}
+
+.erro-aberto pre {
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-0);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.erro-pilha {
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.erro-aberto>footer {
+  display: flex;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--line);
+}
+
+.erro-aberto>footer button {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.erro-aberto>footer .dev-copiar {
+  border-color: var(--gold);
+  color: var(--gold);
+  font-weight: var(--fw-bold);
+}

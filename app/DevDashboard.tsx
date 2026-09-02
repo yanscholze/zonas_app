@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { api, describeError } from "./api-client";
+import { api, copyText, describeError } from "./api-client";
 import { signOut, type Session } from "./AuthGate";
 import { avise, pergunte, CentralDeAvisos } from "./avisos";
 
@@ -20,7 +20,7 @@ type Conta = {
   locked_until: number | null; last_login_at: number | null; created_at: number;
 };
 type Sessao = { email: string; role?: string; created_at: number; last_seen_at: number; expires_at: number };
-type Erro = { id: string; area: string; error_code: string; method: string; status_code: number; created_at: number };
+type Erro = { id: string; area: string; error_code: string; method: string; status_code: number; created_at: number; route?: string | null; message?: string | null; stack?: string | null; actor_role?: string | null };
 type Evento = { id: string; actor_email: string; event_type: string; route: string; details: string; created_at: number };
 type Limite = { actor_email: string; route: string; method: string; request_count: number; window_start: number };
 type Provedor = { id: string; label: string; disponivel: boolean; estado: string };
@@ -52,6 +52,74 @@ const relativo = (ms: number) => {
 type Treinador = { id: string; email: string; name: string; status: string; last_login_at: number | null; alunos_ativos: number };
 type Visita = { email: string; name: string; userId: string } | null;
 
+
+/**
+ * Um erro, inteiro, numa tela só.
+ *
+ * A tabela mostrava área, código e status — dava para saber que algo falhou e
+ * não o quê. A pilha é o que aponta o arquivo e a linha, e tem dezenas de
+ * linhas: não cabe numa célula sem tornar a lista ilegível. Por isso abre numa
+ * tela própria, com o texto preservado como veio.
+ */
+function ErroAberto({ erro, fechar }: { erro: Erro; fechar: () => void }) {
+  /* Esc fecha. Quem está investigando um erro chega aqui de teclado, lê e sai —
+     obrigar a mirar o botão no canto atrapalha justamente esse uso. */
+  useEffect(() => {
+    const aoTeclar = (evento: KeyboardEvent) => { if (evento.key === "Escape") fechar(); };
+    window.addEventListener("keydown", aoTeclar);
+    return () => window.removeEventListener("keydown", aoTeclar);
+  }, [fechar]);
+
+  const texto = [
+    `${new Date(Number(erro.created_at)).toLocaleString("pt-BR", { dateStyle: "full", timeStyle: "medium" })}`,
+    `${erro.method} ${erro.route ?? "(rota não registrada)"} → ${erro.status_code} ${erro.error_code}`,
+    `área: ${erro.area} · quem chamou: ${erro.actor_role ?? "—"}`,
+    "",
+    erro.message ?? "(sem mensagem registrada)",
+    erro.stack ?? "",
+  ].join("\n").trim();
+
+  const copiar = async () => {
+    if (await copyText(texto)) avise("ok", "Erro copiado", "Cole onde precisar investigar.");
+    else avise("erro", "Não foi possível copiar", "Selecione o texto na tela e copie à mão.");
+  };
+
+  return <div className="overlay" onMouseDown={evento => evento.target === evento.currentTarget && fechar()}>
+    <aside className="drawer erro-aberto" role="dialog" aria-modal="true" aria-label={`Erro ${erro.error_code}`}>
+      <header>
+        <div>
+          <small>ERRO REGISTRADO</small>
+          <h2>{erro.error_code.replaceAll("_", " ")}</h2>
+          <p>{erro.area}</p>
+        </div>
+        <button onClick={fechar} aria-label="Fechar">×</button>
+      </header>
+
+      <dl className="erro-fatos">
+        <div><dt>Quando</dt><dd>{new Date(Number(erro.created_at)).toLocaleString("pt-BR", { dateStyle: "full", timeStyle: "medium" })}</dd></div>
+        <div><dt>Rota</dt><dd><code>{erro.method} {erro.route ?? "(não registrada — erro anterior a este log)"}</code></dd></div>
+        <div><dt>Retorno</dt><dd>{erro.status_code} · <code>{erro.error_code}</code></dd></div>
+        <div><dt>Quem chamou</dt><dd>{erro.actor_role ?? "—"}</dd></div>
+      </dl>
+
+      <section>
+        <b>Mensagem</b>
+        <pre>{erro.message ?? "Sem mensagem registrada. Este erro é anterior ao log detalhado."}</pre>
+      </section>
+
+      {erro.stack && <section>
+        <b>Onde aconteceu</b>
+        <pre className="erro-pilha">{erro.stack}</pre>
+      </section>}
+
+      <footer>
+        <button className="dev-copiar" onClick={() => void copiar()}>Copiar tudo</button>
+        <button onClick={fechar}>Fechar</button>
+      </footer>
+    </aside>
+  </div>;
+}
+
 export default function DevDashboard({ session, onExit }: { session: Session; onExit: (visitando: Visita) => void }) {
   const [treinadores, setTreinadores] = useState<Treinador[]>([]);
   const [visitando, setVisitando] = useState<Visita>(null);
@@ -59,6 +127,9 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
   const [criando, setCriando] = useState(false);
   const [novo, setNovo] = useState({ name: "", email: "" });
   const [senhaNova, setSenhaNova] = useState<{ email: string; senha: string } | null>(null);
+  /* O erro abre numa tela própria em vez de esticar a linha da tabela: a pilha
+     tem dezenas de linhas e não cabe numa célula sem tornar a lista ilegível. */
+  const [erroAberto, setErroAberto] = useState<Erro | null>(null);
   const [dados, setDados] = useState<Diagnostico | null>(null);
   const [erro, setErro] = useState("");
   const [aba, setAba] = useState<"resumo" | "contas" | "erros" | "seguranca" | "banco">("resumo");
@@ -278,17 +349,18 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
 
         {aba === "erros" && <section className="dev-panel">
           <h2>Erros da aplicação</h2>
-          <p className="dev-hint">Registrados pelo Worker. Guardam área, código e status — nunca dado de aluno. A tabela mostra as 80 ocorrências mais recentes; o cartão do resumo conta todas as últimas 24 horas.</p>
+          <p className="dev-hint">Registrados pelo Worker. Abra um erro para ver a mensagem e a pilha, com arquivo e linha. Nunca entra dado de aluno; de quem chamou fica só o papel. A tabela mostra as 80 ocorrências mais recentes; o cartão do resumo conta todas as últimas 24 horas.</p>
           {dados.erros.length === 0 ? <p className="dev-empty">Nenhum erro registrado.</p> : (
             <table className="dev-table">
-              <thead><tr><th>Quando</th><th>Área</th><th>Código</th><th>Método</th><th>Status</th></tr></thead>
+              <thead><tr><th>Quando</th><th>Área</th><th>Código</th><th>Rota</th><th>Status</th><th></th></tr></thead>
               <tbody>{dados.erros.map(e => (
                 <tr key={e.id}>
                   <td title={quando(e.created_at)}>{relativo(e.created_at)}</td>
                   <td>{e.area}</td>
                   <td><code>{e.error_code}</code></td>
-                  <td>{e.method}</td>
+                  <td><code>{e.method} {e.route ?? "—"}</code></td>
                   <td><span className={`dev-status s${String(e.status_code)[0]}`}>{e.status_code}</span></td>
+                  <td className="dev-acoes"><button onClick={() => setErroAberto(e)}>Abrir</button></td>
                 </tr>
               ))}</tbody>
             </table>
@@ -386,6 +458,7 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
 
         <footer className="dev-footer">Diagnóstico gerado em {quando(dados.generatedAt)}</footer>
       </>}
+      {erroAberto && <ErroAberto erro={erroAberto} fechar={() => setErroAberto(null)} />}
       <CentralDeAvisos />
     </main>
   );

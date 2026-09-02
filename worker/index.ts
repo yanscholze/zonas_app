@@ -2872,7 +2872,7 @@ async function devOverviewApi(request: Request, env: Env): Promise<Response> {
                            user_sessions.expires_at, user_accounts.role
                       FROM user_sessions LEFT JOIN user_accounts ON user_accounts.id = user_sessions.user_id
                      WHERE user_sessions.expires_at > ? ORDER BY user_sessions.last_seen_at DESC LIMIT 40`).bind(agora).all(),
-    env.DB.prepare("SELECT id, area, error_code, method, status_code, created_at FROM application_errors ORDER BY created_at DESC LIMIT 80").all(),
+    env.DB.prepare("SELECT id, area, error_code, method, status_code, route, message, stack, actor_role, created_at FROM application_errors ORDER BY created_at DESC LIMIT 80").all(),
     env.DB.prepare("SELECT id, actor_email, event_type, route, details, created_at FROM security_events ORDER BY created_at DESC LIMIT 60").all(),
     env.DB.prepare("SELECT actor_email, route, method, request_count, window_start FROM request_rate_limits WHERE window_start > ? ORDER BY request_count DESC LIMIT 25").bind(agora - 3_600_000).all(),
     env.DB.prepare("SELECT provider, COUNT(*) AS total, MAX(started_at) AS ultima FROM external_activities GROUP BY provider").all(),

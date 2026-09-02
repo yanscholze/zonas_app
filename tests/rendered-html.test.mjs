@@ -187,6 +187,47 @@ test("uses a computer-first workspace for weekly programming and workout buildin
   assert.match(css, /width:min\(1120px,calc\(100vw - 260px\)\)/);
 });
 
+test("keeps the deploy config in step with the development bindings", async () => {
+  const wranglerRaw = await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8");
+  const viteConfig = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
+  const hosting = JSON.parse(await readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"));
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+
+  /* O desenvolvimento não lê o wrangler.jsonc: o plugin da Cloudflare recebe a
+     configuração embutida no vite.config.ts. As duas precisam concordar nos
+     bindings — se divergirem, funciona em desenvolvimento e quebra em produção,
+     que é o pior lugar para descobrir. */
+  const wrangler = JSON.parse(wranglerRaw.replace(/^\s*\/\/.*$/gm, ""));
+
+  assert.equal(wrangler.main, "./worker/index.ts");
+  assert.match(viteConfig, /main: "\.\/worker\/index\.ts"/);
+  assert.deepEqual(wrangler.compatibility_flags, ["nodejs_compat"]);
+  assert.match(viteConfig, /compatibility_flags: \["nodejs_compat"\]/);
+  assert.equal(wrangler.d1_databases[0].binding, hosting.d1);
+  assert.equal(wrangler.assets.binding, "ASSETS");
+
+  /* Todo binding que o worker usa precisa existir na configuração de deploy.
+     `env.ASSETS` e `env.IMAGES` são da plataforma; `env.DB` é o banco. Um
+     binding esquecido só aparece como erro em produção. */
+  const bindingsUsados = new Set((worker.match(/env\.(ASSETS|IMAGES|DB)\b/g) ?? []).map(m => m.split(".")[1]));
+  const bindingsDeclarados = new Set([
+    wrangler.assets?.binding,
+    wrangler.images?.binding,
+    ...(wrangler.d1_databases ?? []).map(d => d.binding),
+  ].filter(Boolean));
+  for (const binding of bindingsUsados) {
+    assert.ok(bindingsDeclarados.has(binding), `o worker usa env.${binding}, que não está no wrangler.jsonc`);
+  }
+
+  /* `vars` guarda configuração — chaves que ligam comportamento e não têm valor
+     sigiloso. Segredo nunca: o repositório é público, e segredo entra por
+     `wrangler secret put`, que grava na conta. */
+  assert.ok(wrangler.vars && typeof wrangler.vars === "object");
+  for (const proibido of ["DEV_INITIAL_PASSWORD", "COACH_INITIAL_PASSWORD", "STRAVA_CLIENT_SECRET", "GARMIN_CONSUMER_SECRET", "ZEPP_APP_SECRET", "STRAVA_TOKEN_ENCRYPTION_KEY"]) {
+    assert.doesNotMatch(wranglerRaw, new RegExp(`"${proibido}"\\s*:`), `${proibido} não pode estar no wrangler.jsonc`);
+  }
+});
+
 test("keeps the coach preview out of student-only routes, from one place", async () => {
   const apiClient = await readFile(new URL("../app/api-client.ts", import.meta.url), "utf8");
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
@@ -244,10 +285,24 @@ test("records enough about a failure to find the line that caused it", async () 
   assert.match(worker, /identidade\?\.role \?\? "anônimo"/);
   assert.doesNotMatch(worker, /INSERT INTO application_errors[^)]*actor_email/);
 
-  // E dá para abrir o erro na tela e copiar tudo.
+  // E dá para abrir o erro e copiar tudo, nos dois painéis.
   assert.match(client, /className="monitor-detalhe"/);
   assert.match(client, /const copiar=async\(error:AppError\)=>\{/);
   assert.match(client, /aria-expanded=\{estaAberto\}/);
+
+  /* O painel dev tinha a própria consulta e a própria tabela, e ficou para trás
+     quando o log foi detalhado: mostrava área, código e status, sem como abrir.
+     É onde a manutenção olha, então é onde o detalhe mais falta. A pilha tem
+     dezenas de linhas e não cabe numa célula: abre numa tela própria. */
+  const dev = await readFile(new URL("../app/DevDashboard.tsx", import.meta.url), "utf8");
+  assert.match(dev, /function ErroAberto\(\{ erro, fechar \}: \{ erro: Erro; fechar: \(\) => void \}\)/);
+  assert.match(dev, /role="dialog" aria-modal="true"/);
+  assert.match(dev, /onClick=\{\(\) => setErroAberto\(e\)\}>Abrir<\/button>/);
+  assert.match(dev, /className="erro-pilha"/);
+  // Esc fecha: quem investiga chega de teclado, lê e sai.
+  assert.match(dev, /if \(evento\.key === "Escape"\) fechar\(\)/);
+  // As duas consultas do log precisam trazer os mesmos campos.
+  assert.equal(worker.match(/SELECT id, area, error_code, method, status_code, route, message, stack, actor_role, created_at FROM application_errors/g)?.length, 2);
 });
 
 test("lets the student send a test result the same way they finish a workout", async () => {
