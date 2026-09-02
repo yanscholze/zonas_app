@@ -187,6 +187,25 @@ test("uses a computer-first workspace for weekly programming and workout buildin
   assert.match(css, /width:min\(1120px,calc\(100vw - 260px\)\)/);
 });
 
+test("names the data controller the privacy law requires", async () => {
+  const privacidade = await readFile(new URL("../app/privacy/page.tsx", import.meta.url), "utf8");
+
+  /* A LGPD (arts. 9º, I e 41) exige que quem trata dado pessoal se identifique a
+     quem é tratado. Enquanto a constante estava vazia, a página dizia que o dado
+     era obtido com o treinador — verdade, mas não substitui a identificação
+     formal num serviço aberto ao público. */
+  assert.doesNotMatch(privacidade, /const CONTROLADOR=\{nome:"",documento:"",encarregado:"",email:""\}/);
+  assert.match(privacidade, /nome:"[^"]+"/);
+  assert.match(privacidade, /documento:"(CPF|CNPJ)[^"]+"/);
+  assert.match(privacidade, /encarregado:"[^"]+"/);
+  assert.match(privacidade, /email:"[^"@]+@[^"]+"/);
+
+  // E a página precisa continuar mostrando os quatro ao visitante.
+  for (const campo of ["CONTROLADOR.nome", "CONTROLADOR.documento", "CONTROLADOR.encarregado", "CONTROLADOR.email"]) {
+    assert.ok(privacidade.includes(campo), `a página não mostra ${campo}`);
+  }
+});
+
 test("keeps the deploy config in step with the development bindings", async () => {
   const wranglerRaw = await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8");
   const viteConfig = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
@@ -223,6 +242,18 @@ test("keeps the deploy config in step with the development bindings", async () =
      sigiloso. Segredo nunca: o repositório é público, e segredo entra por
      `wrangler secret put`, que grava na conta. */
   assert.ok(wrangler.vars && typeof wrangler.vars === "object");
+
+  /* O ensaio precisa de banco PRÓPRIO. Um ambiente de teste apontando para o
+     banco de produção é pior que não ter ambiente de teste: dá a sensação de
+     estar isolado enquanto se escreve em cima dos alunos de verdade. */
+  const ensaio = wrangler.env?.ensaio;
+  assert.ok(ensaio, "falta o ambiente de ensaio no wrangler.jsonc");
+  assert.notEqual(ensaio.name, wrangler.name);
+  assert.notEqual(ensaio.d1_databases[0].database_name, wrangler.d1_databases[0].database_name);
+  assert.notEqual(ensaio.d1_databases[0].database_id, wrangler.d1_databases[0].database_id);
+  // E os mesmos bindings, senão o mesmo código não roda nos dois.
+  assert.equal(ensaio.d1_databases[0].binding, wrangler.d1_databases[0].binding);
+  assert.equal(ensaio.images.binding, wrangler.images.binding);
   for (const proibido of ["DEV_INITIAL_PASSWORD", "COACH_INITIAL_PASSWORD", "STRAVA_CLIENT_SECRET", "GARMIN_CONSUMER_SECRET", "ZEPP_APP_SECRET", "STRAVA_TOKEN_ENCRYPTION_KEY"]) {
     assert.doesNotMatch(wranglerRaw, new RegExp(`"${proibido}"\\s*:`), `${proibido} não pode estar no wrangler.jsonc`);
   }

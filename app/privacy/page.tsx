@@ -3,11 +3,22 @@ export const metadata={title:"Privacidade | Zonas-App",description:"Política de
 /**
  * Identificação do controlador, exigida pela LGPD (art. 9º, I e art. 41).
  *
- * Preencha antes de publicar. Enquanto estiver vazio, a página diz que o dado
- * é obtido com o treinador responsável, o que é verdade mas não substitui a
- * identificação formal do controlador em um serviço aberto ao público.
+ * Estes dados são públicos por obrigação legal: quem trata dado pessoal precisa
+ * se identificar a quem é tratado. A página os mostra a qualquer visitante, e é
+ * para isso que existem.
+ *
+ * O que NÃO é obrigatório é que eles estejam no código-fonte. Este repositório é
+ * público, então o CPF aqui também entra no histórico do Git — e histórico não
+ * se apaga editando o arquivo depois. Duas saídas, se isso incomodar: tornar o
+ * repositório privado, ou abrir um CNPJ e trocar o CPF por ele, que é o caminho
+ * comum de quem presta serviço.
  */
-const CONTROLADOR={nome:"",documento:"",encarregado:"",email:""};
+const CONTROLADOR={
+  nome:"Yan Scholze",
+  documento:"CPF 074.226.659-12",
+  encarregado:"Yan Scholze",
+  email:"yanaugustoscholze@gmail.com",
+};
 
 const naoInformado="informado pelo treinador responsável pela sua conta";
 

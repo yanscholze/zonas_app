@@ -51,5 +51,41 @@
     "GARMIN_ACTIVITY_API_ENABLED": "false",
     "GARMIN_TRAINING_API_ENABLED": "false",
     "GARMIN_TRAINING_API_URL": ""
+  },
+
+  // Ambiente de ensaio.
+  //
+  // Outro worker, outro banco, outros segredos. Serve para experimentar sem
+  // tocar nos alunos de verdade — hoje não há onde testar uma mudança de banco
+  // a não ser em cima de dado real, e nesta sessão isso já custou uma tabela
+  // apagada e devolvida à mão.
+  //
+  // Herda `main`, `assets` e `compatibility_*` da configuração acima; o que se
+  // repete aqui é só o que muda. Os segredos NÃO são herdados: cada ambiente
+  // guarda os seus, e é isso que impede um teste de alcançar a conta do Strava
+  // de produção. Grave-os com `--env ensaio`.
+  //
+  //   npx wrangler d1 create zonasapp-ensaio
+  //   npx wrangler secret put DEV_LOGIN --env ensaio
+  //   npm run deploy:ensaio
+  "env": {
+    "ensaio": {
+      "name": "zonasapp-ensaio",
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "zonasapp-ensaio",
+          "database_id": "PREENCHER_COM_O_ID_DO_D1_DE_ENSAIO"
+        }
+      ],
+      "images": {
+        "binding": "IMAGES"
+      },
+      "vars": {
+        "GARMIN_ACTIVITY_API_ENABLED": "false",
+        "GARMIN_TRAINING_API_ENABLED": "false",
+        "GARMIN_TRAINING_API_URL": ""
+      }
+    }
   }
 }

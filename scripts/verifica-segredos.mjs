@@ -11,8 +11,9 @@
  * Este script lê os nomes que o worker realmente usa, compara com o que a conta
  * tem, e diz o que falta. Ele nunca imprime valor de segredo — só nomes.
  *
- *   node scripts/verifica-segredos.mjs            confere a conta
- *   node scripts/verifica-segredos.mjs --local    confere o .dev.vars
+ *   node scripts/verifica-segredos.mjs                   confere a produção
+ *   node scripts/verifica-segredos.mjs --env ensaio      confere o ambiente de ensaio
+ *   node scripts/verifica-segredos.mjs --local           confere o .dev.vars
  */
 
 import { readFile } from "node:fs/promises";
@@ -49,8 +50,13 @@ async function nomesUsadosPeloWorker() {
   return nomes;
 }
 
-async function segredosDaConta() {
-  const { stdout } = await executa("npx", ["wrangler", "secret", "list"], { cwd: new URL(".", raiz).pathname });
+async function segredosDaConta(ambiente) {
+  /* Cada ambiente guarda os próprios segredos — é isso que impede um teste de
+     alcançar a conta do Strava de produção. Consultar sem dizer qual ambiente
+     responderia sempre pela produção e diria que o ensaio está pronto quando
+     não está. */
+  const argumentos = ["wrangler", "secret", "list", ...(ambiente ? ["--env", ambiente] : [])];
+  const { stdout } = await executa("npx", argumentos, { cwd: new URL(".", raiz).pathname });
   try {
     return new Set(JSON.parse(stdout).map(item => item.name));
   } catch {
@@ -69,11 +75,13 @@ async function segredosLocais() {
 }
 
 const local = process.argv.includes("--local");
+const posicaoDoAmbiente = process.argv.indexOf("--env");
+const ambiente = posicaoDoAmbiente >= 0 ? process.argv[posicaoDoAmbiente + 1] : "";
 const usados = await nomesUsadosPeloWorker();
 
 let presentes;
 try {
-  presentes = local ? await segredosLocais() : await segredosDaConta();
+  presentes = local ? await segredosLocais() : await segredosDaConta(ambiente);
 } catch (falha) {
   console.error(local
     ? "Não foi possível ler o .dev.vars."
@@ -82,7 +90,7 @@ try {
   process.exit(69);
 }
 
-const onde = local ? ".dev.vars" : "conta da Cloudflare";
+const onde = local ? ".dev.vars" : ambiente ? `conta da Cloudflare · ambiente ${ambiente}` : "conta da Cloudflare · produção";
 console.log(`Conferindo os segredos em: ${onde}\n`);
 
 const faltamObrigatorios = OBRIGATORIOS.filter(nome => !presentes.has(nome));
@@ -116,7 +124,8 @@ if (desconhecidos.length) {
 
 if (faltamObrigatorios.length) {
   console.log(`\nFaltam segredos obrigatórios. Grave cada um com:\n`);
-  for (const nome of faltamObrigatorios) console.log(`  npx wrangler secret put ${nome}`);
+  const sufixo = ambiente ? ` --env ${ambiente}` : "";
+  for (const nome of faltamObrigatorios) console.log(`  npx wrangler secret put ${nome}${sufixo}`);
   process.exit(1);
 }
 
