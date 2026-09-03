@@ -1136,13 +1136,18 @@ function InviteLink(){
      o vínculo digitando outro endereço. */
   type Convite={code:string;expires_at:number|null;max_uses:number|null;uses:number;revoked_at:number|null};
   const [convites,setConvites]=useState<Convite[]>([]);
+  /* O relógio vem do servidor, não do aparelho. Chamar `Date.now()` durante a
+     renderização a torna impura — e o relógio de quem está olhando pode estar
+     errado, o que faria um link válido parecer vencido, ou o contrário. */
+  const [agora,setAgora]=useState(0);
   const [emitindo,setEmitindo]=useState(false);
-  const carregarConvites=useCallback(()=>api.get<{convites:Convite[]}>("/api/convite")
-    .then(dados=>setConvites(dados.convites||[])).catch(()=>setConvites([])),[]);
+  const carregarConvites=useCallback(()=>api.get<{convites:Convite[];agora:number}>("/api/convite")
+    .then(dados=>{setConvites(dados.convites||[]);setAgora(Number(dados.agora)||0)})
+    .catch(()=>setConvites([])),[]);
   useEffect(()=>{void carregarConvites()},[carregarConvites]);
 
   const valeAinda=(c:Convite)=>!c.revoked_at
-    &&(!c.expires_at||c.expires_at>Date.now())
+    &&(!c.expires_at||!agora||c.expires_at>agora)
     &&(c.max_uses===null||c.uses<c.max_uses);
   const ativo=convites.find(valeAinda);
   const link = ativo ? `${origem}/?convite=${ativo.code}` : origem;
