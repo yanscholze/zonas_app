@@ -519,9 +519,51 @@ const TODAS_AS_TABELAS = Object.values(schema).filter(
   valor => typeof valor === "object" && valor !== null && Symbol.for("drizzle:Name") in valor,
 ) as Array<Parameters<typeof tableSql>[0]>;
 
+/* Assinatura do esquema: muda quando qualquer tabela, coluna ou índice muda.
+   Sai do próprio SQL gerado, então não há lista à parte para alguém esquecer de
+   atualizar — mudou o schema, muda a assinatura. */
+let assinaturaDoEsquema = "";
+function assinaturaDasTabelas(): string {
+  if (assinaturaDoEsquema) return assinaturaDoEsquema;
+  const sql = TODAS_AS_TABELAS.map(tabela => tableSql(tabela).join("")).sort().join("");
+  let hash = 5381;
+  for (let i = 0; i < sql.length; i += 1) hash = (hash * 33) ^ sql.charCodeAt(i);
+  assinaturaDoEsquema = `${(hash >>> 0).toString(36)}-${TODAS_AS_TABELAS.length}`;
+  return assinaturaDoEsquema;
+}
+
+let esquemaConferidoNestaInstancia = false;
+
 async function garanteEsquema(env: Env): Promise<void> {
-  if (tabelasConferidas.size >= TODAS_AS_TABELAS.length) return;
+  if (esquemaConferidoNestaInstancia) return;
+
+  /* Antes isto rodava o `ensureTables` inteiro em toda instância nova: 31
+     PRAGMA table_info SEQUENCIAIS mais 33 lotes, cerca de 64 idas ao D1. Cada
+     ida é rede, e no Workers instância nova acontece o tempo todo — era isso
+     que fazia a primeira requisição de cada uma demorar.
+     Agora uma consulta responde "o esquema já está na versão que este código
+     espera?". Quando está, e é o caso quase sempre, o custo é essa consulta. */
+  const assinatura = assinaturaDasTabelas();
+  const [, gravado] = await env.DB.batch([
+    // O SQL vem do schema, como o de toda tabela: uma fonte só.
+    env.DB.prepare(createTableSql(schema.schemaState)),
+    env.DB.prepare("SELECT signature FROM schema_state WHERE id = 1 LIMIT 1"),
+  ]);
+  const atual = (gravado?.results as Array<{ signature?: string }> | undefined)?.[0]?.signature;
+  if (atual === assinatura) {
+    /* A assinatura confere: o banco tem exatamente o que este código espera.
+       Marcar tudo como conferido é o que faz os `ensureTables` espalhados pelos
+       handlers virarem no-op — sem isto eles refazem o PRAGMA de cada tabela
+       que tocam, e a economia se perde no primeiro handler que roda. */
+    for (const tabela of TODAS_AS_TABELAS) tabelasConferidas.add(nomeDaTabela(tabela));
+    esquemaConferidoNestaInstancia = true;
+    return;
+  }
+
   await ensureTables(env, ...TODAS_AS_TABELAS);
+  await env.DB.prepare("INSERT INTO schema_state (id, signature) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET signature = excluded.signature")
+    .bind(assinatura).run();
+  esquemaConferidoNestaInstancia = true;
 }
 
 async function ensureTables(env: Env, ...tabelas: Array<Parameters<typeof tableSql>[0]>): Promise<void> {

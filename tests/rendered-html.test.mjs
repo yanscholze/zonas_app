@@ -202,6 +202,26 @@ test("creates every table before any handler needs it", async () => {
   assert.match(worker, /const TODAS_AS_TABELAS = Object\.values\(schema\)/);
   assert.match(worker, /try \{ await garanteEsquema\(env\); \} catch/);
 
+  /* Garantir o esquema inteiro em toda instância nova custava caro: 31 PRAGMA
+     table_info SEQUENCIAIS mais mais de trinta lotes, cerca de 64 idas ao D1 —
+     e no Workers instância nova acontece o tempo todo. Medido: 396 consultas na
+     primeira requisição. Agora uma assinatura responde "o banco já está como
+     este código espera?" numa consulta só, e quando está — quase sempre — o
+     custo cai para 3 consultas e nenhum PRAGMA.
+
+     A assinatura sai do SQL gerado das tabelas, então muda sozinha quando o
+     esquema muda: não há lista à parte para esquecer de atualizar. */
+  assert.match(worker, /function assinaturaDasTabelas\(\): string/);
+  assert.match(worker, /const sql = TODAS_AS_TABELAS\.map\(tabela => tableSql\(tabela\)\.join\(""\)\)\.sort\(\)\.join\(""\)/);
+  assert.match(worker, /if \(atual === assinatura\)/);
+
+  /* Marcar tudo como conferido é o que faz os `ensureTables` espalhados pelos
+     handlers virarem no-op — sem isso a economia se perde no primeiro que roda. */
+  assert.match(worker, /for \(const tabela of TODAS_AS_TABELAS\) tabelasConferidas\.add\(nomeDaTabela\(tabela\)\)/);
+
+  // E o SQL da própria tabela de versão vem do schema, como o de toda tabela.
+  assert.match(worker, /env\.DB\.prepare\(createTableSql\(schema\.schemaState\)\)/);
+
   /* Falhar ali não pode derrubar a resposta: com o banco fora, quem reporta é o
      handler, com a área e o código dele, e não uma exceção genérica lançada
      antes de qualquer rota ser escolhida. */

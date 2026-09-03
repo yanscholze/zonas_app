@@ -425,6 +425,23 @@ export const trainingWeekAudit = sqliteTable("training_week_audit", {
   athleteWeekIdx: index("training_week_audit_athlete_week_idx").on(table.athleteName, table.weekStart, table.createdAt),
 }));
 
+/**
+ * Versão do esquema que o banco tem.
+ *
+ * Existe para responder, numa consulta só, "o banco já está como este código
+ * espera?". Antes toda instância nova refazia o `ensureTables` inteiro — 31
+ * PRAGMA sequenciais e mais de trinta lotes, cerca de 64 idas ao D1 — e como no
+ * Workers instância nova acontece o tempo todo, isso aparecia como lentidão na
+ * primeira requisição de cada uma.
+ *
+ * A assinatura sai do próprio SQL gerado das tabelas, então muda sozinha quando
+ * o esquema muda: não há lista à parte para alguém esquecer de atualizar.
+ */
+export const schemaState = sqliteTable("schema_state", {
+  id: integer("id").primaryKey(),
+  signature: text("signature").notNull(),
+});
+
 export const applicationErrors = sqliteTable("application_errors", {
   id: text("id").primaryKey(),
   area: text("area").notNull(),
