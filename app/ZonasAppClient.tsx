@@ -1101,7 +1101,15 @@ function InviteLink(){
   // outro; resolvê-las num efeito dispararia uma segunda renderização à toa.
   // useSyncExternalStore existe exatamente para isto: declara o valor do
   // servidor e o do cliente, e o React concilia sem remontar.
-  const link = useSyncExternalStore(semAssinatura, origemDoNavegador, () => "");
+  const origem = useSyncExternalStore(semAssinatura, origemDoNavegador, () => "");
+  /* O link leva o convite do treinador. Sem ele o aluno chegava sem dono e o
+     pedido caía na lista de todos — com equipe, o aluno de um podia acabar na
+     carteira de outro por ordem de clique. O código é opaco de propósito: pôr o
+     e-mail do treinador na URL o expõe a quem recebe e deixa qualquer um forjar
+     o vínculo digitando outro endereço. */
+  const [convite,setConvite]=useState("");
+  useEffect(()=>{api.get<{code:string}>("/api/convite").then(dados=>setConvite(dados.code||"")).catch(()=>setConvite(""))},[]);
+  const link = convite ? `${origem}/?convite=${convite}` : origem;
   const temShareNativo = useSyncExternalStore(semAssinatura, temCompartilhamentoNativo, () => false);
 
   const message=`Olá! Acesse o ZonasApp pelo link abaixo e faça seu cadastro. Ao abrir, toque em “Instalar ZonasApp” para deixar o aplicativo na tela inicial. Depois que você enviar o cadastro, eu revisarei e liberarei seu acesso:\n${link}`;

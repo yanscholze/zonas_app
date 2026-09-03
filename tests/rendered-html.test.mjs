@@ -187,6 +187,38 @@ test("uses a computer-first workspace for weekly programming and workout buildin
   assert.match(css, /width:min\(1120px,calc\(100vw - 260px\)\)/);
 });
 
+test("ties the student to the coach whose link they used", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const entrada = await readFile(new URL("../app/StudentEntry.tsx", import.meta.url), "utf8");
+
+  /* O link de cadastro era o mesmo para todos, então o aluno chegava sem dono:
+     pedia acesso, e quem aprovasse primeiro virava o treinador dele. Com um
+     treinador só isso passava; com equipe, o aluno do Jonas podia cair na
+     carteira de outro por ordem de clique. */
+  assert.match(schema, /export const coachInvites = sqliteTable\("coach_invites"/);
+  assert.match(schema, /coachEmail: text\("coach_email"\),\n  reviewedBy/);
+  assert.match(worker, /async function codigoDeConvite\(env: Env, carteira: string\): Promise<string>/);
+  assert.match(client, /const link = convite \? `\$\{origem\}\/\?convite=\$\{convite\}` : origem/);
+  assert.match(entrada, /const conviteDoLink = \(\) =>/);
+  assert.match(entrada, /invite:conviteDoLink\(\)/);
+
+  /* O dono é o treinador do CONVITE, não quem clicou em aprovar: o aluno chegou
+     pelo link de alguém, e é essa pessoa que ele espera ter do outro lado. */
+  assert.match(worker, /row\.coach_email\|\|carteiraDe\(request\)/);
+
+  /* O código é opaco de propósito. O e-mail do treinador na URL o exporia a quem
+     recebe o link, e deixaria qualquer um forjar o vínculo digitando outro
+     endereço — o código só resolve para alguém se foi emitido pelo sistema. */
+  assert.doesNotMatch(client, /convite=\$\{session\.email\}|convite=\$\{carteira\}/);
+
+  /* Link antigo, sem convite, não pode virar erro para o aluno: vira pedido sem
+     dono, que aparece para todos — perder o cadastro seria puni-lo por algo que
+     não é dele. */
+  assert.match(worker, /coach_email = \? OR coach_email IS NULL/);
+});
+
 test("creates every table before any handler needs it", async () => {
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
 

@@ -103,7 +103,7 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/pain-reports": new Set(["athleteName","bodyArea","intensity","trainingImpact","note","action","id","weekStart","status","conduct"]),
   "/api/races-records": new Set(["kind","athleteName","name","raceDate","distance","city","goal","priority","resultTime","eventName","action","id","status"]),
   "/api/athlete-access": new Set(["athleteName","email","status"]),
-  "/api/access-request": new Set(["name","phone","objective","distance","trainingDays","integration"]),
+  "/api/access-request": new Set(["name","phone","objective","distance","trainingDays","integration","invite"]),
   "/api/access-requests": new Set(["id","action"]),
   "/api/backups": new Set(["action","id","label"]),
   "/api/student/pain-reports": new Set(["bodyArea","intensity","trainingImpact","note"]),
@@ -1158,6 +1158,30 @@ async function ensureAccessRequests(env: Env) {
   await ensureTables(env, schema.accessRequests);
 }
 
+/**
+ * O código de convite de um treinador, criado na primeira vez que ele pede.
+ *
+ * Um por treinador, e estável: se mudasse a cada visita, os links já enviados
+ * parariam de amarrar e o aluno voltaria a chegar sem dono.
+ */
+async function codigoDeConvite(env: Env, carteira: string): Promise<string> {
+  const existente = await env.DB.prepare("SELECT code FROM coach_invites WHERE coach_email = ? LIMIT 1").bind(carteira).first() as { code?: string } | null;
+  if (existente?.code) return existente.code;
+  const codigo = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+  await env.DB.prepare("INSERT INTO coach_invites (code, coach_email, created_at) VALUES (?, ?, ?) ON CONFLICT(coach_email) DO NOTHING")
+    .bind(codigo, carteira, Date.now()).run();
+  const gravado = await env.DB.prepare("SELECT code FROM coach_invites WHERE coach_email = ? LIMIT 1").bind(carteira).first() as { code?: string } | null;
+  return gravado?.code ?? codigo;
+}
+
+/** Devolve o convite do treinador de quem pede, para montar o link. */
+async function conviteApi(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
+  const carteira = carteiraDe(request);
+  if (!carteira) return Response.json({ error: "coach_scope_required" }, { status: 403 });
+  return Response.json({ code: await codigoDeConvite(env, carteira) });
+}
+
 async function accessRequestApi(request: Request, env: Env, sessionEmail: string, sessionName: string): Promise<Response> {
   const email = sessionEmail;
   if (email === coachEmailOf(env)) return Response.json({ error: "student_request_only" }, { status: 403 });
@@ -1180,11 +1204,20 @@ async function accessRequestApi(request: Request, env: Env, sessionEmail: string
     if (!name || name.length < 3 || !allowedDistances.includes(distance) || !trainingDays.length || !allowedIntegrations.includes(integration)) return Response.json({ error: "invalid_registration" }, { status: 400 });
     const existing = await env.DB.prepare("SELECT status FROM access_requests WHERE email = ? LIMIT 1").bind(email).first() as {status?:string}|null;
     if (existing?.status === "Aprovado") return Response.json({ error: "already_approved" }, { status: 409 });
+    /* O código vem do link que o treinador enviou. Sem ele o pedido chega sem
+       dono e cai na lista de todos — o comportamento antigo, mantido para quem
+       já tinha o link genérico salvo. Código inválido não vira erro: vira
+       pedido sem dono, porque recusar o cadastro por causa de um link velho
+       puniria o aluno por algo que não é dele. */
+    const convite = boundedText(input.invite, 40);
+    const dono = convite
+      ? (await env.DB.prepare("SELECT coach_email FROM coach_invites WHERE code = ? LIMIT 1").bind(convite).first() as { coach_email?: string } | null)?.coach_email ?? null
+      : null;
     const id = crypto.randomUUID(); const now = Date.now();
-    await env.DB.prepare(`INSERT INTO access_requests (id,email,name,phone,objective,distance,training_days,integration,status,reviewed_by,reviewed_at,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,NULL,NULL,?,?)
-      ON CONFLICT(email) DO UPDATE SET name=excluded.name,phone=excluded.phone,objective=excluded.objective,distance=excluded.distance,training_days=excluded.training_days,integration=excluded.integration,status='Pendente',reviewed_by=NULL,reviewed_at=NULL,updated_at=excluded.updated_at`)
-      .bind(id,email,name,phone||null,objective||null,distance,JSON.stringify(trainingDays),integration,"Pendente",now,now).run();
+    await env.DB.prepare(`INSERT INTO access_requests (id,email,name,phone,objective,distance,training_days,integration,status,coach_email,reviewed_by,reviewed_at,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,NULL,NULL,?,?)
+      ON CONFLICT(email) DO UPDATE SET name=excluded.name,phone=excluded.phone,objective=excluded.objective,distance=excluded.distance,training_days=excluded.training_days,integration=excluded.integration,status='Pendente',coach_email=COALESCE(excluded.coach_email,access_requests.coach_email),reviewed_by=NULL,reviewed_at=NULL,updated_at=excluded.updated_at`)
+      .bind(id,email,name,phone||null,objective||null,distance,JSON.stringify(trainingDays),integration,"Pendente",dono,now,now).run();
     return Response.json({ id, email, status:"Pendente", createdAt:now }, { status: 201 });
   }
   return new Response("Method not allowed", { status: 405 });
@@ -1194,7 +1227,13 @@ async function accessRequestsCoachApi(request: Request, env: Env): Promise<Respo
   await Promise.all([ensureAccessRequests(env), ensureAthleteAccess(env)]);
   await ensureTables(env, schema.athletes, schema.athleteProfiles, schema.athletePlanning);
   if (request.method === "GET") {
-    const result = await env.DB.prepare("SELECT * FROM access_requests ORDER BY CASE status WHEN 'Pendente' THEN 0 ELSE 1 END, created_at DESC LIMIT 100").all();
+    /* Agora que o pedido carrega o treinador, a lista pode ser recortada. Os
+       sem dono aparecem para todos de propósito: vieram do link genérico, e
+       esconder seria perder o aluno em vez de protegê-lo. */
+    const meus = carteiraDe(request);
+    const result = meus
+      ? await env.DB.prepare("SELECT * FROM access_requests WHERE coach_email = ? OR coach_email IS NULL ORDER BY CASE status WHEN 'Pendente' THEN 0 ELSE 1 END, created_at DESC LIMIT 100").bind(meus).all()
+      : await env.DB.prepare("SELECT * FROM access_requests ORDER BY CASE status WHEN 'Pendente' THEN 0 ELSE 1 END, created_at DESC LIMIT 100").all();
     return Response.json({ requests: result.results });
   }
   if (request.method === "POST") {
@@ -1221,7 +1260,11 @@ async function accessRequestsCoachApi(request: Request, env: Env): Promise<Respo
        dele. Ficava órfão até `atribuiAlunosSemDono` entregá-lo ao treinador
        principal — então um aluno aprovado por outro treinador caía na carteira
        errada, e era assim que a separação furava na origem. */
-    if(!existingName?.id) statements.push(env.DB.prepare("INSERT INTO athletes (id,name,initials,distance,phase,week,next_workout,status,phone,email,training_days,integration,coach_email,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(athleteId,name,initials,distance,phase,`1 de ${totalWeeks}`,"Aguardando programação",null,row.phone||null,email,days,integration,carteiraDe(request),now));
+    /* O dono é o treinador do CONVITE, não quem clicou em aprovar: o aluno
+       chegou pelo link de alguém, e é essa pessoa que ele espera ter do outro
+       lado. Só quando o pedido não tem convite — link antigo, genérico — é que
+       quem aprova assume. */
+    if(!existingName?.id) statements.push(env.DB.prepare("INSERT INTO athletes (id,name,initials,distance,phase,week,next_workout,status,phone,email,training_days,integration,coach_email,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(athleteId,name,initials,distance,phase,`1 de ${totalWeeks}`,"Aguardando programação",null,row.phone||null,email,days,integration,row.coach_email||carteiraDe(request),now));
     statements.push(
       env.DB.prepare("INSERT INTO athlete_profiles (athlete_name,phone,birth_date,objective,integration,training_days,updated_at) VALUES (?,?,NULL,?,?,?,?) ON CONFLICT(athlete_name) DO UPDATE SET phone=excluded.phone,objective=excluded.objective,integration=excluded.integration,training_days=excluded.training_days,updated_at=excluded.updated_at").bind(name,row.phone||null,row.objective||null,integration,days,now),
       env.DB.prepare("INSERT INTO athlete_planning (athlete_name,plan,phase,week_number,total_weeks,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(athlete_name) DO UPDATE SET plan=excluded.plan,phase=excluded.phase,week_number=excluded.week_number,total_weeks=excluded.total_weeks,updated_at=excluded.updated_at").bind(name,plan,phase,1,totalWeeks,now),
@@ -3545,6 +3588,12 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
     /* Dois caminhos, um handler. A manutenção chega por /api/dev/coaches, que já
        existia; o proprietário chega por /api/equipe, que é o nome do que ele vê.
        Quem separa o que cada um enxerga é o papel, não a rota. */
+    if (url.pathname === "/api/convite") {
+      if (!isCoachLevel(resolvedIdentities.get(request) ?? null)) return Response.json({ error: "coach_access_required" }, { status: 403 });
+      try { return await conviteApi(request, env); }
+      catch (falha) { return await applicationFailure(env, request, "convite", "invite_unavailable", falha); }
+    }
+
     if (url.pathname === "/api/dev/coaches" || url.pathname === "/api/equipe") {
       const negado = requireOwnerApiAccess(request);
       if (negado) return negado;
