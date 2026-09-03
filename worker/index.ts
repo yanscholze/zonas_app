@@ -496,6 +496,34 @@ const recoverableTables = ["athletes", "athlete_profiles", "athlete_planning", "
  */
 const tabelasConferidas = new Set<string>();
 
+/**
+ * Garante o esquema inteiro, uma vez por instância.
+ *
+ * Cada handler vinha declarando as tabelas que toca. Funcionava porque o banco
+ * de desenvolvimento já tinha tudo criado por outros caminhos — mas num banco
+ * novo, o primeiro handler a consultar uma tabela que ele não declarou responde
+ * 503. Foi o que aconteceu na estreia: `equipeApi` conta planilhas por
+ * treinador e não declarava `custom_plans`, então o painel do dev abria e
+ * falhava com "no such table: custom_plans".
+ *
+ * O problema não é o handler que esqueceu; é ter de lembrar. Isto roda uma vez
+ * por instância e sai barato: `tabelasConferidas` corta a repetição, e o custo
+ * é um lote de CREATE TABLE IF NOT EXISTS numa ida ao D1 — I/O, não CPU, o que
+ * importa no limite de tempo de processador dos Workers.
+ */
+/* O predicado de tipo não serve aqui: `Parameters<typeof tableSql>[0]` é a
+   união de todas as tabelas concretas, e o TypeScript não aceita estreitar para
+   ela a partir de `unknown`. A conversão é segura porque o filtro é o marcador
+   que o próprio Drizzle põe em cada tabela. */
+const TODAS_AS_TABELAS = Object.values(schema).filter(
+  valor => typeof valor === "object" && valor !== null && Symbol.for("drizzle:Name") in valor,
+) as Array<Parameters<typeof tableSql>[0]>;
+
+async function garanteEsquema(env: Env): Promise<void> {
+  if (tabelasConferidas.size >= TODAS_AS_TABELAS.length) return;
+  await ensureTables(env, ...TODAS_AS_TABELAS);
+}
+
 async function ensureTables(env: Env, ...tabelas: Array<Parameters<typeof tableSql>[0]>): Promise<void> {
   const pendentes = tabelas.filter(tabela => !tabelasConferidas.has(nomeDaTabela(tabela)));
   if (!pendentes.length) return;
@@ -3551,6 +3579,10 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
 
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    /* Falhar aqui não pode derrubar a resposta: se o banco estiver fora, quem
+       reporta isso é o handler, com a área e o código dele — não uma exceção
+       genérica antes de qualquer rota ser escolhida. */
+    try { await garanteEsquema(env); } catch { /* o handler reporta */ }
     const response = await routeRequest(request, env, ctx);
     return withSecurityHeaders(request, response);
   },

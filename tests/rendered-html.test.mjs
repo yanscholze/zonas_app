@@ -187,6 +187,29 @@ test("uses a computer-first workspace for weekly programming and workout buildin
   assert.match(css, /width:min\(1120px,calc\(100vw - 260px\)\)/);
 });
 
+test("creates every table before any handler needs it", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+
+  /* Cada handler vinha declarando as tabelas que toca, e funcionava porque o
+     banco de desenvolvimento já tinha tudo criado por outros caminhos. Num banco
+     novo, o primeiro handler a consultar uma tabela que não declarou responde
+     503 — foi o que aconteceu na estreia: `equipeApi` conta planilhas por
+     treinador, não declarava `custom_plans`, e o painel do dev abria com
+     "no such table: custom_plans".
+
+     O problema não é o handler que esqueceu: é ter de lembrar. */
+  assert.match(worker, /async function garanteEsquema\(env: Env\): Promise<void>/);
+  assert.match(worker, /const TODAS_AS_TABELAS = Object\.values\(schema\)/);
+  assert.match(worker, /try \{ await garanteEsquema\(env\); \} catch/);
+
+  /* Falhar ali não pode derrubar a resposta: com o banco fora, quem reporta é o
+     handler, com a área e o código dele, e não uma exceção genérica lançada
+     antes de qualquer rota ser escolhida. */
+  const entrada = worker.slice(worker.indexOf("async fetch(request: Request, env: Env"));
+  assert.ok(entrada.indexOf("garanteEsquema") < entrada.indexOf("routeRequest"),
+    "o esquema precisa ser garantido antes de rotear");
+});
+
 test("keeps password hashing inside what the Workers runtime accepts", async () => {
   const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
   const script = await readFile(new URL("../scripts/reset-coach-password.mjs", import.meta.url), "utf8");
