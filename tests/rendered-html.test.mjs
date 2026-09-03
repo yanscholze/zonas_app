@@ -187,6 +187,30 @@ test("uses a computer-first workspace for weekly programming and workout buildin
   assert.match(css, /width:min\(1120px,calc\(100vw - 260px\)\)/);
 });
 
+test("keeps password hashing inside what the Workers runtime accepts", async () => {
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+  const script = await readFile(new URL("../scripts/reset-coach-password.mjs", import.meta.url), "utf8");
+
+  /* Era 210.000, o número que o OWASP recomenda para PBKDF2-SHA256. O Miniflare
+     aceita, então passou por todo o desenvolvimento sem reclamar — e o runtime
+     de verdade dos Workers recusa acima de 100.000:
+
+       NotSupportedError: Pbkdf2 failed: iteration counts above 100000 are not
+       supported (requested 210000)
+
+     Criar conta e conferir login derivam senha, então as duas falhavam: o
+     aplicativo subia e a tela respondia "não foi possível concluir" para
+     qualquer credencial, sem conta nenhuma no banco. */
+  const iteracoes = Number(auth.match(/export const PASSWORD_ITERATIONS = ([\d_]+);/)?.[1].replace(/_/g, ""));
+  assert.ok(Number.isFinite(iteracoes), "não achei PASSWORD_ITERATIONS");
+  assert.ok(iteracoes <= 100_000, `${iteracoes} passa do teto de 100.000 dos Workers`);
+
+  /* O script de redefinição gera hash fora do worker. Se as contagens
+     divergirem, ele produz uma senha que a produção não consegue conferir. */
+  const noScript = Number(script.match(/const PASSWORD_ITERATIONS = ([\d_]+);/)?.[1].replace(/_/g, ""));
+  assert.equal(noScript, iteracoes, "o script de redefinição usa outra contagem que o worker");
+});
+
 test("hardens the supply chain and keeps example passwords out of the docs", async () => {
   const npmrc = await readFile(new URL("../.npmrc", import.meta.url), "utf8");
   const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
@@ -2208,7 +2232,7 @@ test("stores passwords derived with PBKDF2 and never in plain text", async () =>
   const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
   assert.match(auth, /"PBKDF2"/);
   assert.match(auth, /hash: "SHA-256"/);
-  assert.match(auth, /PASSWORD_ITERATIONS = 210_000/);
+  assert.match(auth, /PASSWORD_ITERATIONS = 100_000/);  // teto dos Workers, ver o teste do runtime
   assert.match(auth, /crypto\.getRandomValues\(new Uint8Array\(16\)\)/);
   assert.match(auth, /function constantTimeEquals/);
   // O cookie carrega o token; o banco guarda apenas o hash dele.
@@ -2437,8 +2461,8 @@ test("gives the coach a way back in, since no one can reset that password in the
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(packageJson.scripts["coach:reset-password"], "node scripts/reset-coach-password.mjs");
   // A derivação precisa ser idêntica à do Worker, senão o hash gerado não entra.
-  assert.match(script, /PASSWORD_ITERATIONS = 210_000/);
-  assert.match(auth, /PASSWORD_ITERATIONS = 210_000/);
+  assert.match(script, /PASSWORD_ITERATIONS = 100_000/);
+  assert.match(auth, /PASSWORD_ITERATIONS = 100_000/);  // teto dos Workers, ver o teste do runtime
   assert.match(script, /iterations: PASSWORD_ITERATIONS, hash: "SHA-256"/);
   assert.match(script, /new Uint8Array\(16\)/);
   // Redefinir encerra as sessões abertas, como a troca de senha dentro do app.

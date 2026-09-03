@@ -13,7 +13,29 @@
 
 export const SESSION_COOKIE = "zonas_session";
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-export const PASSWORD_ITERATIONS = 210_000;
+/* Teto da plataforma, não escolha de segurança.
+ *
+ * Era 210.000, o número que o OWASP recomenda para PBKDF2-SHA256. O Miniflare
+ * aceita, e por isso passou por todo o desenvolvimento sem reclamar — mas o
+ * runtime de verdade dos Workers recusa acima de 100.000:
+ *
+ *   NotSupportedError: Pbkdf2 failed: iteration counts above 100000 are not
+ *   supported (requested 210000)
+ *
+ * Com isso nenhuma conta era criada e nenhum login era conferido: as duas coisas
+ * derivam senha. O aplicativo subia e a tela de login respondia "não foi
+ * possível concluir" para qualquer credencial.
+ *
+ * 100.000 é o máximo possível aqui. O que compensa a diferença é o bloqueio por
+ * tentativas, que já existe (`failed_attempts` e `locked_until`): PBKDF2 protege
+ * contra quem rouba o banco, e o bloqueio contra quem tenta pela porta.
+ *
+ * As contas guardam a contagem usada em `password_iterations`, então uma linha
+ * antiga com 210.000 continua sendo conferida com 210.000 — e falharia nos
+ * Workers. Não há nenhuma: a produção nasceu vazia. Se um dia um banco local for
+ * levado para lá, essas contas precisam de senha nova.
+ */
+export const PASSWORD_ITERATIONS = 100_000;
 export const MIN_PASSWORD_LENGTH = 8;
 const MAX_FAILED_ATTEMPTS = 8;
 const LOCK_WINDOW_MS = 15 * 60 * 1000;
