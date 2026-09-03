@@ -123,7 +123,10 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
   const [active, setActive] = useState("Painel");
   const [mobileMenu, setMobileMenu] = useState(false);
   const coachInitials = initialsOf(session.name);
-  const ehProprietario = session.role === "owner";
+  /* Dev > proprietário > treinador: quem está acima alcança o que está abaixo.
+     A condição era `role === "owner"` exata, então a manutenção — que pode tudo
+     pela API — não via a aba Equipe e não tinha por onde criar conta nenhuma. */
+  const ehProprietario = session.role === "owner" || session.role === "dev";
   const itensDeNavegacao = ehProprietario ? navDoProprietario : nav;
   const [distanceFilter, setDistanceFilter] = useState("Todos");
   const [phaseFilter, setPhaseFilter] = useState("Todas");
@@ -257,7 +260,7 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
         {active === "Integrações" && <CoachIntegrations />}
         {active === "Contas" && <AccountsCenter athletes={athleteRecords} />}
         {active === "Segurança" && <><SecurityCenter /><ErrorMonitor /></>}
-        {active === "Equipe" && ehProprietario && <TeamCenter />}
+        {active === "Equipe" && ehProprietario && <TeamCenter session={session} />}
       </main>
       {selectedAthlete && <AthleteProfile athlete={selectedAthlete} close={() => setSelectedAthlete(null)} onOpenPain={id => setPainCase({ id, athleteName: selectedAthlete.name })} />}
       {painCase && <PainCaseScreen reportId={painCase.id} athleteName={painCase.athleteName} close={() => { setPainCase(null); window.dispatchEvent(new Event("zonasapp:athletes-refresh")); }} />}
@@ -935,13 +938,17 @@ function PlanLibrary({open}:{open:(plan:TrainingPlan)=>void}) {
  * O treinador nasce sem aluno e sem planilha. Isso não é um estado a corrigir:
  * a carteira e a biblioteca são dele, e começam vazias.
  */
-function TeamCenter() {
+function TeamCenter({session}:{session:Session}) {
   type Membro = { id:string; email:string; name:string; role:string; status:string; last_login_at:number|null; alunos_ativos:number; planilhas:number };
   const [equipe,setEquipe]=useState<Membro[]>([]);
   const [carregando,setCarregando]=useState(true);
   const [visitando,setVisitando]=useState<{email:string;name:string}|null>(null);
   const [criando,setCriando]=useState(false);
-  const [formulario,setFormulario]=useState({name:"",email:""});
+  const [formulario,setFormulario]=useState({name:"",email:"",role:"coach",athleteName:""});
+  /* Só a manutenção cria proprietário: proprietário criando proprietário é criar
+     um par, não alguém da equipe dele. O servidor recusa de todo jeito; aqui a
+     opção nem aparece, para não oferecer o que vai ser negado. */
+  const ehManutencao=session.role==="dev";
   const [salvando,setSalvando]=useState(false);
 
   const carregar=useCallback(()=>api.get<{coaches:Membro[];visitando:{email:string;name:string}|null}>("/api/equipe")
@@ -953,8 +960,11 @@ function TeamCenter() {
   const criar=async()=>{
     setSalvando(true);
     try{
-      const criado=await api.post<{email:string;temporaryPassword:string}>("/api/equipe",{action:"create",name:formulario.name,email:formulario.email});
-      setCriando(false);setFormulario({name:"",email:""});await carregar();
+      const criado=await api.post<{email:string;temporaryPassword:string}>("/api/equipe",{
+        action:"create",name:formulario.name,email:formulario.email,role:formulario.role,
+        athleteName:formulario.role==="student"?formulario.athleteName:undefined,
+      });
+      setCriando(false);setFormulario({name:"",email:"",role:"coach",athleteName:""});await carregar();
       /* A senha temporária aparece uma vez só: ela não fica guardada em texto
          em lugar nenhum, então avisar é a única chance de anotá-la. */
       avise("ok",`Treinador criado · senha ${criado.temporaryPassword}`,`Anote agora e entregue a ${criado.email}. Ele terá de trocá-la no primeiro acesso, e esta senha não aparece de novo.`);
@@ -981,8 +991,16 @@ function TeamCenter() {
     {criando&&<section className="team-form">
       <label>Nome<input value={formulario.name} onChange={evento=>setFormulario({...formulario,name:evento.target.value})} placeholder="Nome completo"/></label>
       <label>E-mail<input type="email" value={formulario.email} onChange={evento=>setFormulario({...formulario,email:evento.target.value})} placeholder="email@exemplo.com"/></label>
-      <div><button className="gold" disabled={salvando||formulario.name.trim().length<3||!formulario.email.includes("@")} onClick={()=>void criar()}>{salvando?"Criando…":"Criar treinador"}</button></div>
-      <p className="team-form-nota">Ele começa sem aluno e sem planilha. A carteira e a biblioteca são dele, e o que você tem não é copiado.</p>
+      <label>Papel<select value={formulario.role} onChange={evento=>setFormulario({...formulario,role:evento.target.value})}>
+        <option value="coach">Treinador</option>
+        {ehManutencao&&<option value="owner">Proprietário</option>}
+        <option value="student">Aluno</option>
+      </select></label>
+      {formulario.role==="student"&&<label>Atleta<input value={formulario.athleteName} onChange={evento=>setFormulario({...formulario,athleteName:evento.target.value})} placeholder="Nome exato do aluno já cadastrado"/></label>}
+      <div><button className="gold" disabled={salvando||formulario.name.trim().length<3||!formulario.email.includes("@")||(formulario.role==="student"&&!formulario.athleteName.trim())} onClick={()=>void criar()}>{salvando?"Criando…":"Criar conta"}</button></div>
+      <p className="team-form-nota">{formulario.role==="student"
+        ?"O atleta precisa já existir no cadastro de algum treinador — a conta é o acesso dele, não o cadastro."
+        :"Começa sem aluno e sem planilha. A carteira e a biblioteca são dele, e o que você tem não é copiado."}</p>
     </section>}
 
     {carregando?<section className="team-empty"><p>Carregando sua equipe…</p></section>

@@ -121,8 +121,8 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/accounts": new Set(["action","email","name","athleteName","password"]),
   "/api/integrations": new Set(["action","provider","athleteName","payload","weekStart","workoutDay"]),
   "/api/integrations/strava/subscription": new Set(["action","id"]),
-  "/api/dev/coaches": new Set(["action","email","name","password"]),
-  "/api/equipe": new Set(["action","email","name","password"]),
+  "/api/dev/coaches": new Set(["action","email","name","password","role","athleteName"]),
+  "/api/equipe": new Set(["action","email","name","password","role","athleteName"]),
   "/api/dev/accounts": new Set(["action","email","role"]),
   "/api/student/integrations": new Set(["action","provider"]),
 };
@@ -944,6 +944,34 @@ async function foraDaCarteiraDoTreinador(
   return null;
 }
 
+/**
+ * Cria a conta de acesso de um aluno, com o vínculo que a torna utilizável.
+ *
+ * Uma conta de aluno é três coisas, não uma: a linha em `user_accounts`, o
+ * `athlete_name` que a liga ao atleta, e o `athlete_access` ativo. Sem o nome,
+ * `identityFromRequest` devolve null e a pessoa fica presa numa sessão que não
+ * resolve; sem o acesso, ela é recusada na porta com a senha certa.
+ *
+ * Existia só dentro do cadastro do treinador. Quando o painel de manutenção
+ * passou a criar contas de qualquer papel, copiar essas três linhas para lá
+ * daria duas maneiras de criar aluno — e é assim que uma delas fica para trás
+ * na primeira mudança.
+ */
+async function criaContaDeAluno(
+  env: Env,
+  request: Request,
+  dados: { email: string; name: string; athleteName: string; senha: string },
+): Promise<Response | null> {
+  const problema = passwordProblem(dados.senha);
+  if (problema) return Response.json({ error: problema, minLength: MIN_PASSWORD_LENGTH }, { status: 400 });
+  await createAccount(env.DB, {
+    email: dados.email, name: dados.name, role: "student", athleteName: dados.athleteName,
+    password: dados.senha, mustChangePassword: true, status: "Ativo",
+  });
+  await linkAthleteAccess(env, dados.athleteName, dados.email, "Ativo", normalizedAuthenticatedEmail(request) ?? "sistema");
+  return null;
+}
+
 async function coachAccountsApi(request: Request, env: Env): Promise<Response> {
   const carteira = carteiraDe(request);
   const recorte = carteira
@@ -979,13 +1007,8 @@ async function coachAccountsApi(request: Request, env: Env): Promise<Response> {
       return Response.json({ error: "email_already_registered" }, { status: 409 });
     }
     const temporaryPassword = boundedText(input.password, 200) || generateTemporaryPassword();
-    const problem = passwordProblem(temporaryPassword);
-    if (problem) return Response.json({ error: problem, minLength: MIN_PASSWORD_LENGTH }, { status: 400 });
-    await createAccount(env.DB, {
-      email, name, role: "student", athleteName, password: temporaryPassword,
-      mustChangePassword: true, status: "Ativo",
-    });
-    await linkAthleteAccess(env, athleteName, email, "Ativo", normalizedAuthenticatedEmail(request) ?? "sistema");
+    const criado = await criaContaDeAluno(env, request, { email, name, athleteName, senha: temporaryPassword });
+    if (criado instanceof Response) return criado;
     // A senha temporária aparece uma única vez, no retorno desta chamada.
     return Response.json({ created: true, email, athleteName, temporaryPassword }, { status: 201 });
   }
@@ -3017,13 +3040,39 @@ async function equipeApi(request: Request, env: Env): Promise<Response> {
     const senhaFinal = senha || `${generateTemporaryPassword()}a1`;
     if (senha && problema) return Response.json({ error: problema, minLength: MIN_PASSWORD_LENGTH }, { status: 400 });
     if (await accountByEmail(env.DB, email)) return Response.json({ error: "email_already_registered" }, { status: 409 });
-    /* Sempre "coach": nem o proprietário nem a manutenção criam um par por esta
-       porta. Promover alguém é outro ato, e deve ser deliberado. O treinador
-       nasce sem aluno e sem planilha — a carteira e a biblioteca dele são dele,
-       e começam vazias. */
-    await createAccount(env.DB, { email, name, role: "coach", password: senhaFinal, mustChangePassword: true, status: "Ativo" });
-    await registraNaSeguranca(env, request, "Nova conta de treinador", `Criada por quem tinha permissão: ${email}`, "/api/equipe");
-    return Response.json({ created: true, email, name, temporaryPassword: senhaFinal }, { status: 201 });
+
+    /* O papel é escolhido na criação, e "dev" não está entre as opções.
+       Criar manutenção é dar acesso irrestrito, e quem pudesse fazê-lo por esta
+       porta daria a si mesmo o que a hierarquia existe para negar: a conta de
+       manutenção continua nascendo só do DEV_LOGIN do ambiente.
+       "owner" é só para a manutenção: proprietário criando proprietário é criar
+       um par, não um subordinado. */
+    const papel = boundedText(input.role, 10) || "coach";
+    const papeisAceitos = quemPede?.role === "dev" ? ["owner", "coach", "student"] : ["coach", "student"];
+    if (!papeisAceitos.includes(papel)) return Response.json({ error: "invalid_role", allowed: papeisAceitos }, { status: 400 });
+
+    if (papel === "student") {
+      /* Conta de aluno sem `athlete_name` não entra: `identityFromRequest`
+         devolve null e a pessoa fica presa numa sessão que não resolve. E sem
+         `athlete_access` ativo ela é recusada na porta. Quem sabe fazer isso
+         certo é `criaContaDeAluno`, o mesmo caminho que o treinador usa —
+         escrever um segundo aqui daria duas maneiras de criar aluno, que é como
+         uma delas fica para trás. */
+      const athleteName = boundedText(input.athleteName, 120);
+      if (!athleteName) return Response.json({ error: "athlete_required" }, { status: 400 });
+      const dono = await env.DB.prepare("SELECT coach_email FROM athletes WHERE name = ? LIMIT 1").bind(athleteName).first() as { coach_email?: string } | null;
+      if (!dono) return Response.json({ error: "athlete_not_found" }, { status: 404 });
+      const resultado = await criaContaDeAluno(env, request, { email, name, athleteName, senha: senhaFinal });
+      if (resultado instanceof Response) return resultado;
+      await registraNaSeguranca(env, request, "Nova conta de aluno", `Criada por quem tinha permissão: ${email} · atleta ${athleteName}`, "/api/equipe");
+      return Response.json({ created: true, email, name, role: papel, athleteName, temporaryPassword: senhaFinal }, { status: 201 });
+    }
+
+    /* Treinador e proprietário nascem sem aluno e sem planilha — a carteira e a
+       biblioteca são deles, e começam vazias. */
+    await createAccount(env.DB, { email, name, role: papel as "owner" | "coach", password: senhaFinal, mustChangePassword: true, status: "Ativo" });
+    await registraNaSeguranca(env, request, papel === "owner" ? "Nova conta de proprietário" : "Nova conta de treinador", `Criada por quem tinha permissão: ${email}`, "/api/equipe");
+    return Response.json({ created: true, email, name, role: papel, temporaryPassword: senhaFinal }, { status: 201 });
   }
 
   if (acao === "visit") {

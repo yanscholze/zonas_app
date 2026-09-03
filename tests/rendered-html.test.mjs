@@ -643,11 +643,35 @@ test("gives each coach their own athletes and their own base plans", async () =>
   // dono às planilhas existentes já deixa a contagem diferente de zero, e as
   // dez nunca chegariam.
   assert.match(worker, /if \(!Number\(jaSemeado\?\.total \?\? 0\)\) await semeiaPlanilhasDeFabrica\(env, principal\)/);
-  assert.match(worker, /role: "coach", password: senhaFinal/);
+  /* A criação passou a escolher o papel: treinador, proprietário ou aluno. O que
+     NÃO está entre as opções é "dev" — criar manutenção é dar acesso irrestrito,
+     e quem pudesse fazê-lo por esta porta daria a si mesmo o que a hierarquia
+     existe para negar. E "owner" é só para a manutenção: proprietário criando
+     proprietário é criar um par, não alguém da equipe dele. */
+  assert.match(worker, /const papeisAceitos = quemPede\?\.role === "dev" \? \["owner", "coach", "student"\] : \["coach", "student"\]/);
+  /* A linha contém `role === "dev"` como COMPARAÇÃO de quem pede; o que não pode
+     é "dev" dentro das listas de papéis aceitos. */
+  const listas = (worker.match(/const papeisAceitos = .*/)?.[0] ?? "").match(/\[[^\]]*\]/g) ?? [];
+  assert.ok(listas.length === 2, "esperava duas listas de papéis aceitos");
+  assert.ok(!listas.some(lista => lista.includes('"dev"')), "o papel dev não pode ser criável por esta porta");
+  assert.doesNotMatch(worker, /createAccount\([^)]*role: "dev"/);
+  assert.match(worker, /role: papel as "owner" \| "coach"/);
+
+  /* Conta de aluno é três coisas: a linha em user_accounts, o athlete_name que a
+     liga ao atleta, e o athlete_access ativo. Sem o nome a sessão não resolve;
+     sem o acesso a pessoa é recusada com a senha certa. Um caminho só faz isso,
+     usado pelo cadastro do treinador e pelo painel de manutenção. */
+  assert.match(worker, /async function criaContaDeAluno\(/);
+  assert.equal(worker.match(/role: "student", athleteName/g)?.length, 1,
+    "há mais de um lugar criando conta de aluno");
 
   // A aba Equipe é a única diferença de navegação entre proprietário e treinador.
   assert.match(client, /const navDoProprietario = \[\.\.\.nav, "Equipe"\]/);
-  assert.match(client, /active === "Equipe" && ehProprietario && <TeamCenter \/>/);
+  assert.match(client, /active === "Equipe" && ehProprietario && <TeamCenter session=\{session\} \/>/);
+  /* Dev > proprietário > treinador: quem está acima alcança o que está abaixo. A
+     condição era `role === "owner"` exata, então a manutenção — que pode tudo
+     pela API — não via a aba Equipe e não tinha por onde criar conta nenhuma. */
+  assert.match(client, /const ehProprietario = session\.role === "owner" \|\| session\.role === "dev"/);
 
   // Promover é ato do dev, e o papel aceito é curto: ninguém vira manutenção por aqui.
   assert.match(worker, /if \(papel !== "owner" && papel !== "coach"\) return Response\.json\(\{ error: "invalid_role" \}/);
