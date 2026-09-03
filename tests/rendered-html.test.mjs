@@ -287,6 +287,14 @@ test("keeps the deploy config in step with the development bindings", async () =
      `wrangler secret put`, que grava na conta. */
   assert.ok(wrangler.vars && typeof wrangler.vars === "object");
 
+  /* Uma porta só para o banco. O painel da Cloudflare sugere um binding com o
+     nome do banco ao copiar o trecho de configuração, e chegou a existir uma
+     segunda entrada "zonasapp" apontando para o mesmo id. Nada no código a lia —
+     o worker usa `env.DB` — e duas portas para o mesmo banco divergem na
+     primeira alteração: alguém troca o id de uma e esquece a outra. */
+  assert.equal(wrangler.d1_databases.length, 1, "há mais de um binding para o banco de produção");
+  assert.equal(wrangler.d1_databases[0].binding, "DB");
+
   /* O ensaio precisa de banco PRÓPRIO. Um ambiente de teste apontando para o
      banco de produção é pior que não ter ambiente de teste: dá a sensação de
      estar isolado enquanto se escreve em cima dos alunos de verdade. */
