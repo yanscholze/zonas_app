@@ -879,6 +879,27 @@ function PlanLibrary({open}:{open:(plan:TrainingPlan)=>void}) {
      abertura, antes da resposta chegar — e um treinador com dez planilhas lia
      que não tinha nenhuma. */
   const [carregando,setCarregando]=useState(true);
+  const [importando,setImportando]=useState(false);
+
+  /* O arquivo é lido no navegador e só o conteúdo segue, como no anexo de treino
+     e no comprovante. O que vai para o servidor são as planilhas; o arquivo em
+     si não sobe. */
+  const importarArquivo=async(arquivo?:File)=>{
+    if(!arquivo)return;
+    setImportando(true);
+    try{
+      const texto=await arquivo.text();
+      const conteudo=JSON.parse(texto) as {plans?:unknown[]};
+      if(!Array.isArray(conteudo.plans)||!conteudo.plans.length)throw new Error("sem planilhas");
+      const resultado=await api.post<{planilhas:number;semanas:number}>("/api/plans",{action:"import",plans:conteudo.plans});
+      await carregar();
+      avise("ok",`${plural(resultado.planilhas,"planilha")} importada${resultado.planilhas===1?"":"s"}`,`${plural(resultado.semanas,"semana")} com treinos montados. Planilha de mesmo nome foi substituída.`);
+    }catch(erro){
+      avise("erro","Não foi possível importar",erro instanceof SyntaxError||String(erro).includes("sem planilhas")
+        ?"O arquivo não parece ser uma biblioteca do ZonasApp. Use um arquivo exportado daqui."
+        :describeError(erro,"Confira o arquivo e tente de novo."));
+    }finally{setImportando(false)}
+  };
   const [editando,setEditando]=useState<{id:string;name:string;distance:string;weeks:number;goal:string}|null>(null);
   const carregar=useCallback(()=>api.get<{plans:PlanoProprio[]}>("/api/plans").then(dados=>setProprias(dados.plans||[])).catch(()=>setProprias([])).finally(()=>setCarregando(false)),[]);
   useEffect(()=>{void carregar()},[carregar]);
@@ -903,7 +924,13 @@ function PlanLibrary({open}:{open:(plan:TrainingPlan)=>void}) {
 
   return <><div className="library-intro"><div><span className="overline">BIBLIOTECA DE TREINAMENTO</span><h2>Suas planilhas-base</h2><p>Escolha uma estrutura, veja as semanas e depois aplique ao aluno. Os ritmos e a frequência cardíaca continuam individuais.</p></div><div><b>{proprias.length}</b><span>{plural(proprias.length,"planilha")}</span></div></div>
 
-  <div className="section-title"><div><small>SUAS PLANILHAS</small><h2>Criadas por você</h2></div><button onClick={()=>setEditando({id:"",name:"",distance:"Livre",weeks:12,goal:""})}>+ Nova planilha</button></div>
+  <div className="section-title"><div><small>SUAS PLANILHAS</small><h2>Criadas por você</h2></div><div className="plan-acoes">
+    <label className="plan-importar">
+      <input type="file" accept=".json,application/json" disabled={importando} onChange={evento=>void importarArquivo(evento.target.files?.[0])}/>
+      <span>{importando?"Importando…":"Importar arquivo"}</span>
+    </label>
+    <button onClick={()=>setEditando({id:"",name:"",distance:"Livre",weeks:12,goal:""})}>+ Nova planilha</button>
+  </div></div>
   {editando&&<section className="plan-form">
     <label>Nome<input value={editando.name} onChange={event=>setEditando({...editando,name:event.target.value})} placeholder="Ex.: Base de inverno"/></label>
     <label>Distância<input value={editando.distance} onChange={event=>setEditando({...editando,distance:event.target.value})} placeholder="10 km, Meia, Livre…"/></label>
@@ -1107,9 +1134,31 @@ function InviteLink(){
      carteira de outro por ordem de clique. O código é opaco de propósito: pôr o
      e-mail do treinador na URL o expõe a quem recebe e deixa qualquer um forjar
      o vínculo digitando outro endereço. */
-  const [convite,setConvite]=useState("");
-  useEffect(()=>{api.get<{code:string}>("/api/convite").then(dados=>setConvite(dados.code||"")).catch(()=>setConvite(""))},[]);
-  const link = convite ? `${origem}/?convite=${convite}` : origem;
+  type Convite={code:string;expires_at:number|null;max_uses:number|null;uses:number;revoked_at:number|null};
+  const [convites,setConvites]=useState<Convite[]>([]);
+  const [emitindo,setEmitindo]=useState(false);
+  const carregarConvites=useCallback(()=>api.get<{convites:Convite[]}>("/api/convite")
+    .then(dados=>setConvites(dados.convites||[])).catch(()=>setConvites([])),[]);
+  useEffect(()=>{void carregarConvites()},[carregarConvites]);
+
+  const valeAinda=(c:Convite)=>!c.revoked_at
+    &&(!c.expires_at||c.expires_at>Date.now())
+    &&(c.max_uses===null||c.uses<c.max_uses);
+  const ativo=convites.find(valeAinda);
+  const link = ativo ? `${origem}/?convite=${ativo.code}` : origem;
+
+  const emitir=async(usos:number|null,dias:number)=>{
+    setEmitindo(true);
+    try{ await api.post("/api/convite",{action:"create",days:dias,maxUses:usos}); await carregarConvites();
+      avise("ok","Link novo gerado",usos===1?"Vale para um cadastro só.":`Vale por ${dias} dias.`); }
+    catch(erro){ avise("erro","Não foi possível gerar o link",describeError(erro)) }
+    finally{ setEmitindo(false) }
+  };
+  const revogar=async(codigo:string)=>{
+    if(!await pergunte({titulo:"Encerrar este link?",descricao:"Quem já tiver o link para de conseguir se cadastrar por ele. Os alunos que já entraram não são afetados.",confirmar:"Encerrar link",perigo:true}))return;
+    try{ await api.post("/api/convite",{action:"revoke",code:codigo}); await carregarConvites(); avise("ok","Link encerrado"); }
+    catch(erro){ avise("erro","Não foi possível encerrar",describeError(erro)) }
+  };
   const temShareNativo = useSyncExternalStore(semAssinatura, temCompartilhamentoNativo, () => false);
 
   const message=`Olá! Acesse o ZonasApp pelo link abaixo e faça seu cadastro. Ao abrir, toque em “Instalar ZonasApp” para deixar o aplicativo na tela inicial. Depois que você enviar o cadastro, eu revisarei e liberarei seu acesso:\n${link}`;
@@ -1149,6 +1198,22 @@ function InviteLink(){
       {temShareNativo && <button type="button" className="gold" onClick={share}>
         {feito==="compartilhado"?"Compartilhado ✓":"Compartilhar…"}
       </button>}
+    </div>
+    {/* Validade e uso do link. Sem isto, um link enviado num grupo continuava
+        abrindo cadastro meses depois, na carteira de quem já nem lembrava de
+        tê-lo enviado — e sem jeito de encerrá-lo. */}
+    <div className="invite-validade">
+      {ativo
+        ? <p><b>{ativo.max_uses===1?"Uso único":ativo.max_uses?`Até ${ativo.max_uses} cadastros`:"Sem limite de uso"}</b>
+            {ativo.expires_at&&<span> · vence {new Date(ativo.expires_at).toLocaleDateString("pt-BR")}</span>}
+            {ativo.max_uses!==null&&<span> · {ativo.uses} de {ativo.max_uses} usado{ativo.uses===1?"":"s"}</span>}
+            <button className="invite-revogar" onClick={()=>void revogar(ativo.code)}>Encerrar</button></p>
+        : <p className="invite-sem-link">Nenhum link ativo. Gere um abaixo para enviar ao aluno.</p>}
+      <div className="invite-emitir">
+        <button disabled={emitindo} onClick={()=>void emitir(1,7)}>Link para um aluno</button>
+        <button disabled={emitindo} onClick={()=>void emitir(null,7)}>Link da turma · 7 dias</button>
+        <button disabled={emitindo} onClick={()=>void emitir(null,30)}>30 dias</button>
+      </div>
     </div>
     <small className="invite-link-help" role="status">
       {feito==="erro"

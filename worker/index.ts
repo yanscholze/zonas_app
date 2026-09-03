@@ -90,12 +90,17 @@ const TRAINING_BODY_LIMIT = 256 * 1024;
    sobrariam menos de 45 KB de JPEG. O teto do que é gravado continua menor que
    este, em `save_receipt`, e bem abaixo do limite de uma linha do D1. */
 const FINANCIAL_BODY_LIMIT = 512 * 1024;
+/* Importar a biblioteca inteira é um corpo grande por natureza: as dez de
+   fábrica dão 619 KB com as 155 semanas e os 790 treinos dentro. O teto vale só
+   para esta rota — as outras seguem no limite apertado, porque nenhuma delas tem
+   motivo para receber tanto. */
+const PLAN_IMPORT_BODY_LIMIT = 2 * 1024 * 1024;
 const SECURITY_LOG_RETENTION_DAYS = 90;
 const SECURITY_LOG_RETENTION_MS = SECURITY_LOG_RETENTION_DAYS * 86_400_000;
 
 const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/athletes": new Set(["name","initials","distance","phase","week","nextWorkout","status","phone","email","trainingDays","integration","action","reason"]),
-  "/api/plans": new Set(["action","planId","name","distance","weeks","frequency","level","goal","phases"]),
+  "/api/plans": new Set(["action","planId","name","distance","weeks","frequency","level","goal","phases","plans"]),
   "/api/athlete-profile": new Set(["athleteName","phone","birthDate","objective","integration","trainingDays","noTargetRace"]),
   "/api/athlete-planning": new Set(["athleteName","plan","phase","weekNumber","totalWeeks"]),
   "/api/performance-tests": new Set(["athleteName","testDate","distanceKm","minutes","seconds","age","id","action","zones","tempoRuns"]),
@@ -123,6 +128,7 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/integrations/strava/subscription": new Set(["action","id"]),
   "/api/dev/coaches": new Set(["action","email","name","password","role","athleteName"]),
   "/api/equipe": new Set(["action","email","name","password","role","athleteName"]),
+  "/api/convite": new Set(["action","code","days","maxUses"]),
   "/api/dev/accounts": new Set(["action","email","role"]),
   "/api/student/integrations": new Set(["action","provider"]),
 };
@@ -219,6 +225,7 @@ async function validateApiEnvelope(request: Request, env: Env, url: URL): Promis
     return await recusaNaPorta(env, request, url, "json_content_type_required", 415);
   }
   const limit = url.pathname.includes("training-weeks") ? TRAINING_BODY_LIMIT
+    : url.pathname === "/api/plans" ? PLAN_IMPORT_BODY_LIMIT
     : url.pathname === "/api/financial" ? FINANCIAL_BODY_LIMIT
     : JSON_BODY_LIMIT;
   const declaredLength = Number(request.headers.get("content-length") || 0);
@@ -1168,22 +1175,80 @@ async function ensureAccessRequests(env: Env) {
  * Um por treinador, e estável: se mudasse a cada visita, os links já enviados
  * parariam de amarrar e o aluno voltaria a chegar sem dono.
  */
-async function codigoDeConvite(env: Env, carteira: string): Promise<string> {
-  const existente = await env.DB.prepare("SELECT code FROM coach_invites WHERE coach_email = ? LIMIT 1").bind(carteira).first() as { code?: string } | null;
-  if (existente?.code) return existente.code;
+const DIA_EM_MS = 86_400_000;
+
+/** Emite um convite novo para o treinador, com prazo e limite escolhidos. */
+async function emiteConvite(env: Env, carteira: string, dias: number, usos: number | null): Promise<Record<string, unknown>> {
   const codigo = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
-  await env.DB.prepare("INSERT INTO coach_invites (code, coach_email, created_at) VALUES (?, ?, ?) ON CONFLICT(coach_email) DO NOTHING")
-    .bind(codigo, carteira, Date.now()).run();
-  const gravado = await env.DB.prepare("SELECT code FROM coach_invites WHERE coach_email = ? LIMIT 1").bind(carteira).first() as { code?: string } | null;
-  return gravado?.code ?? codigo;
+  const agora = Date.now();
+  const expira = agora + dias * DIA_EM_MS;
+  await env.DB.prepare("INSERT INTO coach_invites (code, coach_email, expires_at, max_uses, uses, revoked_at, created_at) VALUES (?, ?, ?, ?, 0, NULL, ?)")
+    .bind(codigo, carteira, expira, usos, agora).run();
+  return { code: codigo, expiresAt: expira, maxUses: usos, uses: 0 };
 }
 
-/** Devolve o convite do treinador de quem pede, para montar o link. */
+/**
+ * Convites do treinador: lista, emite e revoga.
+ *
+ * Um convite não é mais eterno. Link sem validade é link que vaza depois — fica
+ * num grupo, num print, num e-mail encaminhado — e continua abrindo cadastro
+ * meses adiante, na carteira de quem já nem lembra de tê-lo enviado.
+ */
 async function conviteApi(request: Request, env: Env): Promise<Response> {
-  if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
   const carteira = carteiraDe(request);
   if (!carteira) return Response.json({ error: "coach_scope_required" }, { status: 403 });
-  return Response.json({ code: await codigoDeConvite(env, carteira) });
+  const agora = Date.now();
+
+  if (request.method === "GET") {
+    const linhas = await env.DB.prepare(
+      "SELECT code, expires_at, max_uses, uses, revoked_at, created_at FROM coach_invites WHERE coach_email = ? ORDER BY created_at DESC LIMIT 20",
+    ).bind(carteira).all();
+    return Response.json({ convites: linhas.results, agora });
+  }
+
+  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+  const input = await request.json() as Record<string, unknown>;
+  const acao = boundedText(input.action, 20) || "create";
+
+  if (acao === "revoke") {
+    const codigo = boundedText(input.code, 40);
+    if (!codigo) return Response.json({ error: "code_required" }, { status: 400 });
+    const r = await env.DB.prepare("UPDATE coach_invites SET revoked_at = ? WHERE code = ? AND coach_email = ? AND revoked_at IS NULL")
+      .bind(agora, codigo, carteira).run() as { meta?: { changes?: number } };
+    if (!Number(r?.meta?.changes ?? 0)) return Response.json({ error: "invite_not_found" }, { status: 404 });
+    return Response.json({ revoked: true, code: codigo });
+  }
+
+  /* Prazo obrigatório e curto por padrão. `usos` nulo é sem limite; 1 é o link
+     de uma pessoa só, que é o caso mais comum de cadastro individual. */
+  const dias = Number(input.days ?? 7);
+  if (!Number.isInteger(dias) || dias < 1 || dias > 90) return Response.json({ error: "invalid_expiry" }, { status: 400 });
+  const usosBrutos = input.maxUses;
+  const usos = usosBrutos === null || usosBrutos === undefined ? null : Number(usosBrutos);
+  if (usos !== null && (!Number.isInteger(usos) || usos < 1 || usos > 500)) return Response.json({ error: "invalid_max_uses" }, { status: 400 });
+
+  return Response.json(await emiteConvite(env, carteira, dias, usos), { status: 201 });
+}
+
+/**
+ * Resolve o código para um treinador, se o convite ainda vale.
+ *
+ * Expirado, revogado ou esgotado devolve null — e o cadastro segue sem dono, em
+ * vez de ser recusado: negar o acesso puniria o aluno por um link velho, que não
+ * é escolha dele.
+ */
+async function donoDoConvite(env: Env, codigo: string): Promise<string | null> {
+  if (!codigo) return null;
+  const linha = await env.DB.prepare(
+    "SELECT coach_email, expires_at, max_uses, uses, revoked_at FROM coach_invites WHERE code = ? LIMIT 1",
+  ).bind(codigo).first() as { coach_email?: string; expires_at?: number; max_uses?: number | null; uses?: number; revoked_at?: number | null } | null;
+  if (!linha?.coach_email) return null;
+  if (linha.revoked_at) return null;
+  if (linha.expires_at && Number(linha.expires_at) <= Date.now()) return null;
+  if (linha.max_uses !== null && linha.max_uses !== undefined && Number(linha.uses ?? 0) >= Number(linha.max_uses)) return null;
+  /* O uso é contado aqui, na hora em que o convite de fato amarra alguém. */
+  await env.DB.prepare("UPDATE coach_invites SET uses = uses + 1 WHERE code = ?").bind(codigo).run();
+  return linha.coach_email;
 }
 
 async function accessRequestApi(request: Request, env: Env, sessionEmail: string, sessionName: string): Promise<Response> {
@@ -1214,9 +1279,7 @@ async function accessRequestApi(request: Request, env: Env, sessionEmail: string
        pedido sem dono, porque recusar o cadastro por causa de um link velho
        puniria o aluno por algo que não é dele. */
     const convite = boundedText(input.invite, 40);
-    const dono = convite
-      ? (await env.DB.prepare("SELECT coach_email FROM coach_invites WHERE code = ? LIMIT 1").bind(convite).first() as { coach_email?: string } | null)?.coach_email ?? null
-      : null;
+    const dono = await donoDoConvite(env, convite);
     const id = crypto.randomUUID(); const now = Date.now();
     await env.DB.prepare(`INSERT INTO access_requests (id,email,name,phone,objective,distance,training_days,integration,status,coach_email,reviewed_by,reviewed_at,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,NULL,NULL,?,?)
@@ -3355,6 +3418,73 @@ async function customPlansApi(request: Request, env: Env): Promise<Response> {
       env.DB.prepare("DELETE FROM custom_plans WHERE id = ?").bind(id),
     ]);
     return Response.json({ deleted: true });
+  }
+
+  if (acao === "import") {
+    /* Importação de biblioteca.
+     *
+     * O formato é o mesmo que a exportação produz, e é deliberadamente simples:
+     * uma lista de planilhas, cada uma com as semanas e os treinos dentro. Nada
+     * de id, dono ou data — esses são de quem importa, não de quem exportou, e
+     * aceitar id de fora deixaria um arquivo sobrescrever a planilha de outro.
+     *
+     * Nome que já existe não vira erro nem duplicata: a planilha é substituída
+     * inteira, semanas incluídas. É o que "importar de novo" deve fazer — quem
+     * corrige o arquivo e reimporta espera o resultado do arquivo, não a soma
+     * dele com o que estava lá.
+     */
+    const planilhas = Array.isArray(input.plans) ? input.plans : [];
+    if (!planilhas.length) return Response.json({ error: "no_plans" }, { status: 400 });
+    if (planilhas.length > 40) return Response.json({ error: "too_many_plans" }, { status: 413 });
+
+    const comandos: Array<ReturnType<typeof env.DB.prepare>> = [];
+    let semanasImportadas = 0;
+    const nomes: string[] = [];
+
+    for (const bruta of planilhas as Array<Record<string, unknown>>) {
+      const nome = boundedText(bruta.name, 60);
+      const semanasDeclaradas = Number(bruta.weeks);
+      if (nome.length < 3) return Response.json({ error: "plan_name_too_short", plano: nome }, { status: 400 });
+      if (!Number.isInteger(semanasDeclaradas) || semanasDeclaradas < 1 || semanasDeclaradas > 52) {
+        return Response.json({ error: "invalid_week_count", plano: nome }, { status: 400 });
+      }
+      const fases = Array.isArray(bruta.phases) ? bruta.phases.map(f => boundedText(f, 30)).filter(Boolean).slice(0, 8) : [];
+      nomes.push(nome);
+
+      /* Substituir e não somar: apaga a versão anterior desta biblioteca antes
+         de escrever a nova, senão as semanas velhas sobreviveriam à importação. */
+      comandos.push(env.DB.prepare("DELETE FROM plan_template_overrides WHERE plan_name = ? AND coach_email = ?").bind(nome, dono));
+      comandos.push(env.DB.prepare("DELETE FROM custom_plans WHERE name = ? AND coach_email = ?").bind(nome, dono));
+      comandos.push(env.DB.prepare(
+        `INSERT INTO custom_plans (id,name,distance,weeks,frequency,level,goal,phases,created_by,coach_email,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      ).bind(crypto.randomUUID(), nome, boundedText(bruta.distance, 30) || "Livre", semanasDeclaradas,
+        boundedText(bruta.frequency, 40) || `${semanasDeclaradas} semanas`,
+        boundedText(bruta.level, 30) || "Importada", boundedText(bruta.goal, 160) || "Planilha importada",
+        JSON.stringify(fases.length ? fases : ["Base", "Desenvolvimento", "Específica"]),
+        normalizedAuthenticatedEmail(request) ?? "importação", dono, now));
+
+      const semanas = (bruta.weeksContent && typeof bruta.weeksContent === "object") ? bruta.weeksContent as Record<string, unknown> : {};
+      for (const [numero, sessoes] of Object.entries(semanas)) {
+        const semana = Number(numero);
+        if (!Number.isInteger(semana) || semana < 1 || semana > semanasDeclaradas) continue;
+        if (!Array.isArray(sessoes) || sessoes.length > 10 || !validStructuredValue(sessoes)) {
+          return Response.json({ error: "invalid_template", plano: nome, semana }, { status: 400 });
+        }
+        const json = JSON.stringify(sessoes);
+        if (json.length > 200_000) return Response.json({ error: "template_too_large", plano: nome, semana }, { status: 413 });
+        comandos.push(env.DB.prepare(
+          `INSERT INTO plan_template_overrides (id,plan_name,week_number,sessions_json,updated_by,coach_email,updated_at)
+           VALUES (?,?,?,?,?,?,?)`,
+        ).bind(crypto.randomUUID(), nome, semana, json, normalizedAuthenticatedEmail(request) ?? "importação", dono, now));
+        semanasImportadas += 1;
+      }
+    }
+
+    /* Em lote e não uma a uma: são centenas de comandos, e cada ida ao D1 é
+       rede. Vai tudo ou não vai nada, que é o que se espera de uma importação. */
+    for (let i = 0; i < comandos.length; i += 50) await env.DB.batch(comandos.slice(i, i + 50));
+    return Response.json({ imported: true, planilhas: nomes.length, semanas: semanasImportadas, nomes });
   }
 
   const id = boundedText(input.planId, 40) || crypto.randomUUID();

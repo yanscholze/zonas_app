@@ -187,6 +187,53 @@ test("uses a computer-first workspace for weekly programming and workout buildin
   assert.match(css, /width:min\(1120px,calc\(100vw - 260px\)\)/);
 });
 
+test("imports a whole plan library from a file", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("import-plans", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const arquivo = JSON.parse(await readFile(new URL("../planilhas-zonasapp.json", import.meta.url), "utf8"));
+
+  const escritas = [];
+  const prepare = (sql) => ({
+    values: [],
+    bind(...values) { this.values = values; return this; },
+    async first() { return null; },
+    async all() { return { results: [] }; },
+    async run() { escritas.push({ sql, values: this.values }); return { success: true }; },
+  });
+  const env = {
+    ASSETS: { fetch: async () => new Response("", { status: 404 }) },
+    DB: { prepare: withSession(prepare), async batch(items) { for (const i of items) await i.run(); return items.map(() => ({ results: [] })); } },
+  };
+
+  const r = await worker.fetch(new Request("https://zonasapp.example/api/plans", {
+    method: "POST", headers: { "content-type": "application/json", ...coachCookie },
+    body: JSON.stringify({ action: "import", plans: arquivo.plans }),
+  }), env, { waitUntil() {}, passThroughOnException() {} });
+
+  assert.equal(r.status, 200);
+  const corpo = await r.json();
+  assert.equal(corpo.imported, true);
+  assert.equal(corpo.planilhas, 10);
+  assert.equal(corpo.semanas, 155, "as 155 semanas montadas precisam entrar junto");
+
+  /* Substituir e não somar: sem apagar antes, reimportar um arquivo corrigido
+     deixaria as semanas velhas convivendo com as novas. */
+  const apagou = escritas.filter(e => /DELETE FROM plan_template_overrides WHERE plan_name = \? AND coach_email = \?/.test(e.sql));
+  assert.equal(apagou.length, 10, "cada planilha precisa limpar as semanas anteriores");
+
+  /* Tudo entra na biblioteca de quem importa. Aceitar o dono do arquivo deixaria
+     um arquivo escrever na biblioteca de outro treinador. */
+  const inseriu = escritas.filter(e => /INSERT INTO custom_plans/.test(e.sql));
+  assert.equal(inseriu.length, 10);
+  assert.ok(inseriu.every(e => e.values.includes("treinador@exemplo.com")), "a planilha precisa nascer na carteira de quem importa");
+
+  // E o arquivo não carrega id nem dono — são de quem importa.
+  for (const plano of arquivo.plans) {
+    assert.ok(!("id" in plano) && !("coach_email" in plano), `${plano.name} carrega campo que não deveria`);
+  }
+});
+
 test("gives a freshly registered student somewhere to go", async () => {
   const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
@@ -221,8 +268,23 @@ test("ties the student to the coach whose link they used", async () => {
      carteira de outro por ordem de clique. */
   assert.match(schema, /export const coachInvites = sqliteTable\("coach_invites"/);
   assert.match(schema, /coachEmail: text\("coach_email"\),\n  reviewedBy/);
-  assert.match(worker, /async function codigoDeConvite\(env: Env, carteira: string\): Promise<string>/);
-  assert.match(client, /const link = convite \? `\$\{origem\}\/\?convite=\$\{convite\}` : origem/);
+  assert.match(worker, /async function emiteConvite\(env: Env, carteira: string, dias: number, usos: number \| null\)/);
+  assert.match(client, /const link = ativo \? `\$\{origem\}\/\?convite=\$\{ativo\.code\}` : origem/);
+
+  /* Link sem validade é link que vaza depois: fica num grupo, num print, num
+     e-mail encaminhado, e continua abrindo cadastro meses adiante na carteira de
+     quem já nem lembra de tê-lo enviado. Prazo é obrigatório; limite de uso é
+     opcional, porque as duas situações são diferentes — o link de uma pessoa
+     (aluno que acabou de fechar) e o da turma que começa. */
+  assert.match(worker, /if \(!Number\.isInteger\(dias\) \|\| dias < 1 \|\| dias > 90\)/);
+  assert.match(worker, /async function donoDoConvite\(env: Env, codigo: string\): Promise<string \| null>/);
+  assert.match(worker, /if \(linha\.revoked_at\) return null/);
+  assert.match(worker, /if \(linha\.expires_at && Number\(linha\.expires_at\) <= Date\.now\(\)\) return null/);
+  assert.match(worker, /Number\(linha\.uses \?\? 0\) >= Number\(linha\.max_uses\)/);
+  // O uso é contado quando o convite de fato amarra alguém, não quando é lido.
+  assert.match(worker, /UPDATE coach_invites SET uses = uses \+ 1 WHERE code = \?/);
+  // E dá para encerrar um link já enviado.
+  assert.match(worker, /if \(acao === "revoke"\)/);
   assert.match(entrada, /const conviteDoLink = \(\) =>/);
   assert.match(entrada, /invite:conviteDoLink\(\)/);
 

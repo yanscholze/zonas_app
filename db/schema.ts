@@ -456,8 +456,19 @@ export const trainingWeekAudit = sqliteTable("training_week_audit", {
 export const coachInvites = sqliteTable("coach_invites", {
   code: text("code").primaryKey(),
   coachEmail: text("coach_email").notNull(),
+  /* Prazo e limite de uso são coisas diferentes e ambas fazem falta.
+     O link de uso único vai para uma pessoa: o treinador cadastra o aluno que
+     acabou de fechar. O link com prazo vai para um grupo: uma turma que começa,
+     um post que fica no ar por uma semana. Um só dos dois obriga a contornar o
+     outro — mandar dez links iguais, ou deixar um link eterno circulando.
+     Nulo em `usosMaximos` significa sem limite de uso; o prazo é sempre
+     obrigatório, porque link sem validade é link que vaza depois. */
+  expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
+  maxUses: integer("max_uses"),
+  uses: integer("uses").notNull().default(0),
+  revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
-}, (table) => ({ coachIdx: uniqueIndex("coach_invites_coach_idx").on(table.coachEmail) }));
+}, (table) => ({ coachIdx: index("coach_invites_coach_idx").on(table.coachEmail) }));
 
 export const schemaState = sqliteTable("schema_state", {
   id: integer("id").primaryKey(),
