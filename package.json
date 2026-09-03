@@ -18,7 +18,9 @@
     "deploy": "bash scripts/sites-env.sh -- vinext deploy",
     "secrets:check": "node scripts/verifica-segredos.mjs",
     "deploy:ensaio": "bash scripts/sites-env.sh -- vinext deploy --env ensaio",
-    "secrets:check:ensaio": "node scripts/verifica-segredos.mjs --env ensaio"
+    "secrets:check:ensaio": "node scripts/verifica-segredos.mjs --env ensaio",
+    "lancar": "bash scripts/lancar.sh",
+    "lancar:ensaio": "bash scripts/lancar.sh ensaio"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
