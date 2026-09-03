@@ -311,6 +311,23 @@ test("keeps the deploy config in step with the development bindings", async () =
   assert.match(vite, /^import \{ cloudflare \} from "@cloudflare\/vite-plugin";$/m);
   assert.doesNotMatch(vite, /await import\("@cloudflare\/vite-plugin"\)/);
 
+  /* A caixa de areia do sites-env.sh redireciona HOME e XDG_CONFIG_HOME, e a
+     credencial da Cloudflare mora em ~/.config/.wrangler. Com o HOME trocado o
+     wrangler não a encontra, conclui que não há login e falha com
+     "non-interactive environment" — uma mensagem que não fala de HOME nenhum, e
+     que aparecia até no terminal de quem estava logado. Só o deploy pede a
+     exceção, e ela é explícita. */
+  const env = await readFile(new URL("../scripts/sites-env.sh", import.meta.url), "utf8");
+  assert.match(env, /if \[\[ "\$\{SITES_MANTER_CREDENCIAIS:-\}" == "1" \]\]; then/);
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  assert.match(pkg.scripts.deploy, /^SITES_MANTER_CREDENCIAIS=1 /);
+
+  /* E o artefato não pode ficar com segredo em texto puro: o build copia o
+     .dev.vars para dist/server, e diretório de build é coisa que se compacta,
+     se copia e se arquiva sem pensar. */
+  const lancar = await readFile(new URL("../scripts/lancar.sh", import.meta.url), "utf8");
+  assert.match(lancar, /rm -f dist\/server\/\.dev\.vars/);
+
   /* O ensaio precisa de banco PRÓPRIO. Um ambiente de teste apontando para o
      banco de produção é pior que não ter ambiente de teste: dá a sensação de
      estar isolado enquanto se escreve em cima dos alunos de verdade. */

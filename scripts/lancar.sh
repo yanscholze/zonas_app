@@ -95,6 +95,16 @@ echo "  testes ok"
 passo "5. Subindo"
 npm run "deploy${ambiente:+:${ambiente}}"
 
+# O build copia o .dev.vars para dentro de dist/server, junto do wrangler.json
+# gerado — é o arquivo que o `wrangler dev` lê para servir os segredos locais.
+# Ele não é enviado no deploy (os assets são dist/client) e não entra no bundle,
+# mas fica em disco com senha em texto puro dentro de um diretório de artefato.
+# Diretório de build é coisa que se compacta, se copia e se arquiva sem pensar.
+if [[ -f dist/server/.dev.vars ]]; then
+  rm -f dist/server/.dev.vars
+  echo "  .dev.vars removido do artefato"
+fi
+
 printf '\n  ✓ No ar.\n\n'
 printf '     Primeiro acesso: entre com COACH_EMAIL e a senha inicial, e troque-a.\n'
 printf '     A conta de manutenção só existe se DEV_LOGIN e DEV_INITIAL_PASSWORD\n'
