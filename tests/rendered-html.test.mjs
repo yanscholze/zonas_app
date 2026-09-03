@@ -294,6 +294,22 @@ test("keeps the deploy config in step with the development bindings", async () =
      primeira alteração: alguém troca o id de uma e esquece a outra. */
   assert.equal(wrangler.d1_databases.length, 1, "há mais de um binding para o banco de produção");
   assert.equal(wrangler.d1_databases[0].binding, "DB");
+  assert.match(wrangler.d1_databases[0].database_id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    "o database_id de produção não é um UUID");
+
+  /* A configuração embutida no vite.config.ts carrega o database_id de
+     marcador, que serve ao banco local do Miniflare. Ela precisa valer só no
+     `vite` de desenvolvimento: no build quem manda é este arquivo. Sem a
+     separação, o deploy subiria apontando para o marcador — e não falharia no
+     deploy, falharia na primeira consulta, com o aplicativo já no ar. */
+  const vite = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
+  assert.match(vite, /const desenvolvimento = command === "serve"/);
+  assert.match(vite, /\.\.\.\(desenvolvimento \? \{ config: localBindingConfig \} : \{\}\)/);
+
+  /* E o plugin entra por import estático: o `vinext-cloudflare deploy` decide se
+     ele existe lendo este arquivo como texto, e não enxerga import dinâmico. */
+  assert.match(vite, /^import \{ cloudflare \} from "@cloudflare\/vite-plugin";$/m);
+  assert.doesNotMatch(vite, /await import\("@cloudflare\/vite-plugin"\)/);
 
   /* O ensaio precisa de banco PRÓPRIO. Um ambiente de teste apontando para o
      banco de produção é pior que não ter ambiente de teste: dá a sensação de

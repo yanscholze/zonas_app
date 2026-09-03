@@ -1,4 +1,15 @@
+/* O plugin da Cloudflare entra por `import` estático, e isso é deliberado.
+   Antes era `await import()` dentro da configuração, para garantir que
+   WRANGLER_LOG_PATH valesse antes de o Wrangler fotografar o caminho — mas
+   quem define essas três variáveis é `scripts/sites-env.sh`, por onde passam
+   build, deploy e lint, então elas já valem quando o node começa.
+   O import dinâmico tinha um custo escondido: o `vinext-cloudflare deploy`
+   decide se o plugin existe lendo este arquivo como TEXTO, e só enxerga
+   `import` estático ou `require`. Ele acusava "Missing @cloudflare/vite-plugin"
+   num projeto que tem o plugin e funciona. `require` não serve aqui: o pacote é
+   só ESM e não tem entrada CommonJS. */
 import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
 import { defineConfig } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
@@ -33,15 +44,15 @@ const localBindingConfig = {
     : [],
 };
 
-export default defineConfig(async () => {
-  // Keep Wrangler and Miniflare state project-local. These are non-secret tool
-  // settings; application environment belongs in ignored `.env*` files.
-  process.env.WRANGLER_WRITE_LOGS ??= "false";
-  process.env.WRANGLER_LOG_PATH ??= ".wrangler/logs";
-  process.env.MINIFLARE_REGISTRY_PATH ??= ".wrangler/registry";
 
-  // Wrangler snapshots its log path while the Cloudflare plugin is imported.
-  const { cloudflare } = await import("@cloudflare/vite-plugin");
+export default defineConfig(async ({ command }) => {
+  /* A configuração embutida abaixo carrega o `database_id` de marcador, que
+     serve ao banco local do Miniflare. Ela vale só no `vite` de
+     desenvolvimento: no build, quem manda é o `wrangler.jsonc`, que tem o id do
+     banco de verdade. Sem esta separação o deploy subiria apontando para o
+     marcador — e não falharia no deploy, falharia na primeira consulta, com o
+     aplicativo já no ar. */
+  const desenvolvimento = command === "serve";
 
   return {
     server: {
@@ -57,7 +68,7 @@ export default defineConfig(async () => {
       cloudflare({
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
         inspectorPort: false,
-        config: localBindingConfig,
+        ...(desenvolvimento ? { config: localBindingConfig } : {}),
       }),
     ],
   };

@@ -48,11 +48,27 @@ grep -iE "account name|email" <<<"${quem}" | head -2 || true
 
 # ---------------------------------------------------------------------------
 passo "2. Banco de dados"
-if grep -q "${chave_id}" wrangler.jsonc; then
+# Lê o id do bloco certo em vez de procurar o texto do marcador no arquivo
+# inteiro. A primeira versão usava `grep`, e o marcador do ensaio
+# (PREENCHER_COM_O_ID_DO_D1_DE_ENSAIO) contém o de produção como prefixo: a
+# produção era acusada de estar sem id por causa da linha do ensaio.
+id_do_banco="$(node -e '
+const fs = require("fs");
+const bruto = fs.readFileSync("wrangler.jsonc", "utf8").replace(/^\s*\/\/.*$/gm, "");
+const conf = JSON.parse(bruto);
+const alvo = process.argv[1] ? conf.env?.[process.argv[1]] : conf;
+process.stdout.write(alvo?.d1_databases?.[0]?.database_id ?? "");
+' "${ambiente}")"
+
+if [[ -z "${id_do_banco}" || "${id_do_banco}" == PREENCHER* ]]; then
   falhar "O database_id de ${rotulo} ainda é um marcador em wrangler.jsonc." \
     "npx wrangler d1 create ${banco}    # e cole o id devolvido no wrangler.jsonc"
 fi
-echo "  id preenchido no wrangler.jsonc"
+if [[ ! "${id_do_banco}" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+  falhar "O database_id de ${rotulo} não tem forma de UUID: ${id_do_banco}" \
+    "npx wrangler d1 list    # e copie o id inteiro"
+fi
+echo "  id: ${id_do_banco}"
 
 # As tabelas nascem sozinhas na primeira requisição que toca cada uma
 # (ensureTables/ensureColumns). Não há migração para rodar antes.
