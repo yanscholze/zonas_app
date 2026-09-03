@@ -216,6 +216,19 @@ test("hardens the supply chain and keeps example passwords out of the docs", asy
     .map(([, info]) => info.version).filter(Boolean);
   assert.ok(!versoes("postcss").includes("8.4.31"), "postcss 8.4.31 voltou à árvore");
   assert.ok(!versoes("sharp").includes("0.34.5"), "sharp 0.34.5 voltou à árvore");
+
+  /* react, react-dom e react-server-dom-webpack são o mesmo runtime e não podem
+     andar em versões diferentes — foi por isso que subiram juntos. */
+  const react = new Set([...versoes("react"), ...versoes("react-dom"), ...versoes("react-server-dom-webpack")]);
+  assert.equal(react.size, 1, `runtime do React em versões diferentes: ${[...react].join(", ")}`);
+
+  /* O que a produção carrega precisa ficar sem vulnerabilidade conhecida. O que
+     sobra no `npm audit` é o esbuild antigo que vem pelo drizzle-kit — que gera
+     migração pela linha de comando, nunca atende requisição, e não entra no
+     pacote. O aviso é sobre o servidor de desenvolvimento do esbuild, que essa
+     ferramenta nem levanta. Se um dia ele passar a ser dependência de produção,
+     isto quebra. */
+  assert.ok(!pacote.dependencies?.["drizzle-kit"], "drizzle-kit virou dependência de produção");
 });
 
 test("names the data controller the privacy law requires", async () => {
