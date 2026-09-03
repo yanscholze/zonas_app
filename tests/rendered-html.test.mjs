@@ -187,6 +187,28 @@ test("uses a computer-first workspace for weekly programming and workout buildin
   assert.match(css, /width:min\(1120px,calc\(100vw - 260px\)\)/);
 });
 
+test("gives a freshly registered student somewhere to go", async () => {
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const gate = await readFile(new URL("../app/AuthGate.tsx", import.meta.url), "utf8");
+
+  /* O cadastro criava a conta, gravava o cookie de sessão — e a pessoa ficava
+     presa. `identityFromRequest` recusava aluno sem `athlete_name`, que é
+     exatamente o estado de quem acabou de se cadastrar: /api/session respondia
+     401, a tela nunca trocava, e o botão congelava em "Enviando…" com a conta
+     já criada no banco. */
+  assert.match(auth, /return \{ role: "pendente", email: account\.email/);
+  assert.match(auth, /\| \{ role: "pendente"; email: string; userId: string; name: string; mustChangePassword: boolean \}/);
+
+  /* "pendente" não é "aluno", e é assim que as rotas de /api/student/* a
+     recusam sem que ninguém precise lembrar de checar o nome do atleta. */
+  assert.match(worker, /if \(session\.role === "pendente"\) return null/);
+
+  /* No login a tela desmonta e o estado morre com ela; no cadastro ela continua
+     montada, então o estado precisa voltar sozinho. */
+  assert.match(gate, /setState\("idle"\);\n {6}onSignedIn\(\)/);
+});
+
 test("ties the student to the coach whose link they used", async () => {
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
   const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");

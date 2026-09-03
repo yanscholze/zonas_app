@@ -9,7 +9,9 @@ export type Session =
   /** Proprietário: treinador que também cria e confere os treinadores da equipe. */
   | { authenticated: true; role: "owner"; email: string; name: string; mustChangePassword: boolean }
   | { authenticated: true; role: "coach"; email: string; name: string; mustChangePassword: boolean }
-  | { authenticated: true; role: "student"; email: string; name: string; athleteName: string; mustChangePassword: boolean };
+  | { authenticated: true; role: "student"; email: string; name: string; athleteName: string; mustChangePassword: boolean }
+  /** Conta criada, atleta ainda não vinculado: a pessoa vai pedir acesso. */
+  | { authenticated: true; role: "pendente"; email: string; name: string; mustChangePassword: boolean };
 
 type Mode = "login" | "register";
 
@@ -117,6 +119,11 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
         setState("idle");
         return;
       }
+      /* No login a tela desmonta e o estado morre com ela. No cadastro não: a
+         conta nasce sem atleta, a pessoa segue para pedir acesso, e esta tela
+         continua montada — deixar o estado em "sending" congelava o botão em
+         "Enviando…" com a conta já criada. */
+      setState("idle");
       onSignedIn();
     } catch {
       setError("Sem conexão com o servidor. Tente novamente.");

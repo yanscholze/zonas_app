@@ -29,6 +29,8 @@ export default function AppRoot() {
            diferença dele — criar e conferir a equipe — aparece como mais uma
            seção lá dentro, não como um painel à parte: manter dois painéis
            quase iguais foi o erro que já corrigimos uma vez. */
+        /* "pendente" é quem acabou de criar a conta e ainda não tem atleta: vai
+           para a mesma tela do aluno, que é onde se pede o acesso. */
         return session.role === "coach" || session.role === "owner"
           ? <ZonasAppClient session={session} />
           : <StudentEntry session={session} />;

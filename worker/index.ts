@@ -819,6 +819,10 @@ async function resolveApiIdentity(request: Request, env: Env): Promise<ApiIdenti
   if (session.role === "dev") return { role: "dev", email: session.email, visitandoEmail: session.visitando?.email };
   if (session.role === "owner") return { role: "owner", email: session.email, visitandoEmail: session.visitando?.email };
   if (session.role === "coach") return { role: "coach", email: session.email };
+  /* Conta criada e atleta ainda não vinculado: não é identidade de aluno, e as
+     rotas de /api/student/* devem recusá-la. Ela só serve para pedir acesso, e
+     esse pedido resolve a sessão por conta própria, sem passar por aqui. */
+  if (session.role === "pendente") return null;
   await ensureAthleteAccess(env);
   const row = await env.DB.prepare(
     "SELECT athlete_name FROM athlete_access WHERE athlete_name = ? AND status = 'Ativo' LIMIT 1",

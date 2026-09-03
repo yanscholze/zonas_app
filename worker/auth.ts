@@ -92,7 +92,9 @@ export type SessionIdentity =
    */
   | { role: "owner"; email: string; userId: string; name: string; mustChangePassword: boolean; visitando?: { email: string; name: string; userId: string } }
   | { role: "coach"; email: string; userId: string; name: string; mustChangePassword: boolean }
-  | { role: "student"; email: string; userId: string; name: string; athleteName: string; mustChangePassword: boolean };
+  | { role: "student"; email: string; userId: string; name: string; athleteName: string; mustChangePassword: boolean }
+  /** Conta criada, atleta ainda não vinculado: só alcança o pedido de acesso. */
+  | { role: "pendente"; email: string; userId: string; name: string; mustChangePassword: boolean };
 
 interface AuthDatabase {
   prepare(sql: string): {
@@ -299,7 +301,16 @@ export async function identityFromRequest(db: AuthDatabase, request: Request): P
   if (account.role === "coach") {
     return { role: "coach", email: account.email, userId: account.id, name: account.name, mustChangePassword };
   }
-  if (!account.athlete_name) return null;
+  /* Aluno recém-cadastrado ainda não tem atleta: ele acabou de criar a conta e
+     precisa pedir acesso. Devolver null aqui fazia `/api/session` responder 401,
+     a tela de cadastro nunca trocava e o botão ficava preso em "Enviando…" —
+     com a conta criada e a pessoa sem lugar nenhum.
+     O papel é outro de propósito: "pendente" não é "aluno". Assim as rotas de
+     /api/student/*, que exigem `role === "student"` e usam `athleteName`, o
+     recusam sem que ninguém precise lembrar de checar o nome do atleta. */
+  if (!account.athlete_name) {
+    return { role: "pendente", email: account.email, userId: account.id, name: account.name, mustChangePassword };
+  }
   return {
     role: "student",
     email: account.email,
