@@ -14833,3 +14833,76 @@ p, span, b, strong, small, em, li, td, th, label {
 }
 
 .student .assinatura a:hover { color: var(--aluno-dourado); }
+
+/* -----------------------------------------------------------------------------
+   Como um aluno entra.
+
+   Havia três lugares para cadastrar um aluno, e eles não faziam a mesma coisa:
+   um criava a ficha sem o login, outro o login sem a ficha, e só o terceiro
+   criava tudo. Quem usasse o do meio ficava com um aluno que não conseguia
+   entrar, sem nada na tela dizendo o que faltava. Os dois caminhos que existem
+   passam a ficar lado a lado, cada um dizendo o que faz.
+   ----------------------------------------------------------------------------- */
+.entrada-caminhos {
+  margin-bottom: var(--space-6);
+}
+
+.entrada-caminhos>div:first-child h2 {
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-lg);
+}
+
+.entrada-caminhos>div:first-child p {
+  margin: var(--space-1) 0 var(--space-4);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.entrada-opcoes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--space-3);
+}
+
+.entrada-opcoes article {
+  display: grid;
+  align-content: start;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+}
+
+.entrada-opcoes b { font-size: var(--fs-md); }
+
+.entrada-opcoes p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+}
+
+.entrada-opcoes button { justify-self: start; margin-top: var(--space-1); }
+
+.entrada-opcoes small {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-style: italic;
+}
+
+/* Quem ainda não tem acesso, na aba de contas: um lembrete, não um formulário —
+   criar é em Cadastros. */
+.account-pendentes {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.account-pendentes span { color: var(--text); font-size: var(--fs-sm); }
+.account-pendentes small { color: var(--muted); font-size: var(--fs-xs); }

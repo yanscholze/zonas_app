@@ -248,9 +248,9 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
       </div>}
 
       <main className="content">
-        <header className="top"><div><small>{brazilCalendar().label.toUpperCase()}</small><h1>{active === "Painel" ? `${greeting()}, ${session.name.split(" ")[0]}` : active}</h1></div><div className="top-actions">{active === "Alunos" && <button className="gold" onClick={() => setNewAthlete(true)}>+ Novo aluno</button>}<button className="coach-alert-button" onClick={()=>setActive("Painel")} aria-label="Abrir avisos do professor"><IconAviso /><b>{painReports.length+pendingRaces.filter(race=>race.status==="Aguardando análise").length+pendingTests.filter(test=>test.status!=="Aprovado").length+pendingAccess.length}</b><span>avisos</span></button>{onLeaveDev&&<button className="coach-signout" onClick={onLeaveDev}>← Diagnóstico</button>}<button className="coach-signout" onClick={()=>void signOut()} title={session.email}>Sair</button></div></header>
+        <header className="top"><div><small>{brazilCalendar().label.toUpperCase()}</small><h1>{active === "Painel" ? `${greeting()}, ${session.name.split(" ")[0]}` : active}</h1></div><div className="top-actions">{active === "Cadastros" && <button className="gold" onClick={() => setNewAthlete(true)}>+ Novo aluno</button>}<button className="coach-alert-button" onClick={()=>setActive("Painel")} aria-label="Abrir avisos do professor"><IconAviso /><b>{painReports.length+pendingRaces.filter(race=>race.status==="Aguardando análise").length+pendingTests.filter(test=>test.status!=="Aprovado").length+pendingAccess.length}</b><span>avisos</span></button>{onLeaveDev&&<button className="coach-signout" onClick={onLeaveDev}>← Diagnóstico</button>}<button className="coach-signout" onClick={()=>void signOut()} title={session.email}>Sair</button></div></header>
         {active === "Painel" && <><CoachWeekSummary go={setActive} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests}/><CoachNotificationCenter go={setActive} openPain={setPainCase} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests} pendingAccess={pendingAccess}/><CoachGroups go={setActive} chooseDistance={(d) => { setDistanceFilter(d); setActive("Alunos"); }} athletes={athleteRecords}/><WorkoutAccuracy/><TrainingFeedbacks/></>}
-        {active === "Cadastros" && <><InviteLink/><AccessRequests onApproved={()=>{setPendingAccess(current=>current.slice(1));fetch("/api/athletes").then(r=>r.ok?r.json():{athletes:[]}).then(data=>{const saved=(data.athletes||[]).map((a:any)=>({name:a.name,initials:a.initials,distance:a.distance,plan:a.saved_plan||defaultPlanForDistance(a.distance),phase:a.planning_phase||a.phase,week:a.planning_week_number?`${a.planning_week_number} de ${a.planning_total_weeks}`:a.week,next:a.next_workout,flag:a.status||undefined}));setAthleteRecords(current=>[...saved,...current.filter(a=>!saved.some((s:Athlete)=>s.name===a.name))])})}}/></>} 
+        {active === "Cadastros" && <><CaminhosDeEntrada abrirNovo={()=>setNewAthlete(true)}/><InviteLink/><AccessRequests onApproved={()=>{setPendingAccess(current=>current.slice(1));fetch("/api/athletes").then(r=>r.ok?r.json():{athletes:[]}).then(data=>{const saved=(data.athletes||[]).map((a:any)=>({name:a.name,initials:a.initials,distance:a.distance,plan:a.saved_plan||defaultPlanForDistance(a.distance),phase:a.planning_phase||a.phase,week:a.planning_week_number?`${a.planning_week_number} de ${a.planning_total_weeks}`:a.week,next:a.next_workout,flag:a.status||undefined}));setAthleteRecords(current=>[...saved,...current.filter(a=>!saved.some((s:Athlete)=>s.name===a.name))])})}}/></>} 
         {active === "Alunos" && <Athletes filtered={filtered} allAthletes={athleteRecords} distance={distanceFilter} phase={phaseFilter} plan={planFilter} setDistance={setDistanceFilter} setPhase={setPhaseFilter} setPlan={setPlanFilter} openProfile={setSelectedAthlete} situation={situationFilter} setSituation={setSituationFilter} counts={athleteCounts} onArchiveChange={()=>refreshAthleteRecords()} />}
         {active === "Testes e zonas" && <PendingTestCenter athletes={athleteRecords} openCalendar={(name)=>{sessionStorage.setItem("zonasapp:calendar-athlete",name);setActive("Calendário")}} />}
         {active === "Testes e zonas" && <TestCalculator athletes={athleteRecords} testDistance={testDistance} setTestDistance={setTestDistance} minutes={minutes} setMinutes={setMinutes} seconds={seconds} setSeconds={setSeconds} age={age} setAge={setAge} calc={calc} />}
@@ -267,7 +267,28 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
       {selectedAthlete && <AthleteProfile athlete={selectedAthlete} close={() => setSelectedAthlete(null)} onOpenPain={id => setPainCase({ id, athleteName: selectedAthlete.name })} />}
       {painCase && <PainCaseScreen reportId={painCase.id} athleteName={painCase.athleteName} close={() => { setPainCase(null); window.dispatchEvent(new Event("zonasapp:athletes-refresh")); }} />}
       {newAthlete && <NewAthlete close={() => setNewAthlete(false)} save={async (athlete, details) => { /* Campos explícitos, não `...athlete`: o objeto da tela carrega `plan`, `next` e `flag`, que existem só aqui. O envelope da API recusa campo desconhecido, e era isso que devolvia "Não foi possível salvar agora" no cadastro. */
-        const response = await fetch("/api/athletes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: athlete.name, initials: athlete.initials, distance: athlete.distance, phase: athlete.phase, week: athlete.week, nextWorkout: athlete.next, status: athlete.flag, ...details }) }); if (!response.ok) throw new Error("save_failed");const totalWeeks=Number(athlete.week.match(/de (\d+)/)?.[1]||12);const planning=await fetch("/api/athlete-planning",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({athleteName:athlete.name,plan:athletePlan(athlete),phase:athlete.phase,weekNumber:1,totalWeeks})});if(!planning.ok)throw new Error("planning_failed"); setAthleteRecords(current => [athlete, ...current]); setNewAthlete(false); }} />}
+        const response = await fetch("/api/athletes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: athlete.name, initials: athlete.initials, distance: athlete.distance, phase: athlete.phase, week: athlete.week, nextWorkout: athlete.next, status: athlete.flag, ...details }) }); if (!response.ok) throw new Error("save_failed");const totalWeeks=Number(athlete.week.match(/de (\d+)/)?.[1]||12);const planning=await fetch("/api/athlete-planning",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({athleteName:athlete.name,plan:athletePlan(athlete),phase:athlete.phase,weekNumber:1,totalWeeks})});if(!planning.ok)throw new Error("planning_failed");
+        /* Com e-mail, o acesso nasce junto. Antes o cadastro criava só a ficha, e
+           o aluno ficava sem conseguir entrar até alguém lembrar de passar na aba
+           Contas — que era a metade que faltava, e a razão de haver três lugares
+           para cadastrar um aluno. */
+        const emailDeAcesso = String(details.email ?? "").trim();
+        if (emailDeAcesso) {
+          try {
+            const conta = await api.post<{temporaryPassword?:string}>("/api/accounts", { action:"create", athleteName: athlete.name, name: athlete.name, email: emailDeAcesso });
+            avise("ok", `${athlete.name} cadastrado · senha ${conta.temporaryPassword ?? ""}`.trim(),
+              `Anote agora e entregue a ${emailDeAcesso}. Ele terá de trocá-la no primeiro acesso, e esta senha não aparece de novo.`);
+          } catch (erro) {
+            /* A ficha já existe: dizer que o cadastro falhou seria mentira, e
+               refazê-lo criaria um aluno duplicado. O acesso pode ser criado
+               depois, na aba Contas. */
+            avise("atencao", `${athlete.name} cadastrado, mas sem acesso`,
+              `A ficha foi salva. O login não: ${describeError(erro, "tente criá-lo na aba Contas.")}`);
+          }
+        } else {
+          avise("ok", `${athlete.name} cadastrado`, "Sem e-mail informado, ele ainda não tem acesso ao aplicativo. Dá para criar depois na aba Contas.");
+        }
+        setAthleteRecords(current => [athlete, ...current]); setNewAthlete(false); }} />}
       {selectedTemplate && <PlanDetails plan={selectedTemplate} close={()=>setSelectedTemplate(null)} />}
       <CentralDeAvisos />
     </div>
@@ -438,10 +459,8 @@ function AccountsCenter({ athletes }: { athletes: Athlete[] }) {
   };
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "saving" | "error">("loading");
-  const [form, setForm] = useState({ athleteName: "", name: "", email: "" });
   const [issued, setIssued] = useState<{ email: string; password: string } | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
-  const [error, setError] = useState("");
 
   const load = () => fetch("/api/accounts")
     .then(response => response.ok ? response.json() : Promise.reject())
@@ -452,31 +471,26 @@ function AccountsCenter({ athletes }: { athletes: Athlete[] }) {
   const linked = new Set(accounts.map(account => account.athlete_name).filter(Boolean));
   const availableAthletes = athletes.filter(athlete => !linked.has(athlete.name));
 
+  /* O erro ia para um estado local que a tela não mostrava mais depois que a
+     criação saiu daqui — escrevia no vazio. Vai para a Central de avisos, que é
+     por onde o resto do sistema fala. */
   const send = async (body: Record<string, string>) => {
-    setState("saving"); setError("");
+    setState("saving");
     try {
       const response = await fetch("/api/accounts", {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        setError(payload.error === "email_already_registered" ? "Este e-mail já está em uso por outra conta." : "Não foi possível concluir a ação.");
+        avise("erro", "Não foi possível concluir",
+          payload.error === "email_already_registered" ? "Este e-mail já está em uso por outra conta." : "Tente novamente em alguns instantes.");
         setState("ready"); return null;
       }
       await load();
       return payload as { temporaryPassword?: string; email?: string };
-    } catch { setError("Sem conexão com o servidor."); setState("ready"); return null; }
+    } catch { avise("erro", "Sem conexão com o servidor", "Verifique a internet e tente de novo."); setState("ready"); return null; }
   };
 
-  const create = async () => {
-    const chosen = form.athleteName || availableAthletes[0]?.name || "";
-    if (!chosen || !form.email.includes("@") || form.name.trim().length < 3) { setError("Preencha aluno, nome e e-mail."); return; }
-    const result = await send({ action: "create", athleteName: chosen, name: form.name, email: form.email });
-    if (result?.temporaryPassword) {
-      setIssued({ email: result.email || form.email, password: result.temporaryPassword });
-      setForm({ athleteName: "", name: "", email: "" });
-    }
-  };
 
   const reset = async (email: string) => {
     const result = await send({ action: "reset_password", email });
@@ -506,27 +520,15 @@ function AccountsCenter({ athletes }: { athletes: Athlete[] }) {
       {copyState === "failed" && <small className="account-issued-manual">Não foi possível copiar automaticamente. Selecione a senha acima e copie à mão.</small>}
     </div>}
 
-    <section className="account-create">
-      <header><b>Criar acesso para um aluno</b><span>{plural(availableAthletes.length, "aluno")} ainda sem conta</span></header>
-      <div className="account-create-grid">
-        <label>Aluno
-          <select value={form.athleteName} onChange={event => setForm({ ...form, athleteName: event.target.value })}>
-            <option value="">Selecione…</option>
-            {availableAthletes.map(athlete => <option key={athlete.name}>{athlete.name}</option>)}
-          </select>
-        </label>
-        <label>Nome para o login
-          <input value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} placeholder="Nome completo" />
-        </label>
-        <label>E-mail
-          <input type="email" value={form.email} onChange={event => setForm({ ...form, email: event.target.value })} placeholder="aluno@email.com" />
-        </label>
-      </div>
-      {error && <p className="registration-error">{error}</p>}
-      <button className="gold" disabled={state === "saving" || !availableAthletes.length} onClick={create}>
-        {state === "saving" ? "Criando…" : "Criar acesso e gerar senha"}
-      </button>
-    </section>
+    {/* A criação saiu daqui. Havia três lugares para cadastrar um aluno, e este
+        criava só o login — quem o usasse precisava ter criado a ficha antes, em
+        outra aba, sem nada dizendo isso. Cadastrar é em Cadastros; aqui ficam os
+        acessos que já existem. */}
+    {availableAthletes.length > 0 && <section className="account-pendentes">
+      <b>{plural(availableAthletes.length, "aluno")} sem acesso ao aplicativo</b>
+      <span>{availableAthletes.slice(0, 6).map(a => a.name).join(" · ")}{availableAthletes.length > 6 ? " e outros" : ""}</span>
+      <small>Para liberar, abra a ficha do aluno em Alunos e informe o e-mail dele.</small>
+    </section>}
 
     <section className="account-list">
       <header><span>PESSOA</span><span>E-MAIL</span><span>ALUNO VINCULADO</span><span>SITUAÇÃO</span><span>AÇÕES</span></header>
@@ -1105,6 +1107,40 @@ function PlanDetails({plan,close}:{plan:TrainingPlan;close:()=>void}) {
 const semAssinatura = () => () => {};
 const origemDoNavegador = () => window.location.origin;
 const temCompartilhamentoNativo = () => typeof navigator.share === "function";
+
+
+/**
+ * Como um aluno entra na plataforma.
+ *
+ * Havia três lugares para cadastrar um aluno — Cadastros, Alunos e Contas — e
+ * eles não faziam a mesma coisa: um criava a ficha sem o login, outro o login
+ * sem a ficha, e só o terceiro criava tudo. Quem usasse o do meio ficava com um
+ * aluno que não conseguia entrar, sem nada na tela dizendo o que faltava.
+ *
+ * Agora os dois caminhos que existem estão no mesmo lugar, e cada um diz o que
+ * faz. Alunos virou a lista de quem já está; Contas, os acessos que já existem.
+ */
+function CaminhosDeEntrada({abrirNovo}:{abrirNovo:()=>void}) {
+  return <section className="entrada-caminhos">
+    <div>
+      <span className="overline">COMO UM ALUNO ENTRA</span>
+      <h2>Dois caminhos</h2>
+      <p>Os dois terminam no mesmo lugar: ficha criada e acesso liberado.</p>
+    </div>
+    <div className="entrada-opcoes">
+      <article>
+        <b>Você cadastra</b>
+        <p>Preenche a ficha e, informando o e-mail, o acesso é criado junto — com a senha temporária na hora.</p>
+        <button className="gold" onClick={abrirNovo}>+ Novo aluno</button>
+      </article>
+      <article>
+        <b>O aluno se cadastra</b>
+        <p>Você envia o link abaixo, ele preenche os próprios dados e aparece aqui para você liberar.</p>
+        <small>Use quando não tiver os dados dele em mãos.</small>
+      </article>
+    </div>
+  </section>;
+}
 
 function InviteLink(){
   /**

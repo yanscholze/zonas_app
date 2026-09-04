@@ -414,6 +414,32 @@ test("hardens the supply chain and keeps example passwords out of the docs", asy
   assert.ok(!pacote.dependencies?.["drizzle-kit"], "drizzle-kit virou dependência de produção");
 });
 
+test("has one place to add a student, not three that do different halves", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+
+  /* Havia três lugares para cadastrar um aluno, e eles NÃO faziam a mesma coisa:
+       Cadastros → aprovar pedido : ficha + acesso   (tudo)
+       Alunos    → + Novo aluno   : só a ficha       (o aluno não conseguia entrar)
+       Contas    → criar acesso   : só o acesso      (precisava da ficha antes)
+     Quem usasse o do meio ficava com um aluno mudo, sem nada na tela dizendo o
+     que faltava. Não era excesso de caminhos: era um caminho partido em três. */
+  assert.match(client, /function CaminhosDeEntrada\(\{abrirNovo\}/);
+  assert.match(client, /active === "Cadastros" && <button className="gold" onClick=\{\(\) => setNewAthlete\(true\)\}>\+ Novo aluno<\/button>/);
+  assert.doesNotMatch(client, /active === "Alunos" && <button className="gold" onClick=\{\(\) => setNewAthlete\(true\)\}/);
+
+  // O cadastro passa a criar o acesso junto quando há e-mail.
+  assert.match(client, /const emailDeAcesso = String\(details\.email \?\? ""\)\.trim\(\)/);
+  assert.match(client, /api\.post<\{temporaryPassword\?:string\}>\("\/api\/accounts", \{ action:"create"/);
+
+  /* Falhar o acesso não pode dizer que o cadastro falhou: a ficha já existe, e
+     refazê-la criaria um aluno duplicado. */
+  assert.match(client, /cadastrado, mas sem acesso/);
+
+  // Contas deixou de criar; virou os acessos que já existem.
+  assert.doesNotMatch(client, /className="account-create"/);
+  assert.match(client, /className="account-pendentes"/);
+});
+
 test("credits whoever built and maintains the platform, on every screen", async () => {
   const assinatura = await readFile(new URL("../app/assinatura.tsx", import.meta.url), "utf8");
   const css = await readCss("../app/globals.css");
