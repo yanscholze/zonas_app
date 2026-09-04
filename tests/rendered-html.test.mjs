@@ -414,6 +414,33 @@ test("hardens the supply chain and keeps example passwords out of the docs", asy
   assert.ok(!pacote.dependencies?.["drizzle-kit"], "drizzle-kit virou dependência de produção");
 });
 
+test("credits whoever built and maintains the platform, on every screen", async () => {
+  const assinatura = await readFile(new URL("../app/assinatura.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+
+  assert.match(assinatura, /nome: "Yan Augusto Scholze"/);
+  assert.match(assinatura, /Desenvolvido e mantido por \{DESENVOLVEDOR\.nome\}/);
+
+  /* Em todas as telas, e nas páginas legais também — são justamente onde alguém
+     procura o responsável. Uma tela sem a assinatura é a tela em que a pessoa
+     estava quando precisou dela. */
+  for (const arquivo of ["ZonasAppClient.tsx", "AuthGate.tsx", "DevDashboard.tsx", "privacy/page.tsx", "terms/page.tsx"]) {
+    const fonte = await readFile(new URL(`../app/${arquivo}`, import.meta.url), "utf8");
+    assert.match(fonte, /<Assinatura \/>/, `${arquivo} não mostra a assinatura`);
+  }
+
+  /* O AuthGate tem três telas — carregando, acesso e troca de senha. A primeira
+     versão caiu só na última, porque procurei o `</main>` de trás para a frente. */
+  const gate = await readFile(new URL("../app/AuthGate.tsx", import.meta.url), "utf8");
+  assert.equal(gate.match(/<Assinatura \/>/g)?.length, 3, "as três telas de acesso precisam da assinatura");
+
+  /* Apagada de propósito: não pode competir com o conteúdo. E a área do aluno
+     tem fundo claro, então a mesma discrição pede outra tinta. */
+  assert.match(css, /\.assinatura\{[^}]*font-size:var\(--fs-overline\)/);
+  assert.match(css, /\.assinatura\{[^}]*opacity:\.7/);
+  assert.match(css, /\.student \.assinatura\{/);
+});
+
 test("names the data controller the privacy law requires", async () => {
   const privacidade = await readFile(new URL("../app/privacy/page.tsx", import.meta.url), "utf8");
 

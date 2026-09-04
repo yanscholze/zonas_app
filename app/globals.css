@@ -14799,3 +14799,37 @@ p, span, b, strong, small, em, li, td, th, label {
 }
 
 .invite-emitir button:hover:not(:disabled) { border-color: var(--gold); color: var(--gold); }
+
+/* -----------------------------------------------------------------------------
+   Assinatura de quem fez e mantém.
+
+   Apagada de propósito: quem usa o sistema todo dia não precisa relê-la, e ela
+   não pode competir com o conteúdo. Mas quem procura o responsável — um aluno
+   com dúvida, alguém avaliando a plataforma — precisa achar sem perguntar.
+   ----------------------------------------------------------------------------- */
+.assinatura {
+  margin: var(--space-10) 0 0;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: var(--fs-overline);
+  line-height: var(--lh-snug);
+  text-align: center;
+  opacity: .7;
+}
+
+.assinatura a {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid currentColor;
+}
+
+.assinatura a:hover { color: var(--gold); }
+
+/* Na área do aluno o fundo é claro: a mesma discrição pede outra tinta. */
+.student .assinatura {
+  border-top-color: var(--aluno-linha);
+  color: var(--aluno-apoio);
+}
+
+.student .assinatura a:hover { color: var(--aluno-dourado); }

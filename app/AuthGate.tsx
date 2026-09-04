@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import InstallApp from "./InstallApp";
+import { Assinatura } from "./assinatura";
 
 export type Session =
   /** Conta de manutenção: acesso irrestrito, com diagnóstico do sistema. */
@@ -65,6 +66,7 @@ export default function AuthGate({ children }: { children: (session: Session, re
           <span className="auth-mark">Z</span>
           <p>Verificando seu acesso…</p>
         </section>
+        <Assinatura />
       </main>
     );
   }
@@ -207,6 +209,7 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
 
         <InstallApp inline />
       </section>
+      <Assinatura />
     </main>
   );
 }
@@ -296,6 +299,7 @@ function ChangePassword({ session, onChanged }: { session: Session; onChanged: (
           </button>
         </footer>
       </section>
+      <Assinatura />
     </main>
   );
 }

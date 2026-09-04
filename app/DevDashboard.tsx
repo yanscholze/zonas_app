@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, copyText, describeError } from "./api-client";
 import { signOut, type Session } from "./AuthGate";
 import { avise, pergunte, CentralDeAvisos } from "./avisos";
+import { Assinatura } from "./assinatura";
 
 /**
  * Painel de manutenção.
@@ -458,6 +459,7 @@ export default function DevDashboard({ session, onExit }: { session: Session; on
 
         <footer className="dev-footer">Diagnóstico gerado em {quando(dados.generatedAt)}</footer>
       </>}
+      <Assinatura />
       {erroAberto && <ErroAberto erro={erroAberto} fechar={() => setErroAberto(null)} />}
       <CentralDeAvisos />
     </main>
