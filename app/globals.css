@@ -14906,3 +14906,35 @@ p, span, b, strong, small, em, li, td, th, label {
 
 .account-pendentes span { color: var(--text); font-size: var(--fs-sm); }
 .account-pendentes small { color: var(--muted); font-size: var(--fs-xs); }
+
+/* A manutenção no painel do treinador, sem estar na área de ninguém.
+
+   Sem carteira, os endereços que dependem de um treinador recusam com 403 — e a
+   primeira ação a falhar culpava o dado do treinador, não a falta de contexto.
+   Dizer antes evita o diagnóstico errado. */
+.dev-sem-area {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--gold);
+  background: #241f12;
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.dev-sem-area b { color: var(--gold2); }
+
+.dev-sem-area button {
+  flex: none;
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--gold);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--gold);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  cursor: pointer;
+}

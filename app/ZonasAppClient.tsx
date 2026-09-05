@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { signOut, type Session } from "./AuthGate";
-import { api, copyText, describeError, definePreviaDoTreinador, PreviaDoTreinador } from "./api-client";
+import { api, copyText, describeError, describeErrorCode, definePreviaDoTreinador, PreviaDoTreinador } from "./api-client";
 import { NavIcon, IconMais, IconTrocarVisao, IconSair, IconAviso } from "./icons";
 import { avise, pergunte, CentralDeAvisos } from "./avisos";
 import { Assinatura } from "./assinatura";
@@ -34,7 +34,31 @@ import { trainingPlans, sessionPriority } from "@/db/planilhas-de-fabrica";
    fábrica guardado no cliente: depois que cada treinador passou a ter a própria
    biblioteca, esse retorno vazaria os treinos das dez planilhas originais para
    quem apenas usasse o mesmo nome numa planilha dele. */
-const sessionsForSavedPlanWeek=async(planName:string,weekNumber:number,days:string[])=>{let template:StructuredSession[]=[];try{const response=await fetch(`/api/plan-template-overrides?plan=${encodeURIComponent(planName)}&week=${weekNumber}`);if(response.ok){const data=await response.json();if(Array.isArray(data.override?.sessions)&&data.override.sessions.length)template=data.override.sessions}}catch{}if(!template.length)return{};const chosen=template.map((session,index)=>({session,index})).sort((a,b)=>sessionPriority(b.session)-sessionPriority(a.session)).slice(0,days.length).sort((a,b)=>a.index-b.index).map(item=>item.session);return Object.fromEntries(days.slice(0,chosen.length).map((day,index)=>[day,chosen[index]]))};
+/* Devolve os treinos da semana, ou o motivo de não ter conseguido.
+   Antes engolia qualquer falha num `catch{}` e devolvia vazio, e quem chamava
+   dizia ao treinador que a planilha estava incompleta. Podia ser 403 por a
+   manutenção não estar na área de nenhum treinador, ou 400, ou a rede: a tela
+   acusava o dado dele em todos os casos. */
+const sessionsForSavedPlanWeek=async(planName:string,weekNumber:number,days:string[]):Promise<{sessoes:Record<string,StructuredSession>;falha?:string}>=>{
+  let template:StructuredSession[]=[];
+  try{
+    const response=await fetch(`/api/plan-template-overrides?plan=${encodeURIComponent(planName)}&week=${weekNumber}`);
+    if(!response.ok){
+      const corpo=await response.json().catch(()=>({}));
+      const codigo=String((corpo as {error?:string}).error||"");
+      return {sessoes:{},falha:codigo==="coach_scope_required"
+        ?"A manutenção não está na área de nenhum treinador. Entre na área de um pela aba Equipe para ver as planilhas dele."
+        :codigo==="invalid_plan_week"
+          ?`A planilha ${planName} não está na biblioteca deste treinador.`
+          :describeErrorCode(codigo,response.status)};
+    }
+    const data=await response.json();
+    if(Array.isArray(data.override?.sessions)&&data.override.sessions.length)template=data.override.sessions;
+  }catch{ return {sessoes:{},falha:"Sem conexão com o servidor."}; }
+  if(!template.length)return {sessoes:{}};
+  const chosen=template.map((session,index)=>({session,index})).sort((a,b)=>sessionPriority(b.session)-sessionPriority(a.session)).slice(0,days.length).sort((a,b)=>a.index-b.index).map(item=>item.session);
+  return {sessoes:Object.fromEntries(days.slice(0,chosen.length).map((day,index)=>[day,chosen[index]]))};
+};
 const phaseForPlanWeek=(planName:string,weekNumber:number)=>{const plan=trainingPlans.find(item=>item.name===planName);if(!plan)return"Base";const value=plan.phases[Math.min(plan.phases.length-1,Math.floor((weekNumber-1)/(plan.weeks/plan.phases.length)))];if(value.includes("Adaptação"))return"Adaptação";if(value.includes("Base"))return"Base";if(value.includes("Pré")||value.includes("Polimento")||value.includes("Desafio"))return"Pré-prova";if(value.includes("Específica")||value.includes("Ritmo específico"))return"Específica";return"Desenvolvimento"};
 /** A lista de alunos vem sempre do banco. Não há dados de demonstração. */
 const athletes: Athlete[] = [];
@@ -231,6 +255,13 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
         <div className="coach"><b>{coachInitials}</b><span><strong>{session.name}</strong><small>{session.email}</small></span><button className="coach-exit" onClick={()=>void signOut()} title="Sair e entrar com outra conta" aria-label="Sair e entrar com outra conta"><IconSair /></button></div>
       </aside>
 
+      {/* A manutenção sem visita não tem carteira: os endereços que dependem de um
+          treinador — planilhas, convite, financeiro — recusam com 403. Antes nada
+          dizia isso, e a primeira ação a falhar culpava o dado do treinador. */}
+      {session.role === "dev" && !visitando && <div className="dev-sem-area">
+        <span>Você está no painel do treinador <b>sem estar na área de ninguém</b>. Planilhas, convites e financeiro pertencem a um treinador e não abrem assim.</span>
+        <button onClick={() => setActive("Equipe")}>Escolher um treinador →</button>
+      </div>}
       {visitando && <div className="dev-visiting-banner">
         <span>Você está na área de <b>{visitando.name}</b> · {visitando.email}</span>
         {onLeaveDev && <button onClick={onLeaveDev}>Voltar ao diagnóstico</button>}
@@ -1599,8 +1630,9 @@ function AthleteProfile({ athlete, close, onOpenPain }: { athlete: Athlete; clos
       const existing=await fetch(`/api/training-weeks?athlete=${encodeURIComponent(athlete.name)}&weekStart=${draftWeekStart}`).then(result=>result.ok?result.json():{week:null});
       let sessions:Record<string,StructuredSession>={};
       if(!existing.week){
-        sessions=await sessionsForSavedPlanWeek(trainingPlan,selectedWeekNumber,trainingDayKeys);
-        if(!Object.keys(sessions).length){
+        const base=await sessionsForSavedPlanWeek(trainingPlan,selectedWeekNumber,trainingDayKeys);
+        sessions=base.sessoes;
+        if(base.falha||!Object.keys(sessions).length){
           setPlanningSaveState("error");
           avise("erro",`A semana ${selectedWeekNumber} da planilha ${trainingPlan} está vazia`,"Complete a planilha-base em “Planilhas” antes de criar o rascunho.");
           return;
@@ -1937,7 +1969,7 @@ function Calendar() {
     setSaveState("idle");
     setReleased(false);setSessions({});setWeekUpdatedAt(0);setMoveFrom(null);setDeleteDay(null);setCopied(false);setCopyState("idle");setAdvanceConfirm(false);setAdvanceState("idle");setReplaceBaseConfirm(false);setReplaceBaseState("idle");
     fetch(`/api/training-weeks?athlete=${encodeURIComponent(selected)}&weekStart=${weekStart}`)
-      .then(r=>r.ok?r.json():{week:null,history:[]}).then(async data=>{setWeekHistory(data.history||[]);setPlannerAthletes(list=>list.map(athlete=>athlete.name===selected?{...athlete,status:data.week?.status||"Sem treino"}:athlete));if(data.week){const savedNumber=Number(String(data.week.week_label||"").match(/\d+/)?.[0]);if(savedNumber)setCalendarPlanWeek(savedNumber);setReleased(data.week.status==="Liberada");setWeekUpdatedAt(Number(data.week.updated_at)||0);try{setSessions(JSON.parse(data.week.sessions||"{}"))}catch{setSessions({})}setSaveState("saved")}else{setWeekUpdatedAt(0);setSessions(await sessionsForSavedPlanWeek(current.plan,calendarPlanWeek,current.days));setSaveState("idle")}})
+      .then(r=>r.ok?r.json():{week:null,history:[]}).then(async data=>{setWeekHistory(data.history||[]);setPlannerAthletes(list=>list.map(athlete=>athlete.name===selected?{...athlete,status:data.week?.status||"Sem treino"}:athlete));if(data.week){const savedNumber=Number(String(data.week.week_label||"").match(/\d+/)?.[0]);if(savedNumber)setCalendarPlanWeek(savedNumber);setReleased(data.week.status==="Liberada");setWeekUpdatedAt(Number(data.week.updated_at)||0);try{setSessions(JSON.parse(data.week.sessions||"{}"))}catch{setSessions({})}setSaveState("saved")}else{setWeekUpdatedAt(0);setSessions((await sessionsForSavedPlanWeek(current.plan,calendarPlanWeek,current.days)).sessoes);setSaveState("idle")}})
       .catch(()=>undefined);
   },[selected,weekStart,calendarPlanWeek]);
   const saveWeek=async(status:string,auditDifferences:string[]=[])=>{
@@ -1960,9 +1992,17 @@ function Calendar() {
         avise("atencao","Falta estruturar treino antes de liberar",`Revise ${incompleteDays.join(", ")} — cada dia disponível precisa de um treino com etapas.`);
         return;
       }
-      const baseSessions=await sessionsForSavedPlanWeek(current.plan,calendarPlanWeek,current.days);
+      const base=await sessionsForSavedPlanWeek(current.plan,calendarPlanWeek,current.days);
+      const baseSessions=base.sessoes;
+      if(base.falha){
+        /* Falha de leitura não é planilha incompleta. Dizer ao treinador que
+           falta cadastrar treino quando o que houve foi um 403 o manda arrumar
+           o que não está quebrado. */
+        avise("erro",`Não foi possível ler a semana ${calendarPlanWeek}`,base.falha);
+        return;
+      }
       if(!Object.keys(baseSessions).length){
-        avise("erro",`Não foi possível conferir a semana ${calendarPlanWeek}`,`A planilha ${current.plan} não tem os treinos da semana ${calendarPlanWeek} cadastrados. Complete a planilha-base em “Planilhas” antes de liberar.`);
+        avise("atencao",`A semana ${calendarPlanWeek} está vazia`,`A planilha ${current.plan} não tem treinos montados na semana ${calendarPlanWeek}. Complete-a em “Planilhas” antes de liberar.`);
         return;
       }
       const comparison=current.days.map(day=>{
@@ -2027,7 +2067,9 @@ function Calendar() {
   const openCopyOther=()=>{const source=plannerAthletes.find(athlete=>athlete.name!==selected)?.name||"";setCopyOtherAthlete(source);setCopyOtherWeek(weekStart);setCopyOtherDays([...current.days]);setCopyOtherState("idle");setCopyOtherOpen(true)};
   const toggleCopyDay=(day:string)=>setCopyOtherDays(days=>days.includes(day)?days.filter(item=>item!==day):[...days,day]);
   const copyFromOtherAthlete=async()=>{if(!copyOtherAthlete||!copyOtherDays.length)return;setCopyOtherState("loading");try{const response=await fetch(`/api/training-weeks?athlete=${encodeURIComponent(copyOtherAthlete)}&weekStart=${copyOtherWeek}`);if(!response.ok)throw new Error("load_failed");const data=await response.json();if(!data.week){setCopyOtherState("empty");return}const sourceSessions=JSON.parse(data.week.sessions||"{}");const copiedEntries=copyOtherDays.filter(day=>sourceSessions[day]).map(day=>[day,sourceSessions[day]]);if(!copiedEntries.length){setCopyOtherState("empty");return}setSessions(value=>({...value,...Object.fromEntries(copiedEntries)}));setReleased(false);setSaveState("idle");setCopyOtherState("copied");setTimeout(()=>setCopyOtherOpen(false),700)}catch{setCopyOtherState("error")}};
-  const replaceWithBasePlanWeek=async()=>{if(!replaceBaseConfirm){setReplaceBaseConfirm(true);return}setReplaceBaseState("saving");try{const expected=await sessionsForSavedPlanWeek(current.plan,calendarPlanWeek,current.days);if(!Object.keys(expected).length)throw new Error();const saved=await api.post("/api/training-weeks",{athleteName:selected,weekStart,plan:current.plan,phase:phaseForPlanWeek(current.plan,calendarPlanWeek),weekLabel:`${calendarPlanWeek} de ${currentPlanningTotal}`,trainingDays:current.days,sessions:expected,status:"Rascunho",expectedUpdatedAt:weekUpdatedAt||undefined}) as {updatedAt?:number};setSessions(expected);setReleased(false);setWeekUpdatedAt(Number(saved.updatedAt)||Date.now());setPlannerAthletes(list=>list.map(athlete=>athlete.name===selected?{...athlete,status:"Rascunho"}:athlete));setReplaceBaseConfirm(false);setReplaceBaseState("done");setSaveState("saved")}catch{setReplaceBaseState("error")}};
+  const replaceWithBasePlanWeek=async()=>{if(!replaceBaseConfirm){setReplaceBaseConfirm(true);return}setReplaceBaseState("saving");try{const lidas=await sessionsForSavedPlanWeek(current.plan,calendarPlanWeek,current.days);
+      if(lidas.falha){setReplaceBaseState("error");avise("erro","Não foi possível ler a planilha-base",lidas.falha);return}
+      const expected=lidas.sessoes;if(!Object.keys(expected).length)throw new Error();const saved=await api.post("/api/training-weeks",{athleteName:selected,weekStart,plan:current.plan,phase:phaseForPlanWeek(current.plan,calendarPlanWeek),weekLabel:`${calendarPlanWeek} de ${currentPlanningTotal}`,trainingDays:current.days,sessions:expected,status:"Rascunho",expectedUpdatedAt:weekUpdatedAt||undefined}) as {updatedAt?:number};setSessions(expected);setReleased(false);setWeekUpdatedAt(Number(saved.updatedAt)||Date.now());setPlannerAthletes(list=>list.map(athlete=>athlete.name===selected?{...athlete,status:"Rascunho"}:athlete));setReplaceBaseConfirm(false);setReplaceBaseState("done");setSaveState("saved")}catch{setReplaceBaseState("error")}};
   const approveWeekAdvance=async()=>{if(!advanceConfirm){setAdvanceConfirm(true);return}setAdvanceState("saving");try{const closed=await saveWeek("Concluída");if(!closed)throw new Error("close_failed");const nextPhase=phaseForPlanWeek(current.plan,nextPlanningWeek);const response=await fetch("/api/athlete-planning",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({athleteName:selected,plan:current.plan,phase:nextPhase,weekNumber:nextPlanningWeek,totalWeeks:currentPlanningTotal})});if(!response.ok)throw new Error("advance_failed");const nextWeekStart=shiftIsoDate(weekStart,7);const nextSessions=await sessionsForSavedPlanWeek(current.plan,nextPlanningWeek,current.days);const draft=await fetch("/api/training-weeks",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({athleteName:selected,weekStart:nextWeekStart,plan:current.plan,phase:nextPhase,weekLabel:`${nextPlanningWeek} de ${currentPlanningTotal}`,trainingDays:current.days,sessions:nextSessions,status:"Rascunho"})});if(!draft.ok)throw new Error("draft_failed");setPlannerAthletes(list=>list.map(athlete=>athlete.name===selected?{...athlete,phase:nextPhase,week:`${nextPlanningWeek} de ${currentPlanningTotal}`,status:"Rascunho"}:athlete));setCalendarPlanWeek(nextPlanningWeek);setAdvanceConfirm(false);setAdvanceState("done");setWeekStart(nextWeekStart)}catch{setAdvanceState("error")}};
   if(plannerLoading)return <section className="calendar-empty"><b>Carregando alunos…</b><span>Buscando cadastros e dias disponíveis.</span></section>;
   if(plannerError)return <section className="calendar-empty error"><b>Não foi possível carregar os alunos</b><span>Atualize a página e tente novamente.</span></section>;

@@ -303,6 +303,34 @@ test("ties the student to the coach whose link they used", async () => {
   assert.match(worker, /coach_email = \? OR coach_email IS NULL/);
 });
 
+test("says why a plan week could not be read, instead of blaming the coach's data", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const apiClient = await readFile(new URL("../app/api-client.ts", import.meta.url), "utf8");
+
+  /* O carregador engolia qualquer falha num `catch{}` e devolvia vazio, e quem
+     chamava dizia ao treinador "esta planilha não tem os treinos da semana N
+     cadastrados". Podia ser 403 — a manutenção não está na área de nenhum
+     treinador, e sem carteira as planilhas recusam —, podia ser 400, podia ser a
+     rede. A tela acusava o dado dele nos três casos, e mandava arrumar o que não
+     estava quebrado. */
+  assert.match(client, /Promise<\{sessoes:Record<string,StructuredSession>;falha\?:string\}>/);
+  assert.match(client, /codigo==="coach_scope_required"/);
+  assert.doesNotMatch(client, /não tem os treinos da semana \$\{calendarPlanWeek\} cadastrados/);
+
+  /* Vazio e falha viraram avisos diferentes: um diz que a semana está por
+     montar, o outro diz o que impediu de ler. */
+  assert.match(client, /Não foi possível ler a semana \$\{calendarPlanWeek\}/);
+  assert.match(client, /A semana \$\{calendarPlanWeek\} está vazia/);
+
+  // Nem toda chamada passa por `api.*`; quem usa fetch direto agora traduz igual.
+  assert.match(apiClient, /export function describeErrorCode\(code: string, status: number\): string/);
+
+  /* E a causa, não só a mensagem: a manutenção no painel do treinador sem estar
+     na área de ninguém não tem carteira. Dizer isso antes evita que a primeira
+     ação a falhar leve ao diagnóstico errado. */
+  assert.match(client, /session\.role === "dev" && !visitando && <div className="dev-sem-area">/);
+});
+
 test("every ON CONFLICT names a constraint the schema actually declares", async () => {
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
   const schema = await import("../db/schema.ts");
