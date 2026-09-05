@@ -303,6 +303,66 @@ test("ties the student to the coach whose link they used", async () => {
   assert.match(worker, /coach_email = \? OR coach_email IS NULL/);
 });
 
+test("every ON CONFLICT names a constraint the schema actually declares", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const schema = await import("../db/schema.ts");
+  const { createTableSql, createIndexesSql } = await import("../db/sql.ts");
+
+  /* `INSERT ... ON CONFLICT(a, b)` exige que exista uma PRIMARY KEY ou um índice
+     ÚNICO exatamente sobre essas colunas. Sem isso o SQLite recusa:
+
+       ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint
+
+     `training_weeks` tinha o índice no banco de desenvolvimento, criado por uma
+     versão antiga do schema, mas não DECLARADO. Sobreviveu ali e nunca nasceu
+     num banco novo — em produção, liberar a semana do aluno quebrava. Índice que
+     existe só no banco de quem desenvolve é pior que índice ausente: faz o erro
+     aparecer só onde ninguém está olhando. */
+  const tabelas = new Map();
+  for (const valor of Object.values(schema)) {
+    if (typeof valor !== "object" || valor === null || !(Symbol.for("drizzle:Name") in valor)) continue;
+    const criacao = createTableSql(valor);
+    const nome = criacao.match(/EXISTS (\w+)/)?.[1];
+    if (!nome) continue;
+
+    const restricoes = new Set();
+    // A chave primária, seja de coluna única ou composta.
+    for (const m of criacao.matchAll(/(\w+) [A-Z]+ PRIMARY KEY/g)) restricoes.add(m[1]);
+    const composta = criacao.match(/PRIMARY KEY \(([^)]+)\)/);
+    if (composta) restricoes.add(composta[1].split(",").map(c => c.trim()).join(","));
+    // E cada índice ÚNICO — só eles servem para o ON CONFLICT.
+    for (const indice of createIndexesSql(valor)) {
+      if (!/CREATE UNIQUE INDEX/.test(indice)) continue;
+      const colunas = indice.match(/\(([^)]+)\)\s*$/)?.[1];
+      if (colunas) restricoes.add(colunas.split(",").map(c => c.trim()).join(","));
+    }
+    tabelas.set(nome, restricoes);
+  }
+
+  /* Procura de trás para frente a partir de cada ON CONFLICT, e só aceita o
+     INSERT se não houver outro entre os dois. A primeira versão varria para a
+     frente com uma janela de caracteres e atravessava statements: acusava
+     `athletes ON CONFLICT(athlete_name)`, que é de outro INSERT dezenas de
+     linhas abaixo. Teste que grita à toa deixa de ser lido. */
+  const problemas = [];
+  for (const m of worker.matchAll(/ON CONFLICT\(([^)]*)\)/g)) {
+    const antes = worker.slice(0, m.index);
+    const ultimoInsert = antes.lastIndexOf("INSERT INTO ");
+    if (ultimoInsert < 0) continue;
+    const tabela = antes.slice(ultimoInsert).match(/INSERT INTO (\w+)/)?.[1];
+    if (!tabela) continue;
+    const alvo = m[1];
+    const colunas = alvo.split(",").map(c => c.trim()).filter(Boolean).join(",");
+    if (!colunas) continue;                    // ON CONFLICT DO NOTHING, sem alvo
+    const restricoes = tabelas.get(tabela);
+    if (!restricoes) { problemas.push(`${tabela}: tabela não está no schema`); continue; }
+    if (!restricoes.has(colunas)) {
+      problemas.push(`${tabela} ON CONFLICT(${colunas}) — o schema declara: ${[...restricoes].join(" | ") || "nada"}`);
+    }
+  }
+  assert.deepEqual(problemas, [], `há ON CONFLICT sem restrição declarada:\n  ${problemas.join("\n  ")}`);
+});
+
 test("creates every table before any handler needs it", async () => {
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
 

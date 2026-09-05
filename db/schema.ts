@@ -112,7 +112,18 @@ export const trainingWeeks = sqliteTable("training_weeks", {
   sessions: text("sessions").notNull(),
   status: text("status").notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
-});
+}, (table) => ({
+  /* Uma semana por aluno por data de início — e o `INSERT ... ON CONFLICT
+     (athlete_name, week_start)` que grava o treino depende deste índice para
+     existir. Ele estava no banco de desenvolvimento, criado por uma versão
+     antiga do schema, mas não estava DECLARADO aqui: sobreviveu ali e nunca
+     nasceu num banco novo. Em produção, liberar a semana do aluno respondia
+     "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint".
+
+     Índice que existe só no banco de quem desenvolve é pior que índice ausente:
+     faz o erro aparecer só onde ninguém está olhando. */
+  athleteStartIdx: uniqueIndex("training_weeks_athlete_start_idx").on(table.athleteName, table.weekStart),
+}));
 
 export const painReports = sqliteTable("pain_reports", {
   id: text("id").primaryKey(),
@@ -224,7 +235,13 @@ export const deviceIngestTokens = sqliteTable("device_ingest_tokens", {
   tokenHash: text("token_hash").primaryKey(), athleteName: text("athlete_name").notNull(), provider: text("provider").notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(), lastUsedAt: integer("last_used_at"), revokedAt: integer("revoked_at"),
 }, (table) => ({
-  athleteIdx: index("device_ingest_tokens_athlete_idx").on(table.athleteName, table.provider),
+  athleteIdx: /* ÚNICO, e não apenas índice: o `INSERT ... ON CONFLICT(athlete_name,
+     provider)` que renova o token depende disso. Era `index()`, e a gravação
+     teria falhado com "ON CONFLICT clause does not match any PRIMARY KEY or
+     UNIQUE constraint" — o mesmo erro de `training_weeks`, esperando alguém
+     conectar um relógio Apple. Um token ativo por aluno e provedor é a regra
+     que o código já assume. */
+  uniqueIndex("device_ingest_tokens_athlete_idx").on(table.athleteName, table.provider),
 }));
 
 /** Contas de login da própria Zonas-App. */
