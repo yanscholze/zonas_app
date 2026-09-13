@@ -2788,19 +2788,31 @@ async function stravaSubscriptionApi(request: Request, url: URL, env: Env): Prom
 
 /* --- Apple Saúde: token de ingestão para o Atalho do iOS ------------------- */
 
-async function issueDeviceIngestToken(env: Env, athleteName: string): Promise<string> {
+/**
+ * Emite o token que um aparelho usa para falar com o sistema.
+ *
+ * Serve a qualquer provedor do tipo "device" — o Atalho do iPhone e o mini-app
+ * do relógio Amazfit usam o mesmo mecanismo, e o que muda é só quem o apresenta.
+ * O provedor estava cravado em 'apple' nas três instruções, o que fazia o token
+ * do relógio nascer marcado como Apple e as atividades dele chegarem rotuladas
+ * assim no painel do treinador.
+ *
+ * Um token ativo por aluno e provedor: emitir de novo revoga o anterior, porque
+ * token antigo que continua valendo é token que ninguém sabe onde está.
+ */
+async function issueDeviceIngestToken(env: Env, athleteName: string, provider: ProviderId): Promise<string> {
   const token = Array.from(crypto.getRandomValues(new Uint8Array(24)), byte => byte.toString(16).padStart(2, "0")).join("");
   const now = Date.now();
   await env.DB.batch([
-    env.DB.prepare("UPDATE device_ingest_tokens SET revoked_at = ? WHERE athlete_name = ? AND provider = 'apple' AND revoked_at IS NULL").bind(now, athleteName),
-    env.DB.prepare("INSERT INTO device_ingest_tokens (token_hash, athlete_name, provider, created_at, last_used_at, revoked_at) VALUES (?, ?, 'apple', ?, NULL, NULL)")
-      .bind(await sha256Text(token), athleteName, now),
+    env.DB.prepare("UPDATE device_ingest_tokens SET revoked_at = ? WHERE athlete_name = ? AND provider = ? AND revoked_at IS NULL").bind(now, athleteName, provider),
+    env.DB.prepare("INSERT INTO device_ingest_tokens (token_hash, athlete_name, provider, created_at, last_used_at, revoked_at) VALUES (?, ?, ?, ?, NULL, NULL)")
+      .bind(await sha256Text(token), athleteName, provider, now),
   ]);
   await env.DB.prepare(`INSERT INTO external_integrations
     (id, athlete_name, provider, external_athlete_id, scopes, access_token_encrypted, refresh_token_encrypted, expires_at, status, last_sync_at, updated_at)
     VALUES (?, ?, ?, NULL, 'workouts', '', '', 0, 'Conectado', NULL, ?)
     ON CONFLICT(athlete_name, provider) DO UPDATE SET status = 'Conectado', updated_at = excluded.updated_at`)
-    .bind(crypto.randomUUID(), athleteName, PROVIDERS.apple.label, now).run();
+    .bind(crypto.randomUUID(), athleteName, PROVIDERS[provider].label, now).run();
   return token;
 }
 
@@ -2808,16 +2820,135 @@ async function issueDeviceIngestToken(env: Env, athleteName: string): Promise<st
  * Recebe treinos enviados pelo iPhone. Autentica pelo token de ingestão, não
  * pela sessão do navegador, porque quem chama aqui é um Atalho do iOS.
  */
+/**
+ * O treino do dia, pronto para um relógio executar.
+ *
+ * Existe porque o relógio não sabe o que é "Z1". As etapas da planilha falam em
+ * zonas, que só viram ritmo depois de cruzar com o teste de desempenho do
+ * atleta — e essa conta é do servidor, não do mini-app: fazê-la no relógio
+ * obrigaria a mandar o teste inteiro para lá e a repetir a fórmula em
+ * JavaScript, onde ela sairia do lugar na primeira mudança.
+ *
+ * Autentica pelo mesmo token de ingestão que o aparelho já usa para enviar. Um
+ * token, os dois sentidos.
+ */
+async function deviceWorkoutApi(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
+  await ensureIntegrationTables(env);
+
+  const apresentado = boundedText(request.headers.get("x-zonas-ingest-token"), 100);
+  if (!/^[a-f0-9]{48}$/.test(apresentado)) return Response.json({ error: "ingest_token_required" }, { status: 401 });
+  const vinculo = await env.DB.prepare(
+    "SELECT athlete_name FROM device_ingest_tokens WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1",
+  ).bind(await sha256Text(apresentado)).first() as { athlete_name?: string } | null;
+  if (!vinculo?.athlete_name) return Response.json({ error: "invalid_ingest_token" }, { status: 401 });
+  const atleta = vinculo.athlete_name;
+
+  /* Os mesmos ajudantes que a importação de atividade usa para decidir semana e
+     dia. Uma conta só para "que dia é hoje no planejamento": duas divergiriam no
+     primeiro fuso ou virada de semana. */
+  const agora = Date.now();
+  const hoje = { key: workoutDayOf(agora), weekStart: weekStartOf(agora), iso: new Date(agora).toISOString().slice(0, 10) };
+  const semana = await env.DB.prepare(
+    "SELECT sessions, status, plan, phase, week_label FROM training_weeks WHERE athlete_name = ? AND week_start = ? LIMIT 1",
+  ).bind(atleta, hoje.weekStart).first() as { sessions?: string; status?: string; plan?: string; phase?: string; week_label?: string } | null;
+
+  /* Semana não liberada é semana que o aluno não deve ver — nem pelo relógio.
+     Devolver 200 com o treino seria furar a revisão do treinador pelo caminho
+     que ninguém está olhando. */
+  if (!semana || semana.status !== "Liberada") {
+    return Response.json({ athlete: atleta, day: hoje.key, workout: null, reason: "week_not_released" });
+  }
+
+  let sessoes: Record<string, unknown> = {};
+  try { sessoes = JSON.parse(String(semana.sessions ?? "{}")) as Record<string, unknown>; } catch { sessoes = {}; }
+  const sessao = sessoes[hoje.key] as Record<string, unknown> | undefined;
+  if (!sessao || sessao.removed) {
+    return Response.json({ athlete: atleta, day: hoje.key, workout: null, reason: "rest_day" });
+  }
+
+  /* As zonas do teste aprovado mais recente. Sem teste, as etapas vão sem alvo
+     de ritmo: o relógio ainda consegue guiar por tempo e distância, que é melhor
+     que não mandar nada. */
+  const teste = await env.DB.prepare(
+    "SELECT zones, fc_max FROM performance_tests WHERE athlete_name = ? AND status = 'Aprovado' ORDER BY test_date DESC, created_at DESC LIMIT 1",
+  ).bind(atleta).first() as { zones?: string; fc_max?: number } | null;
+
+  const faixas = new Map<string, { label: string; slow: number; fast: number }>();
+  try {
+    for (const zona of JSON.parse(String(teste?.zones ?? "[]")) as Array<Record<string, unknown>>) {
+      faixas.set(String(zona.z), { label: String(zona.label ?? ""), slow: Number(zona.slow), fast: Number(zona.fast) });
+    }
+  } catch { /* sem zonas: segue sem alvo */ }
+
+  const alvo = (zona?: unknown) => {
+    const faixa = zona ? faixas.get(String(zona).toUpperCase()) : undefined;
+    if (!faixa || !Number.isFinite(faixa.slow) || !Number.isFinite(faixa.fast)) return null;
+    return { zone: String(zona).toUpperCase(), label: faixa.label, paceSlowSeconds: faixa.slow, paceFastSeconds: faixa.fast };
+  };
+
+  /* As etapas viram um formato plano, sem "kind" e sem zona solta: cada uma diz
+     quanto dura, em que ritmo, e quantas vezes repete. É o que um relógio
+     consegue executar sem interpretar o vocabulário da planilha. */
+  const etapas: Array<Record<string, unknown>> = [];
+  for (const bruta of (Array.isArray(sessao.steps) ? sessao.steps : []) as Array<Record<string, unknown>>) {
+    if (bruta?.kind === "repeat") {
+      etapas.push({
+        type: "repeat",
+        label: String(bruta.label ?? "Série principal"),
+        repetitions: Number(bruta.repetitions) || 1,
+        effort: {
+          seconds: Number.isFinite(Number(bruta.effortMinutes)) ? Math.round(Number(bruta.effortMinutes) * 60) : null,
+          meters: Number.isFinite(Number(bruta.effortMeters)) ? Number(bruta.effortMeters) : null,
+          target: alvo(bruta.effortZone),
+        },
+        recovery: {
+          seconds: Number.isFinite(Number(bruta.recoveryMinutes)) ? Math.round(Number(bruta.recoveryMinutes) * 60) : null,
+          meters: Number.isFinite(Number(bruta.recoveryMeters)) ? Number(bruta.recoveryMeters) : null,
+          target: alvo(bruta.recoveryZone),
+        },
+      });
+      continue;
+    }
+    etapas.push({
+      type: "simple",
+      label: String(bruta?.label ?? "Etapa"),
+      seconds: Number.isFinite(Number(bruta?.minutes)) ? Math.round(Number(bruta?.minutes) * 60) : null,
+      meters: Number.isFinite(Number(bruta?.meters)) ? Number(bruta?.meters) : null,
+      target: alvo(bruta?.zone),
+    });
+  }
+
+  return Response.json({
+    athlete: atleta,
+    day: hoje.key,
+    date: hoje.iso,
+    workout: {
+      title: String(sessao.title ?? sessao.type ?? "Treino do dia"),
+      description: String(sessao.description ?? ""),
+      estimatedSeconds: Number.isFinite(Number(sessao.durationMinutes)) ? Math.round(Number(sessao.durationMinutes) * 60) : null,
+      estimatedMeters: Number.isFinite(Number(sessao.estimatedKm)) ? Math.round(Number(sessao.estimatedKm) * 1000) : null,
+      maxHeartRate: Number(teste?.fc_max) || null,
+      steps: etapas,
+    },
+    plan: { name: semana.plan ?? null, phase: semana.phase ?? null, week: semana.week_label ?? null },
+  });
+}
+
 async function deviceIngestApi(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
   await ensureIntegrationTables(env);
   const presented = boundedText(request.headers.get("x-zonas-ingest-token"), 100);
   if (!/^[a-f0-9]{48}$/.test(presented)) return Response.json({ error: "ingest_token_required" }, { status: 401 });
 
+  /* O provedor vem do token, não de uma constante. Estava cravado em "apple", e
+     os treinos vindos do relógio Amazfit chegavam rotulados como Apple Saúde no
+     painel do treinador — dado certo, origem errada. */
   const record = await env.DB.prepare(
-    "SELECT athlete_name FROM device_ingest_tokens WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1",
-  ).bind(await sha256Text(presented)).first() as { athlete_name?: string } | null;
+    "SELECT athlete_name, provider FROM device_ingest_tokens WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1",
+  ).bind(await sha256Text(presented)).first() as { athlete_name?: string; provider?: string } | null;
   if (!record?.athlete_name) return Response.json({ error: "invalid_ingest_token" }, { status: 401 });
+  const provider = (record.provider && record.provider in PROVIDERS ? record.provider : "apple") as ProviderId;
 
   const input = await request.json() as Record<string, unknown>;
   const workouts = Array.isArray(input.workouts) ? input.workouts.slice(0, 50) : [];
@@ -2825,7 +2956,7 @@ async function deviceIngestApi(request: Request, env: Env): Promise<Response> {
 
   let imported = 0;
   for (const raw of workouts) {
-    if (raw && typeof raw === "object" && await storeActivity(env, record.athlete_name, "apple", raw as Record<string, unknown>)) {
+    if (raw && typeof raw === "object" && await storeActivity(env, record.athlete_name, provider, raw as Record<string, unknown>)) {
       imported += 1;
     }
   }
@@ -2833,7 +2964,7 @@ async function deviceIngestApi(request: Request, env: Env): Promise<Response> {
   await env.DB.batch([
     env.DB.prepare("UPDATE device_ingest_tokens SET last_used_at = ? WHERE token_hash = ?").bind(now, await sha256Text(presented)),
     env.DB.prepare("UPDATE external_integrations SET last_sync_at = ?, updated_at = ? WHERE athlete_name = ? AND provider = ?")
-      .bind(now, now, record.athlete_name, PROVIDERS.apple.label),
+      .bind(now, now, record.athlete_name, PROVIDERS[provider].label),
   ]);
   return Response.json({ imported, received: workouts.length });
 }
@@ -2905,13 +3036,18 @@ async function studentIntegrationsApi(request: Request, env: Env, athleteName: s
     // A Apple não tem autorização em servidor: o vínculo é um token que o
     // atleta cola no Atalho do iOS.
     if (provider.authType === "device") {
-      const ingestToken = await issueDeviceIngestToken(env, athleteName);
+      const ingestToken = await issueDeviceIngestToken(env, athleteName, provider.id);
       return Response.json({
         provider: provider.id,
         authType: "device",
         ingestToken,
         ingestUrl: `${new URL(request.url).origin}/api/ingest/device`,
-        instructions: "No iPhone, crie um Atalho que leia os treinos do app Saúde e envie um POST para o endereço acima com o cabeçalho x-zonas-ingest-token. O token aparece uma única vez.",
+        /* A instrução é por provedor. Era a do Atalho do iPhone para os dois, e o
+           aluno com Amazfit lia que precisava de um iPhone. */
+        workoutUrl: `${new URL(request.url).origin}/api/ingest/device/workout`,
+        instructions: provider.id === "zepp"
+          ? "No aplicativo Zepp do celular, instale o mini-app ZonasApp e cole este token nas configurações dele. A partir daí o treino do dia chega ao relógio e o resultado volta sozinho — você não precisa abrir nada. O token aparece uma única vez."
+          : "No iPhone, crie um Atalho que leia os treinos do app Saúde e envie um POST para o endereço acima com o cabeçalho x-zonas-ingest-token. O token aparece uma única vez.",
       });
     }
     return await beginOauthFlow(request, env, provider, athleteName, email);
@@ -3662,6 +3798,13 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
     }
 
     // Chamado pelo Atalho do iOS, autenticado por token de ingestão.
+    /* O relógio busca o treino do dia pelo mesmo token com que envia o
+       resultado: um token, os dois sentidos. */
+    if (url.pathname === "/api/ingest/device/workout") {
+      try { return await deviceWorkoutApi(request, env); }
+      catch (falha) { return await applicationFailure(env, request, "treino do aparelho", "device_workout_unavailable", falha); }
+    }
+
     if (url.pathname === "/api/ingest/device") {
       try { return await deviceIngestApi(request, env); }
       catch (falha) { return await applicationFailure(env, request, "envio do Apple Saúde", "device_ingest_failed", falha); }

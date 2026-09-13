@@ -303,6 +303,95 @@ test("ties the student to the coach whose link they used", async () => {
   assert.match(worker, /coach_email = \? OR coach_email IS NULL/);
 });
 
+test("serves the day's workout to a watch, with zones already resolved into pace", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("zepp", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+
+  const TOKEN = "a".repeat(48);
+  const sessao = {
+    QUA: {
+      type: "Treino estruturado", title: "Velocidade 8 × 200 m", description: "8 × 200 m",
+      durationMinutes: 38, estimatedKm: 6.6,
+      steps: [
+        { kind: "simple", label: "Aquecimento", minutes: 10, zone: "Z1" },
+        { kind: "repeat", label: "Série principal", repetitions: 8, effortMeters: 200, effortZone: "Z5", recoveryMinutes: 1.5, recoveryZone: "Z1" },
+      ],
+    },
+  };
+  const prepare = (sql) => ({
+    values: [], bind(...v) { this.values = v; return this; },
+    async first() {
+      if (/FROM device_ingest_tokens/.test(sql)) return { athlete_name: "Ana Souza", provider: "zepp" };
+      if (/FROM training_weeks/.test(sql)) return { sessions: JSON.stringify(sessao), status: "Liberada", plan: "5 km Prata", phase: "Específica", week_label: "7 de 13" };
+      if (/FROM performance_tests/.test(sql)) return { zones: JSON.stringify([
+        { z: "Z1", label: "Recuperação", slow: 420, fast: 360 },
+        { z: "Z5", label: "VO₂ máximo", slow: 240, fast: 218 },
+      ]), fc_max: 190 };
+      return null;
+    },
+    async all() { return { results: [] }; },
+    async run() { return { success: true }; },
+  });
+  const env = { ASSETS: { fetch: async () => new Response("", { status: 404 }) },
+    DB: { prepare, async batch(items) { for (const i of items) await i.run(); return items.map(() => ({ results: [] })); } } };
+  const ctx = { waitUntil() {}, passThroughOnException() {} };
+
+  /* O dia depende de quando o teste roda, então pede-se o que existe e confere-se
+     a forma, não o conteúdo de um dia específico. */
+  const r = await worker.fetch(new Request("https://zonasapp.example/api/ingest/device/workout", {
+    headers: { "x-zonas-ingest-token": TOKEN },
+  }), env, ctx);
+  assert.equal(r.status, 200);
+  const corpo = await r.json();
+  assert.equal(corpo.athlete, "Ana Souza");
+
+  if (corpo.day === "QUA") {
+    /* O relógio não sabe o que é "Z1": a zona chega resolvida em ritmo. Fazer
+       essa conta no relógio obrigaria a mandar o teste do atleta para lá e a
+       repetir a fórmula em JavaScript, onde sairia do lugar na primeira
+       mudança. */
+    const [aquecimento, serie] = corpo.workout.steps;
+    assert.equal(aquecimento.type, "simple");
+    assert.equal(aquecimento.seconds, 600);
+    assert.deepEqual(aquecimento.target, { zone: "Z1", label: "Recuperação", paceSlowSeconds: 420, paceFastSeconds: 360 });
+
+    assert.equal(serie.type, "repeat");
+    assert.equal(serie.repetitions, 8);
+    assert.equal(serie.effort.meters, 200);
+    assert.equal(serie.effort.target.paceFastSeconds, 218);
+    assert.equal(serie.recovery.seconds, 90);
+    assert.equal(corpo.workout.maxHeartRate, 190);
+  }
+
+  // Sem token válido não se lê o treino de ninguém.
+  const semToken = await worker.fetch(new Request("https://zonasapp.example/api/ingest/device/workout"), env, ctx);
+  assert.equal(semToken.status, 401);
+});
+
+test("keeps a device workout on the provider that sent it", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const integrations = await readFile(new URL("../worker/integrations.ts", import.meta.url), "utf8");
+
+  /* O provedor estava cravado em "apple" no emissor do token e na ingestão, e os
+     treinos vindos do relógio Amazfit chegavam rotulados como Apple Saúde no
+     painel do treinador — dado certo, origem errada. */
+  assert.match(worker, /async function issueDeviceIngestToken\(env: Env, athleteName: string, provider: ProviderId\)/);
+  assert.match(worker, /storeActivity\(env, record\.athlete_name, provider,/);
+  assert.doesNotMatch(worker, /PROVIDERS\.apple\.label/);
+
+  /* O Amazfit passa pelo mini-app do relógio, não pela nuvem Zepp: ela não
+     publica leitura de atividades, e a API interna só se alcança por engenharia
+     reversa — usá-la quebraria os termos e poria a conta do atleta em risco. */
+  assert.match(integrations, /id: "zepp"[\s\S]*?authType: "device"/);
+
+  /* Provedor "device" não guarda token de servidor, então não exige credencial
+     nenhuma. Exigi-la fazia a tela dizer "credenciais não configuradas" para
+     algo que não usa credencial. */
+  assert.match(integrations, /id: "apple"[\s\S]*?requiredEnv: \[\]/);
+  assert.match(integrations, /id: "zepp"[\s\S]*?requiredEnv: \[\]/);
+});
+
 test("says why a plan week could not be read, instead of blaming the coach's data", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   const apiClient = await readFile(new URL("../app/api-client.ts", import.meta.url), "utf8");
@@ -2684,7 +2773,10 @@ test("describes the four providers honestly, including Apple's device-only path"
   // Cada provedor declara o seu tipo real de autorização.
   assert.match(source, /id: "strava"[\s\S]*?authType: "oauth2"/);
   assert.match(source, /id: "garmin"[\s\S]*?authType: "oauth2-pkce"/);
-  assert.match(source, /id: "zepp"[\s\S]*?authType: "oauth2"/);
+  /* O Zepp deixou de ser OAuth: a nuvem deles não publica leitura de atividades,
+     e o SDK do Zepp OS resolve por outro lado — mini-app no relógio, Side
+     Service no celular. Quem apresenta a credencial é um aparelho. */
+  assert.match(source, /id: "zepp"[\s\S]*?authType: "device"/);
   assert.match(source, /id: "apple"[\s\S]*?authType: "device"/);
   // A Apple não tem endpoint de autorização em servidor, e o código diz isso.
   assert.match(source, /Sem API de servidor/);
@@ -2765,8 +2857,19 @@ test("keeps a provider unavailable until its credentials exist", async () => {
   assert.equal(listed.status, 200);
   const { providers } = await listed.json();
   assert.equal(providers.length, 4);
-  assert.ok(providers.every((provider) => provider.available === false));
-  assert.ok(providers.every((provider) => provider.status === "Credenciais não configuradas"));
+  /* Só os provedores OAuth dependem de credencial no servidor. Os do tipo
+     "device" — Apple e Amazfit — não guardam token de servidor: o aparelho
+     apresenta um token de ingestão e os campos cifrados ficam vazios. Exigir
+     credencial deles fazia a tela dizer "credenciais não configuradas" para algo
+     que não usa credencial, e o atleta não conseguia conectar por uma exigência
+     que não existia. */
+  const porTipo = Object.fromEntries(providers.map((p) => [p.id, p]));
+  assert.equal(porTipo.strava.available, false);
+  assert.equal(porTipo.garmin.available, false);
+  assert.equal(porTipo.strava.status, "Credenciais não configuradas");
+  assert.equal(porTipo.garmin.status, "Credenciais não configuradas");
+  assert.equal(porTipo.apple.available, true);
+  assert.equal(porTipo.zepp.available, true);
 
   const attempt = await worker.fetch(new Request("https://zonasapp.example/api/student/integrations", {
     method: "POST", headers: { "content-type": "application/json", ...studentCookie },
@@ -3547,7 +3650,13 @@ test("uses PKCE only where the provider asks for it", async () => {
   const integrations = await readFile(new URL("../worker/integrations.ts", import.meta.url), "utf8");
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
   assert.match(integrations, /id: "garmin"[\s\S]*?authType: "oauth2-pkce"/);
-  assert.match(integrations, /id: "zepp"[\s\S]*?authType: "oauth2"/);
+  /* O Zepp deixou de ser OAuth. A nuvem deles não publica leitura de atividades,
+     e a API interna só se alcança por engenharia reversa — usá-la quebraria os
+     termos e poria a conta do atleta em risco. O SDK do Zepp OS resolve melhor:
+     um mini-app no relógio e um Side Service no celular buscam o treino e
+     devolvem o resultado sem nuvem intermediária. Quem apresenta a credencial é
+     um aparelho, então o tipo é "device", o mesmo do Atalho do iPhone. */
+  assert.match(integrations, /id: "zepp"[\s\S]*?authType: "device"/);
   // O desafio só é montado para quem pede PKCE, e o verifier fica no servidor.
   assert.match(worker, /provider\.authType === "oauth2-pkce" \? createCodeVerifier\(\) : null/);
   assert.match(worker, /if \(verifier\) \{\s*params\.set\("code_challenge"/);
@@ -3557,9 +3666,15 @@ test("keeps an Apple workout on the athlete who owns the token", async () => {
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
   // O corpo da requisição não escolhe o atleta: quem escolhe é o token.
   assert.match(worker, /SELECT athlete_name FROM device_ingest_tokens WHERE token_hash = \? AND revoked_at IS NULL/);
-  assert.match(worker, /storeActivity\(env, record\.athlete_name, "apple"/);
+  /* O provedor vem do token, não de uma constante: os treinos do relógio Amazfit
+     chegavam rotulados como Apple Saúde no painel — dado certo, origem errada. */
+  assert.match(worker, /storeActivity\(env, record\.athlete_name, provider,/);
+  assert.match(worker, /SELECT athlete_name, provider FROM device_ingest_tokens/);
   // Um token novo revoga o anterior, e desconectar revoga o que estiver ativo.
-  assert.match(worker, /UPDATE device_ingest_tokens SET revoked_at = \? WHERE athlete_name = \? AND provider = 'apple' AND revoked_at IS NULL/);
+  /* Um token ativo por aluno E POR PROVEDOR: o do relógio não pode revogar o do
+     iPhone. Estava cravado em 'apple' nas três instruções. */
+  assert.match(worker, /UPDATE device_ingest_tokens SET revoked_at = \? WHERE athlete_name = \? AND provider = \? AND revoked_at IS NULL/);
+  assert.match(worker, /async function issueDeviceIngestToken\(env: Env, athleteName: string, provider: ProviderId\)/);
   // A gravação é idempotente: reenviar o mesmo treino não duplica.
   assert.match(worker, /INSERT OR IGNORE INTO external_activities/);
 });
@@ -3621,8 +3736,11 @@ test("does not invent an API where the provider has none", async () => {
   // aplicativo. Usar a segunda quebraria os termos e poria a conta do atleta
   // em risco, então a importação passa pelo Strava.
   assert.match(integrations, /id: "zepp"[\s\S]*?activitiesUrl: null/);
-  assert.match(integrations, /id: "zepp"[\s\S]*?canImportActivities: false/);
-  assert.match(integrations, /O caminho oficial é o Zepp enviar ao Strava/);
+  assert.match(integrations, /id: "zepp"[\s\S]*?canImportActivities: true/);
+  /* A nota mudou junto com o caminho: não há API de leitura, e o que passou a
+     existir é o mini-app no relógio. */
+  assert.match(integrations, /O mini-app do relógio busca o treino do dia/);
+  assert.match(integrations, /activitiesUrl: null/);
   assert.doesNotMatch(integrations, /huami\.com\/v1\/sport/);
   // A Apple também não tem endpoint de servidor: entra pelo Atalho do iOS.
   assert.match(integrations, /id: "apple"[\s\S]*?activitiesUrl: null/);
