@@ -12,10 +12,7 @@
 
   "permissions": [
     "device:os.local_storage",
-    "data:user.hd.heartrate",
-    "data:user.hd.workout",
-    "device:os.geolocation",
-    "device:os.bg_service"
+    "data:user.hd.workout"
   ],
 
   "runtime": {

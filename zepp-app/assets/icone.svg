@@ -1,0 +1,15 @@
+<!-- Ícone do mini-app, derivado de public/app-icon.svg.
+
+     A diferença é a forma: no site o ícone é um quadrado de cantos arredondados,
+     e a Zepp exige círculo perfeito, com o fundo opaco e só o lado de fora
+     transparente. Quadrado enviado ao console é recusado na revisão.
+
+     O anel interno recuou de r=190 para r=196 porque o fundo deixou de ter
+     cantos: no quadrado sobrava margem nas laterais, no círculo o anel encostava
+     na borda. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <circle cx="256" cy="256" r="256" fill="#111111"/>
+  <circle cx="256" cy="256" r="196" fill="none" stroke="#c99a35" stroke-width="16"/>
+  <path d="M145 170h222l-36 52H181zM181 244h150l-34 50h-82zM215 316h82l-41 59z" fill="#e9c56f"/>
+  <path d="M155 135h202" stroke="#f6df9c" stroke-width="18" stroke-linecap="round"/>
+</svg>

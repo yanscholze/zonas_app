@@ -24,8 +24,11 @@ torna a sincronização invisível: ninguém muda de hábito.
 | `app-side/index.js` | Side Service — o lado com internet |
 | `page/index.js` | aplicativo do relógio |
 | `setting/index.js` | tela de configurações, onde o aluno cola o token |
-| `assets/icon.png` | ícone do aplicativo (100 px; há 192 e 512 para o console) |
+| `assets/icon.png` | ícone do relógio, 248×248 com 4 px de área segura |
+| `assets/icon-console-240.png` | ícone do console, 240×240 |
+| `assets/icone.svg` | a fonte dos dois |
 | `PAYLOAD.md` | os dois payloads, campo a campo |
+| `ENVIO-ZEPP.md` | o que o console da Zepp pede, pronto para colar |
 
 ## Compilar
 
@@ -58,6 +61,14 @@ JavaScript, onde sairia do lugar na primeira mudança.
 **Semana não liberada não chega ao relógio.** O aluno não deve ver o que o
 treinador ainda está revisando, e furar isso pelo caminho que ninguém olha seria
 pior que não ter o caminho.
+
+**Só duas permissões.** `device:os.local_storage` para guardar o treino do dia
+e o pendente, e `data:user.hd.workout` para ler o que o esporte nativo mediu.
+Havia mais três declaradas — frequência cardíaca, localização e serviço em
+segundo plano — e nenhuma era usada: a média de batimentos vem do registro do
+treino, não do sensor ao vivo, e o mini-app nunca lê GPS. Permissão declarada e
+não usada é pedir ao aluno um acesso que não se vai exercer, e a revisão da Zepp
+exige justificar cada uma.
 
 **O endereço do sistema é ajustável.** Ele já mudou uma vez — o subdomínio
 workers.dev era `fluxo-pessoal` e passou a `cloudfapp`. Cravado no código, uma
