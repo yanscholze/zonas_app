@@ -23,6 +23,8 @@ torna a sincronização invisível: ninguém muda de hábito.
 | `app.json` | manifesto, permissões e aparelhos suportados |
 | `app-side/index.js` | Side Service — o lado com internet |
 | `page/index.js` | aplicativo do relógio |
+| `setting/index.js` | tela de configurações, onde o aluno cola o token |
+| `assets/icon.png` | ícone do aplicativo (100 px; há 192 e 512 para o console) |
 | `PAYLOAD.md` | os dois payloads, campo a campo |
 
 ## Compilar
@@ -38,7 +40,8 @@ zeus build      # gera o .zab para publicar
 
 1. Na Zonas-App, o aluno abre **Mais → Integrações → Amazfit / Zepp → Conectar**
 2. O token aparece **uma única vez** — o servidor guarda só o hash dele
-3. No aplicativo Zepp do celular, instalar o mini-app e colar o token nas configurações
+3. No aplicativo Zepp do celular, instalar o mini-app e colar o token em
+   **Configurações do mini-app → Token**, que confere o formato na hora
 
 A partir daí não há passo manual.
 
@@ -55,6 +58,12 @@ JavaScript, onde sairia do lugar na primeira mudança.
 **Semana não liberada não chega ao relógio.** O aluno não deve ver o que o
 treinador ainda está revisando, e furar isso pelo caminho que ninguém olha seria
 pior que não ter o caminho.
+
+**O endereço do sistema é ajustável.** Ele já mudou uma vez — o subdomínio
+workers.dev era `fluxo-pessoal` e passou a `cloudfapp`. Cravado no código, uma
+troca dessas deixaria todos os relógios mudos até uma nova revisão da Zepp, que
+leva semanas; pelo campo avançado das configurações, quem mantém o sistema
+corrige no mesmo dia.
 
 **O resultado é guardado antes de enviar.** Se o celular estiver longe ou sem
 rede — que é exatamente quando se corre —, o treino espera em vez de sumir. Só é

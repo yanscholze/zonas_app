@@ -30,7 +30,8 @@
 
   "module": {
     "page": { "main": "page/index" },
-    "app-side": { "main": "app-side/index" }
+    "app-side": { "main": "app-side/index" },
+    "setting": { "main": "setting/index" }
   },
 
   "i18n": { "pt-BR": { "appName": "ZonasApp" }, "en-US": { "appName": "ZonasApp" } },
