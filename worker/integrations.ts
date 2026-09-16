@@ -82,18 +82,31 @@ export const PROVIDERS: Record<ProviderId, ProviderDefinition> = {
   zepp: {
     id: "zepp",
     label: "Amazfit / Zepp",
-    authType: "oauth2",
-    authorizeUrl: "https://user.huami.com/oauth2/authorize",
-    tokenUrl: "https://api-user.huami.com/oauth2/access_token",
-    scope: "user_activity",
-    requiredEnv: ["ZEPP_APP_ID", "ZEPP_APP_SECRET", "STRAVA_TOKEN_ENCRYPTION_KEY"],
-    canImportActivities: false,
-    canSendWorkouts: false,
-    notes: "Sem API pública de leitura de atividades. O caminho oficial é o Zepp enviar ao Strava, que a Zonas-App já importa.",
-    // O que existe publicamente do Zepp é o SDK para apps no relógio e uma API
-    // interna do aplicativo, alcançável só por engenharia reversa. Usar essa
-    // segunda via quebraria os termos e poria em risco a conta do atleta, então
-    // aqui não há endpoint: a importação passa pelo Strava.
+    /* O caminho é o mini-app no relógio, não a nuvem Zepp.
+     *
+     * A Zepp não publica API de leitura de atividades: o que existe é o SDK do
+     * Zepp OS para aplicativos no próprio relógio, e uma API interna alcançável
+     * só por engenharia reversa — essa segunda via quebraria os termos e poria a
+     * conta do atleta em risco.
+     *
+     * O SDK, porém, resolve o problema por outro lado e melhor: um mini-app roda
+     * no relógio, um Side Service roda dentro do aplicativo Zepp no celular, e é
+     * ele que fala com a internet. O celular busca o treino do dia aqui e devolve
+     * o resultado quando o aluno termina de correr — sem nuvem intermediária e
+     * sem o aluno abrir nada.
+     *
+     * Por isso o tipo é "device", o mesmo do Atalho do iPhone: quem apresenta a
+     * credencial é um aparelho, não um servidor. O código do mini-app está em
+     * `zepp-app/`.
+     */
+    authType: "device",
+    authorizeUrl: null,
+    tokenUrl: null,
+    scope: null,
+    requiredEnv: [],
+    canImportActivities: true,
+    canSendWorkouts: true,
+    notes: "O mini-app do relógio busca o treino do dia e devolve o resultado sozinho, sem o aluno abrir nada.",
     activitiesUrl: null,
     activitiesRange: null,
     activitiesPath: "",
@@ -105,7 +118,12 @@ export const PROVIDERS: Record<ProviderId, ProviderDefinition> = {
     authorizeUrl: null,
     tokenUrl: null,
     scope: null,
-    requiredEnv: ["STRAVA_TOKEN_ENCRYPTION_KEY"],
+    /* Nenhuma. Provedor "device" não guarda token de servidor: o que existe é um
+       token de ingestão que o aparelho apresenta, e os campos cifrados ficam
+       vazios. Exigir a chave de cifra fazia a tela dizer "credenciais não
+       configuradas" para algo que não usa credencial nenhuma — e o atleta ficava
+       sem conseguir conectar por uma exigência que não era real. */
+    requiredEnv: [],
     canImportActivities: true,
     canSendWorkouts: false,
     notes: "Sem API de servidor. O envio parte do iPhone por um Atalho do iOS.",

@@ -187,6 +187,463 @@ test("uses a computer-first workspace for weekly programming and workout buildin
   assert.match(css, /width:min\(1120px,calc\(100vw - 260px\)\)/);
 });
 
+test("imports a whole plan library from a file", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("import-plans", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const arquivo = JSON.parse(await readFile(new URL("../planilhas-zonasapp.json", import.meta.url), "utf8"));
+
+  const escritas = [];
+  const prepare = (sql) => ({
+    values: [],
+    bind(...values) { this.values = values; return this; },
+    async first() { return null; },
+    async all() { return { results: [] }; },
+    async run() { escritas.push({ sql, values: this.values }); return { success: true }; },
+  });
+  const env = {
+    ASSETS: { fetch: async () => new Response("", { status: 404 }) },
+    DB: { prepare: withSession(prepare), async batch(items) { for (const i of items) await i.run(); return items.map(() => ({ results: [] })); } },
+  };
+
+  const r = await worker.fetch(new Request("https://zonasapp.example/api/plans", {
+    method: "POST", headers: { "content-type": "application/json", ...coachCookie },
+    body: JSON.stringify({ action: "import", plans: arquivo.plans }),
+  }), env, { waitUntil() {}, passThroughOnException() {} });
+
+  assert.equal(r.status, 200);
+  const corpo = await r.json();
+  assert.equal(corpo.imported, true);
+  assert.equal(corpo.planilhas, 10);
+  assert.equal(corpo.semanas, 155, "as 155 semanas montadas precisam entrar junto");
+
+  /* Substituir e não somar: sem apagar antes, reimportar um arquivo corrigido
+     deixaria as semanas velhas convivendo com as novas. */
+  const apagou = escritas.filter(e => /DELETE FROM plan_template_overrides WHERE plan_name = \? AND coach_email = \?/.test(e.sql));
+  assert.equal(apagou.length, 10, "cada planilha precisa limpar as semanas anteriores");
+
+  /* Tudo entra na biblioteca de quem importa. Aceitar o dono do arquivo deixaria
+     um arquivo escrever na biblioteca de outro treinador. */
+  const inseriu = escritas.filter(e => /INSERT INTO custom_plans/.test(e.sql));
+  assert.equal(inseriu.length, 10);
+  assert.ok(inseriu.every(e => e.values.includes("treinador@exemplo.com")), "a planilha precisa nascer na carteira de quem importa");
+
+  // E o arquivo não carrega id nem dono — são de quem importa.
+  for (const plano of arquivo.plans) {
+    assert.ok(!("id" in plano) && !("coach_email" in plano), `${plano.name} carrega campo que não deveria`);
+  }
+});
+
+test("gives a freshly registered student somewhere to go", async () => {
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const gate = await readFile(new URL("../app/AuthGate.tsx", import.meta.url), "utf8");
+
+  /* O cadastro criava a conta, gravava o cookie de sessão — e a pessoa ficava
+     presa. `identityFromRequest` recusava aluno sem `athlete_name`, que é
+     exatamente o estado de quem acabou de se cadastrar: /api/session respondia
+     401, a tela nunca trocava, e o botão congelava em "Enviando…" com a conta
+     já criada no banco. */
+  assert.match(auth, /return \{ role: "pendente", email: account\.email/);
+  assert.match(auth, /\| \{ role: "pendente"; email: string; userId: string; name: string; mustChangePassword: boolean \}/);
+
+  /* "pendente" não é "aluno", e é assim que as rotas de /api/student/* a
+     recusam sem que ninguém precise lembrar de checar o nome do atleta. */
+  assert.match(worker, /if \(session\.role === "pendente"\) return null/);
+
+  /* No login a tela desmonta e o estado morre com ela; no cadastro ela continua
+     montada, então o estado precisa voltar sozinho. */
+  assert.match(gate, /setState\("idle"\);\n {6}onSignedIn\(\)/);
+});
+
+test("ties the student to the coach whose link they used", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const entrada = await readFile(new URL("../app/StudentEntry.tsx", import.meta.url), "utf8");
+
+  /* O link de cadastro era o mesmo para todos, então o aluno chegava sem dono:
+     pedia acesso, e quem aprovasse primeiro virava o treinador dele. Com um
+     treinador só isso passava; com equipe, o aluno do Jonas podia cair na
+     carteira de outro por ordem de clique. */
+  assert.match(schema, /export const coachInvites = sqliteTable\("coach_invites"/);
+  assert.match(schema, /coachEmail: text\("coach_email"\),\n  reviewedBy/);
+  assert.match(worker, /async function emiteConvite\(env: Env, carteira: string, dias: number, usos: number \| null\)/);
+  assert.match(client, /const link = ativo \? `\$\{origem\}\/\?convite=\$\{ativo\.code\}` : origem/);
+
+  /* Link sem validade é link que vaza depois: fica num grupo, num print, num
+     e-mail encaminhado, e continua abrindo cadastro meses adiante na carteira de
+     quem já nem lembra de tê-lo enviado. Prazo é obrigatório; limite de uso é
+     opcional, porque as duas situações são diferentes — o link de uma pessoa
+     (aluno que acabou de fechar) e o da turma que começa. */
+  assert.match(worker, /if \(!Number\.isInteger\(dias\) \|\| dias < 1 \|\| dias > 90\)/);
+  assert.match(worker, /async function donoDoConvite\(env: Env, codigo: string\): Promise<string \| null>/);
+  assert.match(worker, /if \(linha\.revoked_at\) return null/);
+  assert.match(worker, /if \(linha\.expires_at && Number\(linha\.expires_at\) <= Date\.now\(\)\) return null/);
+  assert.match(worker, /Number\(linha\.uses \?\? 0\) >= Number\(linha\.max_uses\)/);
+  // O uso é contado quando o convite de fato amarra alguém, não quando é lido.
+  assert.match(worker, /UPDATE coach_invites SET uses = uses \+ 1 WHERE code = \?/);
+  // E dá para encerrar um link já enviado.
+  assert.match(worker, /if \(acao === "revoke"\)/);
+  assert.match(entrada, /const conviteDoLink = \(\) =>/);
+  assert.match(entrada, /invite:conviteDoLink\(\)/);
+
+  /* O dono é o treinador do CONVITE, não quem clicou em aprovar: o aluno chegou
+     pelo link de alguém, e é essa pessoa que ele espera ter do outro lado. */
+  assert.match(worker, /row\.coach_email\|\|carteiraDe\(request\)/);
+
+  /* O código é opaco de propósito. O e-mail do treinador na URL o exporia a quem
+     recebe o link, e deixaria qualquer um forjar o vínculo digitando outro
+     endereço — o código só resolve para alguém se foi emitido pelo sistema. */
+  assert.doesNotMatch(client, /convite=\$\{session\.email\}|convite=\$\{carteira\}/);
+
+  /* Link antigo, sem convite, não pode virar erro para o aluno: vira pedido sem
+     dono, que aparece para todos — perder o cadastro seria puni-lo por algo que
+     não é dele. */
+  assert.match(worker, /coach_email = \? OR coach_email IS NULL/);
+});
+
+test("serves the day's workout to a watch, with zones already resolved into pace", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("zepp", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+
+  const TOKEN = "a".repeat(48);
+  const sessao = {
+    QUA: {
+      type: "Treino estruturado", title: "Velocidade 8 × 200 m", description: "8 × 200 m",
+      durationMinutes: 38, estimatedKm: 6.6,
+      steps: [
+        { kind: "simple", label: "Aquecimento", minutes: 10, zone: "Z1" },
+        { kind: "repeat", label: "Série principal", repetitions: 8, effortMeters: 200, effortZone: "Z5", recoveryMinutes: 1.5, recoveryZone: "Z1" },
+      ],
+    },
+  };
+  const prepare = (sql) => ({
+    values: [], bind(...v) { this.values = v; return this; },
+    async first() {
+      if (/FROM device_ingest_tokens/.test(sql)) return { athlete_name: "Ana Souza", provider: "zepp" };
+      if (/FROM training_weeks/.test(sql)) return { sessions: JSON.stringify(sessao), status: "Liberada", plan: "5 km Prata", phase: "Específica", week_label: "7 de 13" };
+      if (/FROM performance_tests/.test(sql)) return { zones: JSON.stringify([
+        { z: "Z1", label: "Recuperação", slow: 420, fast: 360 },
+        { z: "Z5", label: "VO₂ máximo", slow: 240, fast: 218 },
+      ]), fc_max: 190 };
+      return null;
+    },
+    async all() { return { results: [] }; },
+    async run() { return { success: true }; },
+  });
+  const env = { ASSETS: { fetch: async () => new Response("", { status: 404 }) },
+    DB: { prepare, async batch(items) { for (const i of items) await i.run(); return items.map(() => ({ results: [] })); } } };
+  const ctx = { waitUntil() {}, passThroughOnException() {} };
+
+  /* O dia depende de quando o teste roda, então pede-se o que existe e confere-se
+     a forma, não o conteúdo de um dia específico. */
+  const r = await worker.fetch(new Request("https://zonasapp.example/api/ingest/device/workout", {
+    headers: { "x-zonas-ingest-token": TOKEN },
+  }), env, ctx);
+  assert.equal(r.status, 200);
+  const corpo = await r.json();
+  assert.equal(corpo.athlete, "Ana Souza");
+
+  if (corpo.day === "QUA") {
+    /* O relógio não sabe o que é "Z1": a zona chega resolvida em ritmo. Fazer
+       essa conta no relógio obrigaria a mandar o teste do atleta para lá e a
+       repetir a fórmula em JavaScript, onde sairia do lugar na primeira
+       mudança. */
+    const [aquecimento, serie] = corpo.workout.steps;
+    assert.equal(aquecimento.type, "simple");
+    assert.equal(aquecimento.seconds, 600);
+    assert.deepEqual(aquecimento.target, { zone: "Z1", label: "Recuperação", paceSlowSeconds: 420, paceFastSeconds: 360 });
+
+    assert.equal(serie.type, "repeat");
+    assert.equal(serie.repetitions, 8);
+    assert.equal(serie.effort.meters, 200);
+    assert.equal(serie.effort.target.paceFastSeconds, 218);
+    assert.equal(serie.recovery.seconds, 90);
+    assert.equal(corpo.workout.maxHeartRate, 190);
+  }
+
+  // Sem token válido não se lê o treino de ninguém.
+  const semToken = await worker.fetch(new Request("https://zonasapp.example/api/ingest/device/workout"), env, ctx);
+  assert.equal(semToken.status, 401);
+});
+
+test("keeps a device workout on the provider that sent it", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const integrations = await readFile(new URL("../worker/integrations.ts", import.meta.url), "utf8");
+
+  /* O provedor estava cravado em "apple" no emissor do token e na ingestão, e os
+     treinos vindos do relógio Amazfit chegavam rotulados como Apple Saúde no
+     painel do treinador — dado certo, origem errada. */
+  assert.match(worker, /async function issueDeviceIngestToken\(env: Env, athleteName: string, provider: ProviderId\)/);
+  assert.match(worker, /storeActivity\(env, record\.athlete_name, provider,/);
+  assert.doesNotMatch(worker, /PROVIDERS\.apple\.label/);
+
+  /* O Amazfit passa pelo mini-app do relógio, não pela nuvem Zepp: ela não
+     publica leitura de atividades, e a API interna só se alcança por engenharia
+     reversa — usá-la quebraria os termos e poria a conta do atleta em risco. */
+  assert.match(integrations, /id: "zepp"[\s\S]*?authType: "device"/);
+
+  /* Provedor "device" não guarda token de servidor, então não exige credencial
+     nenhuma. Exigi-la fazia a tela dizer "credenciais não configuradas" para
+     algo que não usa credencial. */
+  assert.match(integrations, /id: "apple"[\s\S]*?requiredEnv: \[\]/);
+  assert.match(integrations, /id: "zepp"[\s\S]*?requiredEnv: \[\]/);
+});
+
+test("says why a plan week could not be read, instead of blaming the coach's data", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const apiClient = await readFile(new URL("../app/api-client.ts", import.meta.url), "utf8");
+
+  /* O carregador engolia qualquer falha num `catch{}` e devolvia vazio, e quem
+     chamava dizia ao treinador "esta planilha não tem os treinos da semana N
+     cadastrados". Podia ser 403 — a manutenção não está na área de nenhum
+     treinador, e sem carteira as planilhas recusam —, podia ser 400, podia ser a
+     rede. A tela acusava o dado dele nos três casos, e mandava arrumar o que não
+     estava quebrado. */
+  assert.match(client, /Promise<\{sessoes:Record<string,StructuredSession>;falha\?:string\}>/);
+  assert.match(client, /codigo==="coach_scope_required"/);
+  assert.doesNotMatch(client, /não tem os treinos da semana \$\{calendarPlanWeek\} cadastrados/);
+
+  /* Vazio e falha viraram avisos diferentes: um diz que a semana está por
+     montar, o outro diz o que impediu de ler. */
+  assert.match(client, /Não foi possível ler a semana \$\{calendarPlanWeek\}/);
+  assert.match(client, /A semana \$\{calendarPlanWeek\} está vazia/);
+
+  // Nem toda chamada passa por `api.*`; quem usa fetch direto agora traduz igual.
+  assert.match(apiClient, /export function describeErrorCode\(code: string, status: number\): string/);
+
+  /* E a causa, não só a mensagem: a manutenção no painel do treinador sem estar
+     na área de ninguém não tem carteira. Dizer isso antes evita que a primeira
+     ação a falhar leve ao diagnóstico errado. */
+  assert.match(client, /session\.role === "dev" && !visitando && <div className="dev-sem-area">/);
+});
+
+test("every ON CONFLICT names a constraint the schema actually declares", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const schema = await import("../db/schema.ts");
+  const { createTableSql, createIndexesSql } = await import("../db/sql.ts");
+
+  /* `INSERT ... ON CONFLICT(a, b)` exige que exista uma PRIMARY KEY ou um índice
+     ÚNICO exatamente sobre essas colunas. Sem isso o SQLite recusa:
+
+       ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint
+
+     `training_weeks` tinha o índice no banco de desenvolvimento, criado por uma
+     versão antiga do schema, mas não DECLARADO. Sobreviveu ali e nunca nasceu
+     num banco novo — em produção, liberar a semana do aluno quebrava. Índice que
+     existe só no banco de quem desenvolve é pior que índice ausente: faz o erro
+     aparecer só onde ninguém está olhando. */
+  const tabelas = new Map();
+  for (const valor of Object.values(schema)) {
+    if (typeof valor !== "object" || valor === null || !(Symbol.for("drizzle:Name") in valor)) continue;
+    const criacao = createTableSql(valor);
+    const nome = criacao.match(/EXISTS (\w+)/)?.[1];
+    if (!nome) continue;
+
+    const restricoes = new Set();
+    // A chave primária, seja de coluna única ou composta.
+    for (const m of criacao.matchAll(/(\w+) [A-Z]+ PRIMARY KEY/g)) restricoes.add(m[1]);
+    const composta = criacao.match(/PRIMARY KEY \(([^)]+)\)/);
+    if (composta) restricoes.add(composta[1].split(",").map(c => c.trim()).join(","));
+    // E cada índice ÚNICO — só eles servem para o ON CONFLICT.
+    for (const indice of createIndexesSql(valor)) {
+      if (!/CREATE UNIQUE INDEX/.test(indice)) continue;
+      const colunas = indice.match(/\(([^)]+)\)\s*$/)?.[1];
+      if (colunas) restricoes.add(colunas.split(",").map(c => c.trim()).join(","));
+    }
+    tabelas.set(nome, restricoes);
+  }
+
+  /* Procura de trás para frente a partir de cada ON CONFLICT, e só aceita o
+     INSERT se não houver outro entre os dois. A primeira versão varria para a
+     frente com uma janela de caracteres e atravessava statements: acusava
+     `athletes ON CONFLICT(athlete_name)`, que é de outro INSERT dezenas de
+     linhas abaixo. Teste que grita à toa deixa de ser lido. */
+  const problemas = [];
+  for (const m of worker.matchAll(/ON CONFLICT\(([^)]*)\)/g)) {
+    const antes = worker.slice(0, m.index);
+    const ultimoInsert = antes.lastIndexOf("INSERT INTO ");
+    if (ultimoInsert < 0) continue;
+    const tabela = antes.slice(ultimoInsert).match(/INSERT INTO (\w+)/)?.[1];
+    if (!tabela) continue;
+    const alvo = m[1];
+    const colunas = alvo.split(",").map(c => c.trim()).filter(Boolean).join(",");
+    if (!colunas) continue;                    // ON CONFLICT DO NOTHING, sem alvo
+    const restricoes = tabelas.get(tabela);
+    if (!restricoes) { problemas.push(`${tabela}: tabela não está no schema`); continue; }
+    if (!restricoes.has(colunas)) {
+      problemas.push(`${tabela} ON CONFLICT(${colunas}) — o schema declara: ${[...restricoes].join(" | ") || "nada"}`);
+    }
+  }
+  assert.deepEqual(problemas, [], `há ON CONFLICT sem restrição declarada:\n  ${problemas.join("\n  ")}`);
+});
+
+test("creates every table before any handler needs it", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+
+  /* Cada handler vinha declarando as tabelas que toca, e funcionava porque o
+     banco de desenvolvimento já tinha tudo criado por outros caminhos. Num banco
+     novo, o primeiro handler a consultar uma tabela que não declarou responde
+     503 — foi o que aconteceu na estreia: `equipeApi` conta planilhas por
+     treinador, não declarava `custom_plans`, e o painel do dev abria com
+     "no such table: custom_plans".
+
+     O problema não é o handler que esqueceu: é ter de lembrar. */
+  assert.match(worker, /async function garanteEsquema\(env: Env\): Promise<void>/);
+  assert.match(worker, /const TODAS_AS_TABELAS = Object\.values\(schema\)/);
+  assert.match(worker, /try \{ await garanteEsquema\(env\); \} catch/);
+
+  /* Garantir o esquema inteiro em toda instância nova custava caro: 31 PRAGMA
+     table_info SEQUENCIAIS mais mais de trinta lotes, cerca de 64 idas ao D1 —
+     e no Workers instância nova acontece o tempo todo. Medido: 396 consultas na
+     primeira requisição. Agora uma assinatura responde "o banco já está como
+     este código espera?" numa consulta só, e quando está — quase sempre — o
+     custo cai para 3 consultas e nenhum PRAGMA.
+
+     A assinatura sai do SQL gerado das tabelas, então muda sozinha quando o
+     esquema muda: não há lista à parte para esquecer de atualizar. */
+  assert.match(worker, /function assinaturaDasTabelas\(\): string/);
+  assert.match(worker, /const sql = TODAS_AS_TABELAS\.map\(tabela => tableSql\(tabela\)\.join\(""\)\)\.sort\(\)\.join\(""\)/);
+  assert.match(worker, /if \(atual === assinatura\)/);
+
+  /* Marcar tudo como conferido é o que faz os `ensureTables` espalhados pelos
+     handlers virarem no-op — sem isso a economia se perde no primeiro que roda. */
+  assert.match(worker, /for \(const tabela of TODAS_AS_TABELAS\) tabelasConferidas\.add\(nomeDaTabela\(tabela\)\)/);
+
+  // E o SQL da própria tabela de versão vem do schema, como o de toda tabela.
+  assert.match(worker, /env\.DB\.prepare\(createTableSql\(schema\.schemaState\)\)/);
+
+  /* Falhar ali não pode derrubar a resposta: com o banco fora, quem reporta é o
+     handler, com a área e o código dele, e não uma exceção genérica lançada
+     antes de qualquer rota ser escolhida. */
+  const entrada = worker.slice(worker.indexOf("async fetch(request: Request, env: Env"));
+  assert.ok(entrada.indexOf("garanteEsquema") < entrada.indexOf("routeRequest"),
+    "o esquema precisa ser garantido antes de rotear");
+});
+
+test("keeps password hashing inside what the Workers runtime accepts", async () => {
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+  const script = await readFile(new URL("../scripts/reset-coach-password.mjs", import.meta.url), "utf8");
+
+  /* Era 210.000, o número que o OWASP recomenda para PBKDF2-SHA256. O Miniflare
+     aceita, então passou por todo o desenvolvimento sem reclamar — e o runtime
+     de verdade dos Workers recusa acima de 100.000:
+
+       NotSupportedError: Pbkdf2 failed: iteration counts above 100000 are not
+       supported (requested 210000)
+
+     Criar conta e conferir login derivam senha, então as duas falhavam: o
+     aplicativo subia e a tela respondia "não foi possível concluir" para
+     qualquer credencial, sem conta nenhuma no banco. */
+  const iteracoes = Number(auth.match(/export const PASSWORD_ITERATIONS = ([\d_]+);/)?.[1].replace(/_/g, ""));
+  assert.ok(Number.isFinite(iteracoes), "não achei PASSWORD_ITERATIONS");
+  assert.ok(iteracoes <= 100_000, `${iteracoes} passa do teto de 100.000 dos Workers`);
+
+  /* O script de redefinição gera hash fora do worker. Se as contagens
+     divergirem, ele produz uma senha que a produção não consegue conferir. */
+  const noScript = Number(script.match(/const PASSWORD_ITERATIONS = ([\d_]+);/)?.[1].replace(/_/g, ""));
+  assert.equal(noScript, iteracoes, "o script de redefinição usa outra contagem que o worker");
+});
+
+test("hardens the supply chain and keeps example passwords out of the docs", async () => {
+  const npmrc = await readFile(new URL("../.npmrc", import.meta.url), "utf8");
+  const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+  const pacote = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+
+  /* Sem idade mínima, um `npm install` feito no dia em que um pacote é
+     comprometido traz a versão maliciosa. Sete dias é a janela em que esses
+     ataques costumam ser descobertos e despublicados — e o custo é só não
+     estrear uma versão no dia em que ela sai. */
+  assert.match(npmrc, /minimum-release-age=10080/);
+
+  /* O README trazia "minha-nova-senha-2026" como exemplo, duas vezes. Não era
+     credencial nenhuma, mas dispara scanner de segredo — e um marcador ensina
+     melhor que uma senha inventada, que alguém acaba copiando. */
+  assert.doesNotMatch(readme, /minha-nova-senha-2026/);
+  assert.match(readme, /coach:reset-password -- "<SUA_NOVA_SENHA>"/);
+
+  /* postcss e sharp vinham presos dentro do next, nas versões com CVE. Subir o
+     next sozinho não os solta, porque ele os fixa: o override alcança a árvore
+     inteira. Se o next voltar a fixá-los, isto quebra e alguém olha. */
+  assert.ok(pacote.overrides?.postcss, "falta o override do postcss");
+  assert.ok(pacote.overrides?.sharp, "falta o override do sharp");
+
+  const lock = JSON.parse(await readFile(new URL("../package-lock.json", import.meta.url), "utf8"));
+  const versoes = (alvo) => Object.entries(lock.packages ?? {})
+    .filter(([caminho]) => caminho.endsWith(`node_modules/${alvo}`))
+    .map(([, info]) => info.version).filter(Boolean);
+  assert.ok(!versoes("postcss").includes("8.4.31"), "postcss 8.4.31 voltou à árvore");
+  assert.ok(!versoes("sharp").includes("0.34.5"), "sharp 0.34.5 voltou à árvore");
+
+  /* react, react-dom e react-server-dom-webpack são o mesmo runtime e não podem
+     andar em versões diferentes — foi por isso que subiram juntos. */
+  const react = new Set([...versoes("react"), ...versoes("react-dom"), ...versoes("react-server-dom-webpack")]);
+  assert.equal(react.size, 1, `runtime do React em versões diferentes: ${[...react].join(", ")}`);
+
+  /* O que a produção carrega precisa ficar sem vulnerabilidade conhecida. O que
+     sobra no `npm audit` é o esbuild antigo que vem pelo drizzle-kit — que gera
+     migração pela linha de comando, nunca atende requisição, e não entra no
+     pacote. O aviso é sobre o servidor de desenvolvimento do esbuild, que essa
+     ferramenta nem levanta. Se um dia ele passar a ser dependência de produção,
+     isto quebra. */
+  assert.ok(!pacote.dependencies?.["drizzle-kit"], "drizzle-kit virou dependência de produção");
+});
+
+test("has one place to add a student, not three that do different halves", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+
+  /* Havia três lugares para cadastrar um aluno, e eles NÃO faziam a mesma coisa:
+       Cadastros → aprovar pedido : ficha + acesso   (tudo)
+       Alunos    → + Novo aluno   : só a ficha       (o aluno não conseguia entrar)
+       Contas    → criar acesso   : só o acesso      (precisava da ficha antes)
+     Quem usasse o do meio ficava com um aluno mudo, sem nada na tela dizendo o
+     que faltava. Não era excesso de caminhos: era um caminho partido em três. */
+  assert.match(client, /function CaminhosDeEntrada\(\{abrirNovo\}/);
+  assert.match(client, /active === "Cadastros" && <button className="gold" onClick=\{\(\) => setNewAthlete\(true\)\}>\+ Novo aluno<\/button>/);
+  assert.doesNotMatch(client, /active === "Alunos" && <button className="gold" onClick=\{\(\) => setNewAthlete\(true\)\}/);
+
+  // O cadastro passa a criar o acesso junto quando há e-mail.
+  assert.match(client, /const emailDeAcesso = String\(details\.email \?\? ""\)\.trim\(\)/);
+  assert.match(client, /api\.post<\{temporaryPassword\?:string\}>\("\/api\/accounts", \{ action:"create"/);
+
+  /* Falhar o acesso não pode dizer que o cadastro falhou: a ficha já existe, e
+     refazê-la criaria um aluno duplicado. */
+  assert.match(client, /cadastrado, mas sem acesso/);
+
+  // Contas deixou de criar; virou os acessos que já existem.
+  assert.doesNotMatch(client, /className="account-create"/);
+  assert.match(client, /className="account-pendentes"/);
+});
+
+test("credits whoever built and maintains the platform, on every screen", async () => {
+  const assinatura = await readFile(new URL("../app/assinatura.tsx", import.meta.url), "utf8");
+  const css = await readCss("../app/globals.css");
+
+  assert.match(assinatura, /nome: "Yan Augusto Scholze"/);
+  assert.match(assinatura, /Desenvolvido e mantido por \{DESENVOLVEDOR\.nome\}/);
+
+  /* Em todas as telas, e nas páginas legais também — são justamente onde alguém
+     procura o responsável. Uma tela sem a assinatura é a tela em que a pessoa
+     estava quando precisou dela. */
+  for (const arquivo of ["ZonasAppClient.tsx", "AuthGate.tsx", "DevDashboard.tsx", "privacy/page.tsx", "terms/page.tsx"]) {
+    const fonte = await readFile(new URL(`../app/${arquivo}`, import.meta.url), "utf8");
+    assert.match(fonte, /<Assinatura \/>/, `${arquivo} não mostra a assinatura`);
+  }
+
+  /* O AuthGate tem três telas — carregando, acesso e troca de senha. A primeira
+     versão caiu só na última, porque procurei o `</main>` de trás para a frente. */
+  const gate = await readFile(new URL("../app/AuthGate.tsx", import.meta.url), "utf8");
+  assert.equal(gate.match(/<Assinatura \/>/g)?.length, 3, "as três telas de acesso precisam da assinatura");
+
+  /* Apagada de propósito: não pode competir com o conteúdo. E a área do aluno
+     tem fundo claro, então a mesma discrição pede outra tinta. */
+  assert.match(css, /\.assinatura\{[^}]*font-size:var\(--fs-overline\)/);
+  assert.match(css, /\.assinatura\{[^}]*opacity:\.7/);
+  assert.match(css, /\.student \.assinatura\{/);
+});
+
 test("names the data controller the privacy law requires", async () => {
   const privacidade = await readFile(new URL("../app/privacy/page.tsx", import.meta.url), "utf8");
 
@@ -242,6 +699,47 @@ test("keeps the deploy config in step with the development bindings", async () =
      sigiloso. Segredo nunca: o repositório é público, e segredo entra por
      `wrangler secret put`, que grava na conta. */
   assert.ok(wrangler.vars && typeof wrangler.vars === "object");
+
+  /* Uma porta só para o banco. O painel da Cloudflare sugere um binding com o
+     nome do banco ao copiar o trecho de configuração, e chegou a existir uma
+     segunda entrada "zonasapp" apontando para o mesmo id. Nada no código a lia —
+     o worker usa `env.DB` — e duas portas para o mesmo banco divergem na
+     primeira alteração: alguém troca o id de uma e esquece a outra. */
+  assert.equal(wrangler.d1_databases.length, 1, "há mais de um binding para o banco de produção");
+  assert.equal(wrangler.d1_databases[0].binding, "DB");
+  assert.match(wrangler.d1_databases[0].database_id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    "o database_id de produção não é um UUID");
+
+  /* A configuração embutida no vite.config.ts carrega o database_id de
+     marcador, que serve ao banco local do Miniflare. Ela precisa valer só no
+     `vite` de desenvolvimento: no build quem manda é este arquivo. Sem a
+     separação, o deploy subiria apontando para o marcador — e não falharia no
+     deploy, falharia na primeira consulta, com o aplicativo já no ar. */
+  const vite = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
+  assert.match(vite, /const desenvolvimento = command === "serve"/);
+  assert.match(vite, /\.\.\.\(desenvolvimento \? \{ config: localBindingConfig \} : \{\}\)/);
+
+  /* E o plugin entra por import estático: o `vinext-cloudflare deploy` decide se
+     ele existe lendo este arquivo como texto, e não enxerga import dinâmico. */
+  assert.match(vite, /^import \{ cloudflare \} from "@cloudflare\/vite-plugin";$/m);
+  assert.doesNotMatch(vite, /await import\("@cloudflare\/vite-plugin"\)/);
+
+  /* A caixa de areia do sites-env.sh redireciona HOME e XDG_CONFIG_HOME, e a
+     credencial da Cloudflare mora em ~/.config/.wrangler. Com o HOME trocado o
+     wrangler não a encontra, conclui que não há login e falha com
+     "non-interactive environment" — uma mensagem que não fala de HOME nenhum, e
+     que aparecia até no terminal de quem estava logado. Só o deploy pede a
+     exceção, e ela é explícita. */
+  const env = await readFile(new URL("../scripts/sites-env.sh", import.meta.url), "utf8");
+  assert.match(env, /if \[\[ "\$\{SITES_MANTER_CREDENCIAIS:-\}" == "1" \]\]; then/);
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  assert.match(pkg.scripts.deploy, /^SITES_MANTER_CREDENCIAIS=1 /);
+
+  /* E o artefato não pode ficar com segredo em texto puro: o build copia o
+     .dev.vars para dist/server, e diretório de build é coisa que se compacta,
+     se copia e se arquiva sem pensar. */
+  const lancar = await readFile(new URL("../scripts/lancar.sh", import.meta.url), "utf8");
+  assert.match(lancar, /rm -f dist\/server\/\.dev\.vars/);
 
   /* O ensaio precisa de banco PRÓPRIO. Um ambiente de teste apontando para o
      banco de produção é pior que não ter ambiente de teste: dá a sensação de
@@ -511,11 +1009,35 @@ test("gives each coach their own athletes and their own base plans", async () =>
   // dono às planilhas existentes já deixa a contagem diferente de zero, e as
   // dez nunca chegariam.
   assert.match(worker, /if \(!Number\(jaSemeado\?\.total \?\? 0\)\) await semeiaPlanilhasDeFabrica\(env, principal\)/);
-  assert.match(worker, /role: "coach", password: senhaFinal/);
+  /* A criação passou a escolher o papel: treinador, proprietário ou aluno. O que
+     NÃO está entre as opções é "dev" — criar manutenção é dar acesso irrestrito,
+     e quem pudesse fazê-lo por esta porta daria a si mesmo o que a hierarquia
+     existe para negar. E "owner" é só para a manutenção: proprietário criando
+     proprietário é criar um par, não alguém da equipe dele. */
+  assert.match(worker, /const papeisAceitos = quemPede\?\.role === "dev" \? \["owner", "coach", "student"\] : \["coach", "student"\]/);
+  /* A linha contém `role === "dev"` como COMPARAÇÃO de quem pede; o que não pode
+     é "dev" dentro das listas de papéis aceitos. */
+  const listas = (worker.match(/const papeisAceitos = .*/)?.[0] ?? "").match(/\[[^\]]*\]/g) ?? [];
+  assert.ok(listas.length === 2, "esperava duas listas de papéis aceitos");
+  assert.ok(!listas.some(lista => lista.includes('"dev"')), "o papel dev não pode ser criável por esta porta");
+  assert.doesNotMatch(worker, /createAccount\([^)]*role: "dev"/);
+  assert.match(worker, /role: papel as "owner" \| "coach"/);
+
+  /* Conta de aluno é três coisas: a linha em user_accounts, o athlete_name que a
+     liga ao atleta, e o athlete_access ativo. Sem o nome a sessão não resolve;
+     sem o acesso a pessoa é recusada com a senha certa. Um caminho só faz isso,
+     usado pelo cadastro do treinador e pelo painel de manutenção. */
+  assert.match(worker, /async function criaContaDeAluno\(/);
+  assert.equal(worker.match(/role: "student", athleteName/g)?.length, 1,
+    "há mais de um lugar criando conta de aluno");
 
   // A aba Equipe é a única diferença de navegação entre proprietário e treinador.
   assert.match(client, /const navDoProprietario = \[\.\.\.nav, "Equipe"\]/);
-  assert.match(client, /active === "Equipe" && ehProprietario && <TeamCenter \/>/);
+  assert.match(client, /active === "Equipe" && ehProprietario && <TeamCenter session=\{session\} \/>/);
+  /* Dev > proprietário > treinador: quem está acima alcança o que está abaixo. A
+     condição era `role === "owner"` exata, então a manutenção — que pode tudo
+     pela API — não via a aba Equipe e não tinha por onde criar conta nenhuma. */
+  assert.match(client, /const ehProprietario = session\.role === "owner" \|\| session\.role === "dev"/);
 
   // Promover é ato do dev, e o papel aceito é curto: ninguém vira manutenção por aqui.
   assert.match(worker, /if \(papel !== "owner" && papel !== "coach"\) return Response\.json\(\{ error: "invalid_role" \}/);
@@ -2123,7 +2645,7 @@ test("stores passwords derived with PBKDF2 and never in plain text", async () =>
   const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
   assert.match(auth, /"PBKDF2"/);
   assert.match(auth, /hash: "SHA-256"/);
-  assert.match(auth, /PASSWORD_ITERATIONS = 210_000/);
+  assert.match(auth, /PASSWORD_ITERATIONS = 100_000/);  // teto dos Workers, ver o teste do runtime
   assert.match(auth, /crypto\.getRandomValues\(new Uint8Array\(16\)\)/);
   assert.match(auth, /function constantTimeEquals/);
   // O cookie carrega o token; o banco guarda apenas o hash dele.
@@ -2251,7 +2773,10 @@ test("describes the four providers honestly, including Apple's device-only path"
   // Cada provedor declara o seu tipo real de autorização.
   assert.match(source, /id: "strava"[\s\S]*?authType: "oauth2"/);
   assert.match(source, /id: "garmin"[\s\S]*?authType: "oauth2-pkce"/);
-  assert.match(source, /id: "zepp"[\s\S]*?authType: "oauth2"/);
+  /* O Zepp deixou de ser OAuth: a nuvem deles não publica leitura de atividades,
+     e o SDK do Zepp OS resolve por outro lado — mini-app no relógio, Side
+     Service no celular. Quem apresenta a credencial é um aparelho. */
+  assert.match(source, /id: "zepp"[\s\S]*?authType: "device"/);
   assert.match(source, /id: "apple"[\s\S]*?authType: "device"/);
   // A Apple não tem endpoint de autorização em servidor, e o código diz isso.
   assert.match(source, /Sem API de servidor/);
@@ -2332,8 +2857,19 @@ test("keeps a provider unavailable until its credentials exist", async () => {
   assert.equal(listed.status, 200);
   const { providers } = await listed.json();
   assert.equal(providers.length, 4);
-  assert.ok(providers.every((provider) => provider.available === false));
-  assert.ok(providers.every((provider) => provider.status === "Credenciais não configuradas"));
+  /* Só os provedores OAuth dependem de credencial no servidor. Os do tipo
+     "device" — Apple e Amazfit — não guardam token de servidor: o aparelho
+     apresenta um token de ingestão e os campos cifrados ficam vazios. Exigir
+     credencial deles fazia a tela dizer "credenciais não configuradas" para algo
+     que não usa credencial, e o atleta não conseguia conectar por uma exigência
+     que não existia. */
+  const porTipo = Object.fromEntries(providers.map((p) => [p.id, p]));
+  assert.equal(porTipo.strava.available, false);
+  assert.equal(porTipo.garmin.available, false);
+  assert.equal(porTipo.strava.status, "Credenciais não configuradas");
+  assert.equal(porTipo.garmin.status, "Credenciais não configuradas");
+  assert.equal(porTipo.apple.available, true);
+  assert.equal(porTipo.zepp.available, true);
 
   const attempt = await worker.fetch(new Request("https://zonasapp.example/api/student/integrations", {
     method: "POST", headers: { "content-type": "application/json", ...studentCookie },
@@ -2352,8 +2888,8 @@ test("gives the coach a way back in, since no one can reset that password in the
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(packageJson.scripts["coach:reset-password"], "node scripts/reset-coach-password.mjs");
   // A derivação precisa ser idêntica à do Worker, senão o hash gerado não entra.
-  assert.match(script, /PASSWORD_ITERATIONS = 210_000/);
-  assert.match(auth, /PASSWORD_ITERATIONS = 210_000/);
+  assert.match(script, /PASSWORD_ITERATIONS = 100_000/);
+  assert.match(auth, /PASSWORD_ITERATIONS = 100_000/);  // teto dos Workers, ver o teste do runtime
   assert.match(script, /iterations: PASSWORD_ITERATIONS, hash: "SHA-256"/);
   assert.match(script, /new Uint8Array\(16\)/);
   // Redefinir encerra as sessões abertas, como a troca de senha dentro do app.
@@ -3114,7 +3650,13 @@ test("uses PKCE only where the provider asks for it", async () => {
   const integrations = await readFile(new URL("../worker/integrations.ts", import.meta.url), "utf8");
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
   assert.match(integrations, /id: "garmin"[\s\S]*?authType: "oauth2-pkce"/);
-  assert.match(integrations, /id: "zepp"[\s\S]*?authType: "oauth2"/);
+  /* O Zepp deixou de ser OAuth. A nuvem deles não publica leitura de atividades,
+     e a API interna só se alcança por engenharia reversa — usá-la quebraria os
+     termos e poria a conta do atleta em risco. O SDK do Zepp OS resolve melhor:
+     um mini-app no relógio e um Side Service no celular buscam o treino e
+     devolvem o resultado sem nuvem intermediária. Quem apresenta a credencial é
+     um aparelho, então o tipo é "device", o mesmo do Atalho do iPhone. */
+  assert.match(integrations, /id: "zepp"[\s\S]*?authType: "device"/);
   // O desafio só é montado para quem pede PKCE, e o verifier fica no servidor.
   assert.match(worker, /provider\.authType === "oauth2-pkce" \? createCodeVerifier\(\) : null/);
   assert.match(worker, /if \(verifier\) \{\s*params\.set\("code_challenge"/);
@@ -3124,9 +3666,15 @@ test("keeps an Apple workout on the athlete who owns the token", async () => {
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
   // O corpo da requisição não escolhe o atleta: quem escolhe é o token.
   assert.match(worker, /SELECT athlete_name FROM device_ingest_tokens WHERE token_hash = \? AND revoked_at IS NULL/);
-  assert.match(worker, /storeActivity\(env, record\.athlete_name, "apple"/);
+  /* O provedor vem do token, não de uma constante: os treinos do relógio Amazfit
+     chegavam rotulados como Apple Saúde no painel — dado certo, origem errada. */
+  assert.match(worker, /storeActivity\(env, record\.athlete_name, provider,/);
+  assert.match(worker, /SELECT athlete_name, provider FROM device_ingest_tokens/);
   // Um token novo revoga o anterior, e desconectar revoga o que estiver ativo.
-  assert.match(worker, /UPDATE device_ingest_tokens SET revoked_at = \? WHERE athlete_name = \? AND provider = 'apple' AND revoked_at IS NULL/);
+  /* Um token ativo por aluno E POR PROVEDOR: o do relógio não pode revogar o do
+     iPhone. Estava cravado em 'apple' nas três instruções. */
+  assert.match(worker, /UPDATE device_ingest_tokens SET revoked_at = \? WHERE athlete_name = \? AND provider = \? AND revoked_at IS NULL/);
+  assert.match(worker, /async function issueDeviceIngestToken\(env: Env, athleteName: string, provider: ProviderId\)/);
   // A gravação é idempotente: reenviar o mesmo treino não duplica.
   assert.match(worker, /INSERT OR IGNORE INTO external_activities/);
 });
@@ -3152,7 +3700,14 @@ test("answers the Strava subscription handshake and refuses a wrong token", asyn
   // token combinado, qualquer um poderia inscrever um endpoint nosso.
   assert.match(worker, /async function stravaWebhookApi/);
   assert.match(worker, /"hub\.challenge": desafio/);
-  assert.match(worker, /token !== env\.STRAVA_WEBHOOK_VERIFY_TOKEN/);
+  /* A comparação era `!==`, que para na primeira letra diferente: quem chama o
+     endpoint mede o tempo da resposta e descobre o token caractere a caractere —
+     e com ele inscreve o próprio endereço para receber as atividades dos alunos.
+     Toda comparação de segredo passa pelo mesmo laço de tempo constante. */
+  assert.match(worker, /!constantTimeEquals\(token \?\? "", env\.STRAVA_WEBHOOK_VERIFY_TOKEN\)/);
+  assert.doesNotMatch(worker, /token !== env\.STRAVA_WEBHOOK_VERIFY_TOKEN/);
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+  assert.match(auth, /export function constantTimeEquals\(left: string, right: string\): boolean/);
   // O evento diz de quem é a atividade pelo id do atleta no Strava.
   assert.match(worker, /external_athlete_id = \? AND status = 'Conectado'/);
   // Exclusão no Strava tira a atividade daqui também.
@@ -3181,8 +3736,11 @@ test("does not invent an API where the provider has none", async () => {
   // aplicativo. Usar a segunda quebraria os termos e poria a conta do atleta
   // em risco, então a importação passa pelo Strava.
   assert.match(integrations, /id: "zepp"[\s\S]*?activitiesUrl: null/);
-  assert.match(integrations, /id: "zepp"[\s\S]*?canImportActivities: false/);
-  assert.match(integrations, /O caminho oficial é o Zepp enviar ao Strava/);
+  assert.match(integrations, /id: "zepp"[\s\S]*?canImportActivities: true/);
+  /* A nota mudou junto com o caminho: não há API de leitura, e o que passou a
+     existir é o mini-app no relógio. */
+  assert.match(integrations, /O mini-app do relógio busca o treino do dia/);
+  assert.match(integrations, /activitiesUrl: null/);
   assert.doesNotMatch(integrations, /huami\.com\/v1\/sport/);
   // A Apple também não tem endpoint de servidor: entra pelo Atalho do iOS.
   assert.match(integrations, /id: "apple"[\s\S]*?activitiesUrl: null/);

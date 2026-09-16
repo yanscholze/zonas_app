@@ -13,7 +13,29 @@
 
 export const SESSION_COOKIE = "zonas_session";
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-export const PASSWORD_ITERATIONS = 210_000;
+/* Teto da plataforma, não escolha de segurança.
+ *
+ * Era 210.000, o número que o OWASP recomenda para PBKDF2-SHA256. O Miniflare
+ * aceita, e por isso passou por todo o desenvolvimento sem reclamar — mas o
+ * runtime de verdade dos Workers recusa acima de 100.000:
+ *
+ *   NotSupportedError: Pbkdf2 failed: iteration counts above 100000 are not
+ *   supported (requested 210000)
+ *
+ * Com isso nenhuma conta era criada e nenhum login era conferido: as duas coisas
+ * derivam senha. O aplicativo subia e a tela de login respondia "não foi
+ * possível concluir" para qualquer credencial.
+ *
+ * 100.000 é o máximo possível aqui. O que compensa a diferença é o bloqueio por
+ * tentativas, que já existe (`failed_attempts` e `locked_until`): PBKDF2 protege
+ * contra quem rouba o banco, e o bloqueio contra quem tenta pela porta.
+ *
+ * As contas guardam a contagem usada em `password_iterations`, então uma linha
+ * antiga com 210.000 continua sendo conferida com 210.000 — e falharia nos
+ * Workers. Não há nenhuma: a produção nasceu vazia. Se um dia um banco local for
+ * levado para lá, essas contas precisam de senha nova.
+ */
+export const PASSWORD_ITERATIONS = 100_000;
 export const MIN_PASSWORD_LENGTH = 8;
 const MAX_FAILED_ATTEMPTS = 8;
 const LOCK_WINDOW_MS = 15 * 60 * 1000;
@@ -70,7 +92,9 @@ export type SessionIdentity =
    */
   | { role: "owner"; email: string; userId: string; name: string; mustChangePassword: boolean; visitando?: { email: string; name: string; userId: string } }
   | { role: "coach"; email: string; userId: string; name: string; mustChangePassword: boolean }
-  | { role: "student"; email: string; userId: string; name: string; athleteName: string; mustChangePassword: boolean };
+  | { role: "student"; email: string; userId: string; name: string; athleteName: string; mustChangePassword: boolean }
+  /** Conta criada, atleta ainda não vinculado: só alcança o pedido de acesso. */
+  | { role: "pendente"; email: string; userId: string; name: string; mustChangePassword: boolean };
 
 interface AuthDatabase {
   prepare(sql: string): {
@@ -126,8 +150,16 @@ export async function hashPassword(password: string): Promise<{ hash: string; sa
   return { hash, salt: toBase64(salt), iterations: PASSWORD_ITERATIONS };
 }
 
-/** Compara sem sair mais cedo, para não vazar quanto do hash bateu. */
-function constantTimeEquals(left: string, right: string): boolean {
+/**
+ * Compara sem sair mais cedo, para não vazar quanto do segredo bateu.
+ *
+ * Exportada porque a senha não é o único segredo comparado no sistema: o token
+ * do webhook do Strava era conferido com `!==`, que devolve na primeira letra
+ * diferente. Quem chama o endpoint mede o tempo da resposta e descobre o token
+ * caractere a caractere — e com ele inscreve o próprio endereço para receber as
+ * atividades dos alunos. Toda comparação de segredo passa por aqui.
+ */
+export function constantTimeEquals(left: string, right: string): boolean {
   if (left.length !== right.length) return false;
   let difference = 0;
   for (let index = 0; index < left.length; index += 1) {
@@ -269,7 +301,16 @@ export async function identityFromRequest(db: AuthDatabase, request: Request): P
   if (account.role === "coach") {
     return { role: "coach", email: account.email, userId: account.id, name: account.name, mustChangePassword };
   }
-  if (!account.athlete_name) return null;
+  /* Aluno recém-cadastrado ainda não tem atleta: ele acabou de criar a conta e
+     precisa pedir acesso. Devolver null aqui fazia `/api/session` responder 401,
+     a tela de cadastro nunca trocava e o botão ficava preso em "Enviando…" —
+     com a conta criada e a pessoa sem lugar nenhum.
+     O papel é outro de propósito: "pendente" não é "aluno". Assim as rotas de
+     /api/student/*, que exigem `role === "student"` e usam `athleteName`, o
+     recusam sem que ninguém precise lembrar de checar o nome do atleta. */
+  if (!account.athlete_name) {
+    return { role: "pendente", email: account.email, userId: account.id, name: account.name, mustChangePassword };
+  }
   return {
     role: "student",
     email: account.email,

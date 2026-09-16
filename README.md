@@ -65,7 +65,7 @@ dele: é a única conta sem recuperação dentro do aplicativo. Se a senha se
 perder, use o script abaixo, que age direto no banco.
 
 ```bash
-npm run coach:reset-password -- "minha-nova-senha-2026"
+npm run coach:reset-password -- "<SUA_NOVA_SENHA>"
 ```
 
 Sem o argumento, o script gera uma senha aleatória e a imprime. Para corrigir
@@ -73,7 +73,7 @@ também o endereço de login — por exemplo quando a conta já foi semeada com 
 e-mail padrão — acrescente `--email`:
 
 ```bash
-npm run coach:reset-password -- "minha-nova-senha-2026" --email voce@email.com
+npm run coach:reset-password -- "<SUA_NOVA_SENHA>" --email voce@email.com
 ``` Ele encerra as
 sessões abertas e mostra, ao final, o comando `wrangler d1 execute` equivalente
 para fazer o mesmo em produção.

@@ -1,0 +1,36 @@
+{
+  "configVersion": "v3",
+  "app": {
+    "appId": 1052001,
+    "appName": "ZonasApp",
+    "appType": "app",
+    "version": { "code": 1, "name": "1.0.0" },
+    "icon": "assets/icon.png",
+    "vender": "ZonasApp",
+    "description": "Recebe o treino do dia e devolve o resultado, sozinho."
+  },
+
+  "permissions": [
+    "device:os.local_storage",
+    "data:user.hd.workout"
+  ],
+
+  "runtime": {
+    "apiVersion": { "minVersion": "2.0", "targetVersion": "3.0", "compatibleVersion": "2.0" }
+  },
+
+  "targets": {
+    "gtr-4": { "module": { "page": { "main": "page/index" } }, "platforms": [{ "name": "gtr-4", "deviceSource": 7864320 }] },
+    "gts-4": { "module": { "page": { "main": "page/index" } }, "platforms": [{ "name": "gts-4", "deviceSource": 7929856 }] },
+    "t-rex-ultra": { "module": { "page": { "main": "page/index" } }, "platforms": [{ "name": "t-rex-ultra", "deviceSource": 8060928 }] }
+  },
+
+  "module": {
+    "page": { "main": "page/index" },
+    "app-side": { "main": "app-side/index" },
+    "setting": { "main": "setting/index" }
+  },
+
+  "i18n": { "pt-BR": { "appName": "ZonasApp" }, "en-US": { "appName": "ZonasApp" } },
+  "defaultLanguage": "pt-BR"
+}

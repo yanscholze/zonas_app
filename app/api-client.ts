@@ -66,6 +66,17 @@ const friendlyMessages: Record<string, string> = {
   provider_setup_required: "Este serviço ainda não foi liberado pelo professor.",
 };
 
+/**
+ * A mensagem amigável de um código, para quem lê a resposta sem `ApiError`.
+ *
+ * Existe porque nem toda chamada passa por `api.*`: algumas usam `fetch` direto
+ * e precisavam traduzir o erro por conta própria — ou, pior, não traduziam e
+ * inventavam uma explicação que não era a certa.
+ */
+export function describeErrorCode(code: string, status: number): string {
+  return friendlyMessages[code] ?? friendlyByStatus(status);
+}
+
 function friendlyByStatus(status: number): string {
   if (status === 401 || status === 403) return "Você não tem permissão para esta ação.";
   if (status === 404) return "Recurso não encontrado.";

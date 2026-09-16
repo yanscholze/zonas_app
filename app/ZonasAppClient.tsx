@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { signOut, type Session } from "./AuthGate";
-import { api, copyText, describeError, definePreviaDoTreinador, PreviaDoTreinador } from "./api-client";
+import { api, copyText, describeError, describeErrorCode, definePreviaDoTreinador, PreviaDoTreinador } from "./api-client";
 import { NavIcon, IconMais, IconTrocarVisao, IconSair, IconAviso } from "./icons";
 import { avise, pergunte, CentralDeAvisos } from "./avisos";
+import { Assinatura } from "./assinatura";
 import { leArquivoDeAtividade, ArquivoInvalido } from "./atividade-arquivo";
 import { reduzComprovante, ComprovanteInvalido } from "./comprovante";
 
@@ -33,7 +34,31 @@ import { trainingPlans, sessionPriority } from "@/db/planilhas-de-fabrica";
    fábrica guardado no cliente: depois que cada treinador passou a ter a própria
    biblioteca, esse retorno vazaria os treinos das dez planilhas originais para
    quem apenas usasse o mesmo nome numa planilha dele. */
-const sessionsForSavedPlanWeek=async(planName:string,weekNumber:number,days:string[])=>{let template:StructuredSession[]=[];try{const response=await fetch(`/api/plan-template-overrides?plan=${encodeURIComponent(planName)}&week=${weekNumber}`);if(response.ok){const data=await response.json();if(Array.isArray(data.override?.sessions)&&data.override.sessions.length)template=data.override.sessions}}catch{}if(!template.length)return{};const chosen=template.map((session,index)=>({session,index})).sort((a,b)=>sessionPriority(b.session)-sessionPriority(a.session)).slice(0,days.length).sort((a,b)=>a.index-b.index).map(item=>item.session);return Object.fromEntries(days.slice(0,chosen.length).map((day,index)=>[day,chosen[index]]))};
+/* Devolve os treinos da semana, ou o motivo de não ter conseguido.
+   Antes engolia qualquer falha num `catch{}` e devolvia vazio, e quem chamava
+   dizia ao treinador que a planilha estava incompleta. Podia ser 403 por a
+   manutenção não estar na área de nenhum treinador, ou 400, ou a rede: a tela
+   acusava o dado dele em todos os casos. */
+const sessionsForSavedPlanWeek=async(planName:string,weekNumber:number,days:string[]):Promise<{sessoes:Record<string,StructuredSession>;falha?:string}>=>{
+  let template:StructuredSession[]=[];
+  try{
+    const response=await fetch(`/api/plan-template-overrides?plan=${encodeURIComponent(planName)}&week=${weekNumber}`);
+    if(!response.ok){
+      const corpo=await response.json().catch(()=>({}));
+      const codigo=String((corpo as {error?:string}).error||"");
+      return {sessoes:{},falha:codigo==="coach_scope_required"
+        ?"A manutenção não está na área de nenhum treinador. Entre na área de um pela aba Equipe para ver as planilhas dele."
+        :codigo==="invalid_plan_week"
+          ?`A planilha ${planName} não está na biblioteca deste treinador.`
+          :describeErrorCode(codigo,response.status)};
+    }
+    const data=await response.json();
+    if(Array.isArray(data.override?.sessions)&&data.override.sessions.length)template=data.override.sessions;
+  }catch{ return {sessoes:{},falha:"Sem conexão com o servidor."}; }
+  if(!template.length)return {sessoes:{}};
+  const chosen=template.map((session,index)=>({session,index})).sort((a,b)=>sessionPriority(b.session)-sessionPriority(a.session)).slice(0,days.length).sort((a,b)=>a.index-b.index).map(item=>item.session);
+  return {sessoes:Object.fromEntries(days.slice(0,chosen.length).map((day,index)=>[day,chosen[index]]))};
+};
 const phaseForPlanWeek=(planName:string,weekNumber:number)=>{const plan=trainingPlans.find(item=>item.name===planName);if(!plan)return"Base";const value=plan.phases[Math.min(plan.phases.length-1,Math.floor((weekNumber-1)/(plan.weeks/plan.phases.length)))];if(value.includes("Adaptação"))return"Adaptação";if(value.includes("Base"))return"Base";if(value.includes("Pré")||value.includes("Polimento")||value.includes("Desafio"))return"Pré-prova";if(value.includes("Específica")||value.includes("Ritmo específico"))return"Específica";return"Desenvolvimento"};
 /** A lista de alunos vem sempre do banco. Não há dados de demonstração. */
 const athletes: Athlete[] = [];
@@ -123,7 +148,10 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
   const [active, setActive] = useState("Painel");
   const [mobileMenu, setMobileMenu] = useState(false);
   const coachInitials = initialsOf(session.name);
-  const ehProprietario = session.role === "owner";
+  /* Dev > proprietário > treinador: quem está acima alcança o que está abaixo.
+     A condição era `role === "owner"` exata, então a manutenção — que pode tudo
+     pela API — não via a aba Equipe e não tinha por onde criar conta nenhuma. */
+  const ehProprietario = session.role === "owner" || session.role === "dev";
   const itensDeNavegacao = ehProprietario ? navDoProprietario : nav;
   const [distanceFilter, setDistanceFilter] = useState("Todos");
   const [phaseFilter, setPhaseFilter] = useState("Todas");
@@ -227,6 +255,13 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
         <div className="coach"><b>{coachInitials}</b><span><strong>{session.name}</strong><small>{session.email}</small></span><button className="coach-exit" onClick={()=>void signOut()} title="Sair e entrar com outra conta" aria-label="Sair e entrar com outra conta"><IconSair /></button></div>
       </aside>
 
+      {/* A manutenção sem visita não tem carteira: os endereços que dependem de um
+          treinador — planilhas, convite, financeiro — recusam com 403. Antes nada
+          dizia isso, e a primeira ação a falhar culpava o dado do treinador. */}
+      {session.role === "dev" && !visitando && <div className="dev-sem-area">
+        <span>Você está no painel do treinador <b>sem estar na área de ninguém</b>. Planilhas, convites e financeiro pertencem a um treinador e não abrem assim.</span>
+        <button onClick={() => setActive("Equipe")}>Escolher um treinador →</button>
+      </div>}
       {visitando && <div className="dev-visiting-banner">
         <span>Você está na área de <b>{visitando.name}</b> · {visitando.email}</span>
         {onLeaveDev && <button onClick={onLeaveDev}>Voltar ao diagnóstico</button>}
@@ -244,9 +279,9 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
       </div>}
 
       <main className="content">
-        <header className="top"><div><small>{brazilCalendar().label.toUpperCase()}</small><h1>{active === "Painel" ? `${greeting()}, ${session.name.split(" ")[0]}` : active}</h1></div><div className="top-actions">{active === "Alunos" && <button className="gold" onClick={() => setNewAthlete(true)}>+ Novo aluno</button>}<button className="coach-alert-button" onClick={()=>setActive("Painel")} aria-label="Abrir avisos do professor"><IconAviso /><b>{painReports.length+pendingRaces.filter(race=>race.status==="Aguardando análise").length+pendingTests.filter(test=>test.status!=="Aprovado").length+pendingAccess.length}</b><span>avisos</span></button>{onLeaveDev&&<button className="coach-signout" onClick={onLeaveDev}>← Diagnóstico</button>}<button className="coach-signout" onClick={()=>void signOut()} title={session.email}>Sair</button></div></header>
+        <header className="top"><div><small>{brazilCalendar().label.toUpperCase()}</small><h1>{active === "Painel" ? `${greeting()}, ${session.name.split(" ")[0]}` : active}</h1></div><div className="top-actions">{active === "Cadastros" && <button className="gold" onClick={() => setNewAthlete(true)}>+ Novo aluno</button>}<button className="coach-alert-button" onClick={()=>setActive("Painel")} aria-label="Abrir avisos do professor"><IconAviso /><b>{painReports.length+pendingRaces.filter(race=>race.status==="Aguardando análise").length+pendingTests.filter(test=>test.status!=="Aprovado").length+pendingAccess.length}</b><span>avisos</span></button>{onLeaveDev&&<button className="coach-signout" onClick={onLeaveDev}>← Diagnóstico</button>}<button className="coach-signout" onClick={()=>void signOut()} title={session.email}>Sair</button></div></header>
         {active === "Painel" && <><CoachWeekSummary go={setActive} athletes={athleteRecords} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests}/><CoachNotificationCenter go={setActive} openPain={setPainCase} painReports={painReports} pendingRaces={pendingRaces} pendingTests={pendingTests} pendingAccess={pendingAccess}/><CoachGroups go={setActive} chooseDistance={(d) => { setDistanceFilter(d); setActive("Alunos"); }} athletes={athleteRecords}/><WorkoutAccuracy/><TrainingFeedbacks/></>}
-        {active === "Cadastros" && <><InviteLink/><AccessRequests onApproved={()=>{setPendingAccess(current=>current.slice(1));fetch("/api/athletes").then(r=>r.ok?r.json():{athletes:[]}).then(data=>{const saved=(data.athletes||[]).map((a:any)=>({name:a.name,initials:a.initials,distance:a.distance,plan:a.saved_plan||defaultPlanForDistance(a.distance),phase:a.planning_phase||a.phase,week:a.planning_week_number?`${a.planning_week_number} de ${a.planning_total_weeks}`:a.week,next:a.next_workout,flag:a.status||undefined}));setAthleteRecords(current=>[...saved,...current.filter(a=>!saved.some((s:Athlete)=>s.name===a.name))])})}}/></>} 
+        {active === "Cadastros" && <><CaminhosDeEntrada abrirNovo={()=>setNewAthlete(true)}/><InviteLink/><AccessRequests onApproved={()=>{setPendingAccess(current=>current.slice(1));fetch("/api/athletes").then(r=>r.ok?r.json():{athletes:[]}).then(data=>{const saved=(data.athletes||[]).map((a:any)=>({name:a.name,initials:a.initials,distance:a.distance,plan:a.saved_plan||defaultPlanForDistance(a.distance),phase:a.planning_phase||a.phase,week:a.planning_week_number?`${a.planning_week_number} de ${a.planning_total_weeks}`:a.week,next:a.next_workout,flag:a.status||undefined}));setAthleteRecords(current=>[...saved,...current.filter(a=>!saved.some((s:Athlete)=>s.name===a.name))])})}}/></>} 
         {active === "Alunos" && <Athletes filtered={filtered} allAthletes={athleteRecords} distance={distanceFilter} phase={phaseFilter} plan={planFilter} setDistance={setDistanceFilter} setPhase={setPhaseFilter} setPlan={setPlanFilter} openProfile={setSelectedAthlete} situation={situationFilter} setSituation={setSituationFilter} counts={athleteCounts} onArchiveChange={()=>refreshAthleteRecords()} />}
         {active === "Testes e zonas" && <PendingTestCenter athletes={athleteRecords} openCalendar={(name)=>{sessionStorage.setItem("zonasapp:calendar-athlete",name);setActive("Calendário")}} />}
         {active === "Testes e zonas" && <TestCalculator athletes={athleteRecords} testDistance={testDistance} setTestDistance={setTestDistance} minutes={minutes} setMinutes={setMinutes} seconds={seconds} setSeconds={setSeconds} age={age} setAge={setAge} calc={calc} />}
@@ -257,12 +292,34 @@ export default function ZonasAppClient({ session, onLeaveDev, visitando }: { ses
         {active === "Integrações" && <CoachIntegrations />}
         {active === "Contas" && <AccountsCenter athletes={athleteRecords} />}
         {active === "Segurança" && <><SecurityCenter /><ErrorMonitor /></>}
-        {active === "Equipe" && ehProprietario && <TeamCenter />}
+        {active === "Equipe" && ehProprietario && <TeamCenter session={session} />}
+        <Assinatura />
       </main>
       {selectedAthlete && <AthleteProfile athlete={selectedAthlete} close={() => setSelectedAthlete(null)} onOpenPain={id => setPainCase({ id, athleteName: selectedAthlete.name })} />}
       {painCase && <PainCaseScreen reportId={painCase.id} athleteName={painCase.athleteName} close={() => { setPainCase(null); window.dispatchEvent(new Event("zonasapp:athletes-refresh")); }} />}
       {newAthlete && <NewAthlete close={() => setNewAthlete(false)} save={async (athlete, details) => { /* Campos explícitos, não `...athlete`: o objeto da tela carrega `plan`, `next` e `flag`, que existem só aqui. O envelope da API recusa campo desconhecido, e era isso que devolvia "Não foi possível salvar agora" no cadastro. */
-        const response = await fetch("/api/athletes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: athlete.name, initials: athlete.initials, distance: athlete.distance, phase: athlete.phase, week: athlete.week, nextWorkout: athlete.next, status: athlete.flag, ...details }) }); if (!response.ok) throw new Error("save_failed");const totalWeeks=Number(athlete.week.match(/de (\d+)/)?.[1]||12);const planning=await fetch("/api/athlete-planning",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({athleteName:athlete.name,plan:athletePlan(athlete),phase:athlete.phase,weekNumber:1,totalWeeks})});if(!planning.ok)throw new Error("planning_failed"); setAthleteRecords(current => [athlete, ...current]); setNewAthlete(false); }} />}
+        const response = await fetch("/api/athletes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: athlete.name, initials: athlete.initials, distance: athlete.distance, phase: athlete.phase, week: athlete.week, nextWorkout: athlete.next, status: athlete.flag, ...details }) }); if (!response.ok) throw new Error("save_failed");const totalWeeks=Number(athlete.week.match(/de (\d+)/)?.[1]||12);const planning=await fetch("/api/athlete-planning",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({athleteName:athlete.name,plan:athletePlan(athlete),phase:athlete.phase,weekNumber:1,totalWeeks})});if(!planning.ok)throw new Error("planning_failed");
+        /* Com e-mail, o acesso nasce junto. Antes o cadastro criava só a ficha, e
+           o aluno ficava sem conseguir entrar até alguém lembrar de passar na aba
+           Contas — que era a metade que faltava, e a razão de haver três lugares
+           para cadastrar um aluno. */
+        const emailDeAcesso = String(details.email ?? "").trim();
+        if (emailDeAcesso) {
+          try {
+            const conta = await api.post<{temporaryPassword?:string}>("/api/accounts", { action:"create", athleteName: athlete.name, name: athlete.name, email: emailDeAcesso });
+            avise("ok", `${athlete.name} cadastrado · senha ${conta.temporaryPassword ?? ""}`.trim(),
+              `Anote agora e entregue a ${emailDeAcesso}. Ele terá de trocá-la no primeiro acesso, e esta senha não aparece de novo.`);
+          } catch (erro) {
+            /* A ficha já existe: dizer que o cadastro falhou seria mentira, e
+               refazê-lo criaria um aluno duplicado. O acesso pode ser criado
+               depois, na aba Contas. */
+            avise("atencao", `${athlete.name} cadastrado, mas sem acesso`,
+              `A ficha foi salva. O login não: ${describeError(erro, "tente criá-lo na aba Contas.")}`);
+          }
+        } else {
+          avise("ok", `${athlete.name} cadastrado`, "Sem e-mail informado, ele ainda não tem acesso ao aplicativo. Dá para criar depois na aba Contas.");
+        }
+        setAthleteRecords(current => [athlete, ...current]); setNewAthlete(false); }} />}
       {selectedTemplate && <PlanDetails plan={selectedTemplate} close={()=>setSelectedTemplate(null)} />}
       <CentralDeAvisos />
     </div>
@@ -433,10 +490,8 @@ function AccountsCenter({ athletes }: { athletes: Athlete[] }) {
   };
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "saving" | "error">("loading");
-  const [form, setForm] = useState({ athleteName: "", name: "", email: "" });
   const [issued, setIssued] = useState<{ email: string; password: string } | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
-  const [error, setError] = useState("");
 
   const load = () => fetch("/api/accounts")
     .then(response => response.ok ? response.json() : Promise.reject())
@@ -447,31 +502,26 @@ function AccountsCenter({ athletes }: { athletes: Athlete[] }) {
   const linked = new Set(accounts.map(account => account.athlete_name).filter(Boolean));
   const availableAthletes = athletes.filter(athlete => !linked.has(athlete.name));
 
+  /* O erro ia para um estado local que a tela não mostrava mais depois que a
+     criação saiu daqui — escrevia no vazio. Vai para a Central de avisos, que é
+     por onde o resto do sistema fala. */
   const send = async (body: Record<string, string>) => {
-    setState("saving"); setError("");
+    setState("saving");
     try {
       const response = await fetch("/api/accounts", {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        setError(payload.error === "email_already_registered" ? "Este e-mail já está em uso por outra conta." : "Não foi possível concluir a ação.");
+        avise("erro", "Não foi possível concluir",
+          payload.error === "email_already_registered" ? "Este e-mail já está em uso por outra conta." : "Tente novamente em alguns instantes.");
         setState("ready"); return null;
       }
       await load();
       return payload as { temporaryPassword?: string; email?: string };
-    } catch { setError("Sem conexão com o servidor."); setState("ready"); return null; }
+    } catch { avise("erro", "Sem conexão com o servidor", "Verifique a internet e tente de novo."); setState("ready"); return null; }
   };
 
-  const create = async () => {
-    const chosen = form.athleteName || availableAthletes[0]?.name || "";
-    if (!chosen || !form.email.includes("@") || form.name.trim().length < 3) { setError("Preencha aluno, nome e e-mail."); return; }
-    const result = await send({ action: "create", athleteName: chosen, name: form.name, email: form.email });
-    if (result?.temporaryPassword) {
-      setIssued({ email: result.email || form.email, password: result.temporaryPassword });
-      setForm({ athleteName: "", name: "", email: "" });
-    }
-  };
 
   const reset = async (email: string) => {
     const result = await send({ action: "reset_password", email });
@@ -501,27 +551,15 @@ function AccountsCenter({ athletes }: { athletes: Athlete[] }) {
       {copyState === "failed" && <small className="account-issued-manual">Não foi possível copiar automaticamente. Selecione a senha acima e copie à mão.</small>}
     </div>}
 
-    <section className="account-create">
-      <header><b>Criar acesso para um aluno</b><span>{plural(availableAthletes.length, "aluno")} ainda sem conta</span></header>
-      <div className="account-create-grid">
-        <label>Aluno
-          <select value={form.athleteName} onChange={event => setForm({ ...form, athleteName: event.target.value })}>
-            <option value="">Selecione…</option>
-            {availableAthletes.map(athlete => <option key={athlete.name}>{athlete.name}</option>)}
-          </select>
-        </label>
-        <label>Nome para o login
-          <input value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} placeholder="Nome completo" />
-        </label>
-        <label>E-mail
-          <input type="email" value={form.email} onChange={event => setForm({ ...form, email: event.target.value })} placeholder="aluno@email.com" />
-        </label>
-      </div>
-      {error && <p className="registration-error">{error}</p>}
-      <button className="gold" disabled={state === "saving" || !availableAthletes.length} onClick={create}>
-        {state === "saving" ? "Criando…" : "Criar acesso e gerar senha"}
-      </button>
-    </section>
+    {/* A criação saiu daqui. Havia três lugares para cadastrar um aluno, e este
+        criava só o login — quem o usasse precisava ter criado a ficha antes, em
+        outra aba, sem nada dizendo isso. Cadastrar é em Cadastros; aqui ficam os
+        acessos que já existem. */}
+    {availableAthletes.length > 0 && <section className="account-pendentes">
+      <b>{plural(availableAthletes.length, "aluno")} sem acesso ao aplicativo</b>
+      <span>{availableAthletes.slice(0, 6).map(a => a.name).join(" · ")}{availableAthletes.length > 6 ? " e outros" : ""}</span>
+      <small>Para liberar, abra a ficha do aluno em Alunos e informe o e-mail dele.</small>
+    </section>}
 
     <section className="account-list">
       <header><span>PESSOA</span><span>E-MAIL</span><span>ALUNO VINCULADO</span><span>SITUAÇÃO</span><span>AÇÕES</span></header>
@@ -876,6 +914,27 @@ function PlanLibrary({open}:{open:(plan:TrainingPlan)=>void}) {
      abertura, antes da resposta chegar — e um treinador com dez planilhas lia
      que não tinha nenhuma. */
   const [carregando,setCarregando]=useState(true);
+  const [importando,setImportando]=useState(false);
+
+  /* O arquivo é lido no navegador e só o conteúdo segue, como no anexo de treino
+     e no comprovante. O que vai para o servidor são as planilhas; o arquivo em
+     si não sobe. */
+  const importarArquivo=async(arquivo?:File)=>{
+    if(!arquivo)return;
+    setImportando(true);
+    try{
+      const texto=await arquivo.text();
+      const conteudo=JSON.parse(texto) as {plans?:unknown[]};
+      if(!Array.isArray(conteudo.plans)||!conteudo.plans.length)throw new Error("sem planilhas");
+      const resultado=await api.post<{planilhas:number;semanas:number}>("/api/plans",{action:"import",plans:conteudo.plans});
+      await carregar();
+      avise("ok",`${plural(resultado.planilhas,"planilha")} importada${resultado.planilhas===1?"":"s"}`,`${plural(resultado.semanas,"semana")} com treinos montados. Planilha de mesmo nome foi substituída.`);
+    }catch(erro){
+      avise("erro","Não foi possível importar",erro instanceof SyntaxError||String(erro).includes("sem planilhas")
+        ?"O arquivo não parece ser uma biblioteca do ZonasApp. Use um arquivo exportado daqui."
+        :describeError(erro,"Confira o arquivo e tente de novo."));
+    }finally{setImportando(false)}
+  };
   const [editando,setEditando]=useState<{id:string;name:string;distance:string;weeks:number;goal:string}|null>(null);
   const carregar=useCallback(()=>api.get<{plans:PlanoProprio[]}>("/api/plans").then(dados=>setProprias(dados.plans||[])).catch(()=>setProprias([])).finally(()=>setCarregando(false)),[]);
   useEffect(()=>{void carregar()},[carregar]);
@@ -900,7 +959,13 @@ function PlanLibrary({open}:{open:(plan:TrainingPlan)=>void}) {
 
   return <><div className="library-intro"><div><span className="overline">BIBLIOTECA DE TREINAMENTO</span><h2>Suas planilhas-base</h2><p>Escolha uma estrutura, veja as semanas e depois aplique ao aluno. Os ritmos e a frequência cardíaca continuam individuais.</p></div><div><b>{proprias.length}</b><span>{plural(proprias.length,"planilha")}</span></div></div>
 
-  <div className="section-title"><div><small>SUAS PLANILHAS</small><h2>Criadas por você</h2></div><button onClick={()=>setEditando({id:"",name:"",distance:"Livre",weeks:12,goal:""})}>+ Nova planilha</button></div>
+  <div className="section-title"><div><small>SUAS PLANILHAS</small><h2>Criadas por você</h2></div><div className="plan-acoes">
+    <label className="plan-importar">
+      <input type="file" accept=".json,application/json" disabled={importando} onChange={evento=>void importarArquivo(evento.target.files?.[0])}/>
+      <span>{importando?"Importando…":"Importar arquivo"}</span>
+    </label>
+    <button onClick={()=>setEditando({id:"",name:"",distance:"Livre",weeks:12,goal:""})}>+ Nova planilha</button>
+  </div></div>
   {editando&&<section className="plan-form">
     <label>Nome<input value={editando.name} onChange={event=>setEditando({...editando,name:event.target.value})} placeholder="Ex.: Base de inverno"/></label>
     <label>Distância<input value={editando.distance} onChange={event=>setEditando({...editando,distance:event.target.value})} placeholder="10 km, Meia, Livre…"/></label>
@@ -935,13 +1000,17 @@ function PlanLibrary({open}:{open:(plan:TrainingPlan)=>void}) {
  * O treinador nasce sem aluno e sem planilha. Isso não é um estado a corrigir:
  * a carteira e a biblioteca são dele, e começam vazias.
  */
-function TeamCenter() {
+function TeamCenter({session}:{session:Session}) {
   type Membro = { id:string; email:string; name:string; role:string; status:string; last_login_at:number|null; alunos_ativos:number; planilhas:number };
   const [equipe,setEquipe]=useState<Membro[]>([]);
   const [carregando,setCarregando]=useState(true);
   const [visitando,setVisitando]=useState<{email:string;name:string}|null>(null);
   const [criando,setCriando]=useState(false);
-  const [formulario,setFormulario]=useState({name:"",email:""});
+  const [formulario,setFormulario]=useState({name:"",email:"",role:"coach",athleteName:""});
+  /* Só a manutenção cria proprietário: proprietário criando proprietário é criar
+     um par, não alguém da equipe dele. O servidor recusa de todo jeito; aqui a
+     opção nem aparece, para não oferecer o que vai ser negado. */
+  const ehManutencao=session.role==="dev";
   const [salvando,setSalvando]=useState(false);
 
   const carregar=useCallback(()=>api.get<{coaches:Membro[];visitando:{email:string;name:string}|null}>("/api/equipe")
@@ -953,8 +1022,11 @@ function TeamCenter() {
   const criar=async()=>{
     setSalvando(true);
     try{
-      const criado=await api.post<{email:string;temporaryPassword:string}>("/api/equipe",{action:"create",name:formulario.name,email:formulario.email});
-      setCriando(false);setFormulario({name:"",email:""});await carregar();
+      const criado=await api.post<{email:string;temporaryPassword:string}>("/api/equipe",{
+        action:"create",name:formulario.name,email:formulario.email,role:formulario.role,
+        athleteName:formulario.role==="student"?formulario.athleteName:undefined,
+      });
+      setCriando(false);setFormulario({name:"",email:"",role:"coach",athleteName:""});await carregar();
       /* A senha temporária aparece uma vez só: ela não fica guardada em texto
          em lugar nenhum, então avisar é a única chance de anotá-la. */
       avise("ok",`Treinador criado · senha ${criado.temporaryPassword}`,`Anote agora e entregue a ${criado.email}. Ele terá de trocá-la no primeiro acesso, e esta senha não aparece de novo.`);
@@ -981,8 +1053,16 @@ function TeamCenter() {
     {criando&&<section className="team-form">
       <label>Nome<input value={formulario.name} onChange={evento=>setFormulario({...formulario,name:evento.target.value})} placeholder="Nome completo"/></label>
       <label>E-mail<input type="email" value={formulario.email} onChange={evento=>setFormulario({...formulario,email:evento.target.value})} placeholder="email@exemplo.com"/></label>
-      <div><button className="gold" disabled={salvando||formulario.name.trim().length<3||!formulario.email.includes("@")} onClick={()=>void criar()}>{salvando?"Criando…":"Criar treinador"}</button></div>
-      <p className="team-form-nota">Ele começa sem aluno e sem planilha. A carteira e a biblioteca são dele, e o que você tem não é copiado.</p>
+      <label>Papel<select value={formulario.role} onChange={evento=>setFormulario({...formulario,role:evento.target.value})}>
+        <option value="coach">Treinador</option>
+        {ehManutencao&&<option value="owner">Proprietário</option>}
+        <option value="student">Aluno</option>
+      </select></label>
+      {formulario.role==="student"&&<label>Atleta<input value={formulario.athleteName} onChange={evento=>setFormulario({...formulario,athleteName:evento.target.value})} placeholder="Nome exato do aluno já cadastrado"/></label>}
+      <div><button className="gold" disabled={salvando||formulario.name.trim().length<3||!formulario.email.includes("@")||(formulario.role==="student"&&!formulario.athleteName.trim())} onClick={()=>void criar()}>{salvando?"Criando…":"Criar conta"}</button></div>
+      <p className="team-form-nota">{formulario.role==="student"
+        ?"O atleta precisa já existir no cadastro de algum treinador — a conta é o acesso dele, não o cadastro."
+        :"Começa sem aluno e sem planilha. A carteira e a biblioteca são dele, e o que você tem não é copiado."}</p>
     </section>}
 
     {carregando?<section className="team-empty"><p>Carregando sua equipe…</p></section>
@@ -1059,6 +1139,40 @@ const semAssinatura = () => () => {};
 const origemDoNavegador = () => window.location.origin;
 const temCompartilhamentoNativo = () => typeof navigator.share === "function";
 
+
+/**
+ * Como um aluno entra na plataforma.
+ *
+ * Havia três lugares para cadastrar um aluno — Cadastros, Alunos e Contas — e
+ * eles não faziam a mesma coisa: um criava a ficha sem o login, outro o login
+ * sem a ficha, e só o terceiro criava tudo. Quem usasse o do meio ficava com um
+ * aluno que não conseguia entrar, sem nada na tela dizendo o que faltava.
+ *
+ * Agora os dois caminhos que existem estão no mesmo lugar, e cada um diz o que
+ * faz. Alunos virou a lista de quem já está; Contas, os acessos que já existem.
+ */
+function CaminhosDeEntrada({abrirNovo}:{abrirNovo:()=>void}) {
+  return <section className="entrada-caminhos">
+    <div>
+      <span className="overline">COMO UM ALUNO ENTRA</span>
+      <h2>Dois caminhos</h2>
+      <p>Os dois terminam no mesmo lugar: ficha criada e acesso liberado.</p>
+    </div>
+    <div className="entrada-opcoes">
+      <article>
+        <b>Você cadastra</b>
+        <p>Preenche a ficha e, informando o e-mail, o acesso é criado junto — com a senha temporária na hora.</p>
+        <button className="gold" onClick={abrirNovo}>+ Novo aluno</button>
+      </article>
+      <article>
+        <b>O aluno se cadastra</b>
+        <p>Você envia o link abaixo, ele preenche os próprios dados e aparece aqui para você liberar.</p>
+        <small>Use quando não tiver os dados dele em mãos.</small>
+      </article>
+    </div>
+  </section>;
+}
+
 function InviteLink(){
   /**
    * Envio do convite de cadastro.
@@ -1083,7 +1197,42 @@ function InviteLink(){
   // outro; resolvê-las num efeito dispararia uma segunda renderização à toa.
   // useSyncExternalStore existe exatamente para isto: declara o valor do
   // servidor e o do cliente, e o React concilia sem remontar.
-  const link = useSyncExternalStore(semAssinatura, origemDoNavegador, () => "");
+  const origem = useSyncExternalStore(semAssinatura, origemDoNavegador, () => "");
+  /* O link leva o convite do treinador. Sem ele o aluno chegava sem dono e o
+     pedido caía na lista de todos — com equipe, o aluno de um podia acabar na
+     carteira de outro por ordem de clique. O código é opaco de propósito: pôr o
+     e-mail do treinador na URL o expõe a quem recebe e deixa qualquer um forjar
+     o vínculo digitando outro endereço. */
+  type Convite={code:string;expires_at:number|null;max_uses:number|null;uses:number;revoked_at:number|null};
+  const [convites,setConvites]=useState<Convite[]>([]);
+  /* O relógio vem do servidor, não do aparelho. Chamar `Date.now()` durante a
+     renderização a torna impura — e o relógio de quem está olhando pode estar
+     errado, o que faria um link válido parecer vencido, ou o contrário. */
+  const [agora,setAgora]=useState(0);
+  const [emitindo,setEmitindo]=useState(false);
+  const carregarConvites=useCallback(()=>api.get<{convites:Convite[];agora:number}>("/api/convite")
+    .then(dados=>{setConvites(dados.convites||[]);setAgora(Number(dados.agora)||0)})
+    .catch(()=>setConvites([])),[]);
+  useEffect(()=>{void carregarConvites()},[carregarConvites]);
+
+  const valeAinda=(c:Convite)=>!c.revoked_at
+    &&(!c.expires_at||!agora||c.expires_at>agora)
+    &&(c.max_uses===null||c.uses<c.max_uses);
+  const ativo=convites.find(valeAinda);
+  const link = ativo ? `${origem}/?convite=${ativo.code}` : origem;
+
+  const emitir=async(usos:number|null,dias:number)=>{
+    setEmitindo(true);
+    try{ await api.post("/api/convite",{action:"create",days:dias,maxUses:usos}); await carregarConvites();
+      avise("ok","Link novo gerado",usos===1?"Vale para um cadastro só.":`Vale por ${dias} dias.`); }
+    catch(erro){ avise("erro","Não foi possível gerar o link",describeError(erro)) }
+    finally{ setEmitindo(false) }
+  };
+  const revogar=async(codigo:string)=>{
+    if(!await pergunte({titulo:"Encerrar este link?",descricao:"Quem já tiver o link para de conseguir se cadastrar por ele. Os alunos que já entraram não são afetados.",confirmar:"Encerrar link",perigo:true}))return;
+    try{ await api.post("/api/convite",{action:"revoke",code:codigo}); await carregarConvites(); avise("ok","Link encerrado"); }
+    catch(erro){ avise("erro","Não foi possível encerrar",describeError(erro)) }
+  };
   const temShareNativo = useSyncExternalStore(semAssinatura, temCompartilhamentoNativo, () => false);
 
   const message=`Olá! Acesse o ZonasApp pelo link abaixo e faça seu cadastro. Ao abrir, toque em “Instalar ZonasApp” para deixar o aplicativo na tela inicial. Depois que você enviar o cadastro, eu revisarei e liberarei seu acesso:\n${link}`;
@@ -1123,6 +1272,22 @@ function InviteLink(){
       {temShareNativo && <button type="button" className="gold" onClick={share}>
         {feito==="compartilhado"?"Compartilhado ✓":"Compartilhar…"}
       </button>}
+    </div>
+    {/* Validade e uso do link. Sem isto, um link enviado num grupo continuava
+        abrindo cadastro meses depois, na carteira de quem já nem lembrava de
+        tê-lo enviado — e sem jeito de encerrá-lo. */}
+    <div className="invite-validade">
+      {ativo
+        ? <p><b>{ativo.max_uses===1?"Uso único":ativo.max_uses?`Até ${ativo.max_uses} cadastros`:"Sem limite de uso"}</b>
+            {ativo.expires_at&&<span> · vence {new Date(ativo.expires_at).toLocaleDateString("pt-BR")}</span>}
+            {ativo.max_uses!==null&&<span> · {ativo.uses} de {ativo.max_uses} usado{ativo.uses===1?"":"s"}</span>}
+            <button className="invite-revogar" onClick={()=>void revogar(ativo.code)}>Encerrar</button></p>
+        : <p className="invite-sem-link">Nenhum link ativo. Gere um abaixo para enviar ao aluno.</p>}
+      <div className="invite-emitir">
+        <button disabled={emitindo} onClick={()=>void emitir(1,7)}>Link para um aluno</button>
+        <button disabled={emitindo} onClick={()=>void emitir(null,7)}>Link da turma · 7 dias</button>
+        <button disabled={emitindo} onClick={()=>void emitir(null,30)}>30 dias</button>
+      </div>
     </div>
     <small className="invite-link-help" role="status">
       {feito==="erro"
@@ -1465,8 +1630,9 @@ function AthleteProfile({ athlete, close, onOpenPain }: { athlete: Athlete; clos
       const existing=await fetch(`/api/training-weeks?athlete=${encodeURIComponent(athlete.name)}&weekStart=${draftWeekStart}`).then(result=>result.ok?result.json():{week:null});
       let sessions:Record<string,StructuredSession>={};
       if(!existing.week){
-        sessions=await sessionsForSavedPlanWeek(trainingPlan,selectedWeekNumber,trainingDayKeys);
-        if(!Object.keys(sessions).length){
+        const base=await sessionsForSavedPlanWeek(trainingPlan,selectedWeekNumber,trainingDayKeys);
+        sessions=base.sessoes;
+        if(base.falha||!Object.keys(sessions).length){
           setPlanningSaveState("error");
           avise("erro",`A semana ${selectedWeekNumber} da planilha ${trainingPlan} está vazia`,"Complete a planilha-base em “Planilhas” antes de criar o rascunho.");
           return;
@@ -1803,7 +1969,7 @@ function Calendar() {
     setSaveState("idle");
     setReleased(false);setSessions({});setWeekUpdatedAt(0);setMoveFrom(null);setDeleteDay(null);setCopied(false);setCopyState("idle");setAdvanceConfirm(false);setAdvanceState("idle");setReplaceBaseConfirm(false);setReplaceBaseState("idle");
     fetch(`/api/training-weeks?athlete=${encodeURIComponent(selected)}&weekStart=${weekStart}`)
-      .then(r=>r.ok?r.json():{week:null,history:[]}).then(async data=>{setWeekHistory(data.history||[]);setPlannerAthletes(list=>list.map(athlete=>athlete.name===selected?{...athlete,status:data.week?.status||"Sem treino"}:athlete));if(data.week){const savedNumber=Number(String(data.week.week_label||"").match(/\d+/)?.[0]);if(savedNumber)setCalendarPlanWeek(savedNumber);setReleased(data.week.status==="Liberada");setWeekUpdatedAt(Number(data.week.updated_at)||0);try{setSessions(JSON.parse(data.week.sessions||"{}"))}catch{setSessions({})}setSaveState("saved")}else{setWeekUpdatedAt(0);setSessions(await sessionsForSavedPlanWeek(current.plan,calendarPlanWeek,current.days));setSaveState("idle")}})
+      .then(r=>r.ok?r.json():{week:null,history:[]}).then(async data=>{setWeekHistory(data.history||[]);setPlannerAthletes(list=>list.map(athlete=>athlete.name===selected?{...athlete,status:data.week?.status||"Sem treino"}:athlete));if(data.week){const savedNumber=Number(String(data.week.week_label||"").match(/\d+/)?.[0]);if(savedNumber)setCalendarPlanWeek(savedNumber);setReleased(data.week.status==="Liberada");setWeekUpdatedAt(Number(data.week.updated_at)||0);try{setSessions(JSON.parse(data.week.sessions||"{}"))}catch{setSessions({})}setSaveState("saved")}else{setWeekUpdatedAt(0);setSessions((await sessionsForSavedPlanWeek(current.plan,calendarPlanWeek,current.days)).sessoes);setSaveState("idle")}})
       .catch(()=>undefined);
   },[selected,weekStart,calendarPlanWeek]);
   const saveWeek=async(status:string,auditDifferences:string[]=[])=>{
@@ -1826,9 +1992,17 @@ function Calendar() {
         avise("atencao","Falta estruturar treino antes de liberar",`Revise ${incompleteDays.join(", ")} — cada dia disponível precisa de um treino com etapas.`);
         return;
       }
-      const baseSessions=await sessionsForSavedPlanWeek(current.plan,calendarPlanWeek,current.days);
+      const base=await sessionsForSavedPlanWeek(current.plan,calendarPlanWeek,current.days);
+      const baseSessions=base.sessoes;
+      if(base.falha){
+        /* Falha de leitura não é planilha incompleta. Dizer ao treinador que
+           falta cadastrar treino quando o que houve foi um 403 o manda arrumar
+           o que não está quebrado. */
+        avise("erro",`Não foi possível ler a semana ${calendarPlanWeek}`,base.falha);
+        return;
+      }
       if(!Object.keys(baseSessions).length){
-        avise("erro",`Não foi possível conferir a semana ${calendarPlanWeek}`,`A planilha ${current.plan} não tem os treinos da semana ${calendarPlanWeek} cadastrados. Complete a planilha-base em “Planilhas” antes de liberar.`);
+        avise("atencao",`A semana ${calendarPlanWeek} está vazia`,`A planilha ${current.plan} não tem treinos montados na semana ${calendarPlanWeek}. Complete-a em “Planilhas” antes de liberar.`);
         return;
       }
       const comparison=current.days.map(day=>{
@@ -1893,7 +2067,9 @@ function Calendar() {
   const openCopyOther=()=>{const source=plannerAthletes.find(athlete=>athlete.name!==selected)?.name||"";setCopyOtherAthlete(source);setCopyOtherWeek(weekStart);setCopyOtherDays([...current.days]);setCopyOtherState("idle");setCopyOtherOpen(true)};
   const toggleCopyDay=(day:string)=>setCopyOtherDays(days=>days.includes(day)?days.filter(item=>item!==day):[...days,day]);
   const copyFromOtherAthlete=async()=>{if(!copyOtherAthlete||!copyOtherDays.length)return;setCopyOtherState("loading");try{const response=await fetch(`/api/training-weeks?athlete=${encodeURIComponent(copyOtherAthlete)}&weekStart=${copyOtherWeek}`);if(!response.ok)throw new Error("load_failed");const data=await response.json();if(!data.week){setCopyOtherState("empty");return}const sourceSessions=JSON.parse(data.week.sessions||"{}");const copiedEntries=copyOtherDays.filter(day=>sourceSessions[day]).map(day=>[day,sourceSessions[day]]);if(!copiedEntries.length){setCopyOtherState("empty");return}setSessions(value=>({...value,...Object.fromEntries(copiedEntries)}));setReleased(false);setSaveState("idle");setCopyOtherState("copied");setTimeout(()=>setCopyOtherOpen(false),700)}catch{setCopyOtherState("error")}};
-  const replaceWithBasePlanWeek=async()=>{if(!replaceBaseConfirm){setReplaceBaseConfirm(true);return}setReplaceBaseState("saving");try{const expected=await sessionsForSavedPlanWeek(current.plan,calendarPlanWeek,current.days);if(!Object.keys(expected).length)throw new Error();const saved=await api.post("/api/training-weeks",{athleteName:selected,weekStart,plan:current.plan,phase:phaseForPlanWeek(current.plan,calendarPlanWeek),weekLabel:`${calendarPlanWeek} de ${currentPlanningTotal}`,trainingDays:current.days,sessions:expected,status:"Rascunho",expectedUpdatedAt:weekUpdatedAt||undefined}) as {updatedAt?:number};setSessions(expected);setReleased(false);setWeekUpdatedAt(Number(saved.updatedAt)||Date.now());setPlannerAthletes(list=>list.map(athlete=>athlete.name===selected?{...athlete,status:"Rascunho"}:athlete));setReplaceBaseConfirm(false);setReplaceBaseState("done");setSaveState("saved")}catch{setReplaceBaseState("error")}};
+  const replaceWithBasePlanWeek=async()=>{if(!replaceBaseConfirm){setReplaceBaseConfirm(true);return}setReplaceBaseState("saving");try{const lidas=await sessionsForSavedPlanWeek(current.plan,calendarPlanWeek,current.days);
+      if(lidas.falha){setReplaceBaseState("error");avise("erro","Não foi possível ler a planilha-base",lidas.falha);return}
+      const expected=lidas.sessoes;if(!Object.keys(expected).length)throw new Error();const saved=await api.post("/api/training-weeks",{athleteName:selected,weekStart,plan:current.plan,phase:phaseForPlanWeek(current.plan,calendarPlanWeek),weekLabel:`${calendarPlanWeek} de ${currentPlanningTotal}`,trainingDays:current.days,sessions:expected,status:"Rascunho",expectedUpdatedAt:weekUpdatedAt||undefined}) as {updatedAt?:number};setSessions(expected);setReleased(false);setWeekUpdatedAt(Number(saved.updatedAt)||Date.now());setPlannerAthletes(list=>list.map(athlete=>athlete.name===selected?{...athlete,status:"Rascunho"}:athlete));setReplaceBaseConfirm(false);setReplaceBaseState("done");setSaveState("saved")}catch{setReplaceBaseState("error")}};
   const approveWeekAdvance=async()=>{if(!advanceConfirm){setAdvanceConfirm(true);return}setAdvanceState("saving");try{const closed=await saveWeek("Concluída");if(!closed)throw new Error("close_failed");const nextPhase=phaseForPlanWeek(current.plan,nextPlanningWeek);const response=await fetch("/api/athlete-planning",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({athleteName:selected,plan:current.plan,phase:nextPhase,weekNumber:nextPlanningWeek,totalWeeks:currentPlanningTotal})});if(!response.ok)throw new Error("advance_failed");const nextWeekStart=shiftIsoDate(weekStart,7);const nextSessions=await sessionsForSavedPlanWeek(current.plan,nextPlanningWeek,current.days);const draft=await fetch("/api/training-weeks",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({athleteName:selected,weekStart:nextWeekStart,plan:current.plan,phase:nextPhase,weekLabel:`${nextPlanningWeek} de ${currentPlanningTotal}`,trainingDays:current.days,sessions:nextSessions,status:"Rascunho"})});if(!draft.ok)throw new Error("draft_failed");setPlannerAthletes(list=>list.map(athlete=>athlete.name===selected?{...athlete,phase:nextPhase,week:`${nextPlanningWeek} de ${currentPlanningTotal}`,status:"Rascunho"}:athlete));setCalendarPlanWeek(nextPlanningWeek);setAdvanceConfirm(false);setAdvanceState("done");setWeekStart(nextWeekStart)}catch{setAdvanceState("error")}};
   if(plannerLoading)return <section className="calendar-empty"><b>Carregando alunos…</b><span>Buscando cadastros e dias disponíveis.</span></section>;
   if(plannerError)return <section className="calendar-empty error"><b>Não foi possível carregar os alunos</b><span>Atualize a página e tente novamente.</span></section>;
@@ -2389,7 +2565,11 @@ export function StudentView({ onBack, athleteName = "Everton Barbosa" }: { onBac
   const [integrationPreference,setIntegrationPreference]=useState("Garmin");
   const [integrationState,setIntegrationState]=useState("");
   const [providers,setProviders]=useState<ProviderCard[]>([]);
-  const [appleSetup,setAppleSetup]=useState<{ingestToken:string;ingestUrl:string}|null>(null);
+  /* O nome ficou de quando só a Apple usava este caminho. Hoje o Amazfit usa o
+     mesmo mecanismo — token que o aparelho apresenta — e o que muda é a
+     instrução, que vem do servidor: repeti-la aqui faria dois textos para a
+     mesma coisa, e um deles envelheceria. */
+  const [appleSetup,setAppleSetup]=useState<{provider:string;ingestToken:string;ingestUrl:string;workoutUrl?:string;instructions:string}|null>(null);
   const [financialData,setFinancialData]=useState<any>(null);
   const [studentProfile,setStudentProfile]=useState<any>(undefined);
   const [studentTests,setStudentTests]=useState<any>(undefined);
@@ -2534,7 +2714,7 @@ export function StudentView({ onBack, athleteName = "Everton Barbosa" }: { onBac
       const data=await response.json().catch(()=>({}));
       if(response.status===503){setIntegrationState("setup-required");return}
       if(!response.ok){setIntegrationState(data.error==="sync_not_available"?"sync-unavailable":"error");return}
-      if(data.authType==="device"){setAppleSetup({ingestToken:data.ingestToken,ingestUrl:data.ingestUrl});setIntegrationState("apple-ready");await loadProviders();return}
+      if(data.authType==="device"){setAppleSetup({provider:data.provider,ingestToken:data.ingestToken,ingestUrl:data.ingestUrl,workoutUrl:data.workoutUrl,instructions:data.instructions});setIntegrationState("apple-ready");await loadProviders();return}
       if(data.authorizationUrl){window.location.href=data.authorizationUrl;return}
       await loadProviders();
       setIntegrationState(action==="sync"?`sincronizado:${data.imported??0}`:"saved");
@@ -2607,11 +2787,12 @@ export function StudentView({ onBack, athleteName = "Everton Barbosa" }: { onBac
     {tab==="Mais"&&moreView==="tests"&&<StudentTestsView data={studentTests} back={()=>setMoreView("menu")} recarregar={recarregarTestes} secureStudentMode={secureStudentMode}/>} 
     {tab==="Mais"&&moreView==="profile"&&<StudentProfileView data={studentProfile} back={()=>setMoreView("menu")}/>} 
     {tab==="Mais"&&moreView==="financial"&&<><button className="student-back" onClick={()=>setMoreView("menu")}>← Voltar</button><span className="overline">MENSALIDADE</span><h1>Financeiro</h1><p>Aqui aparece somente a situação informada pelo professor.</p>{!financialData?<section className="student-financial-card"><p>Carregando sua mensalidade…</p></section>:financialData.preview?<section className="student-financial-card"><b>Prévia do professor</b><p>A mensalidade real do aluno não é exibida aqui. Consulte o Financeiro no seu painel.</p></section>:!financialData.payment?<section className="student-financial-card ok"><b>Sem pendência cadastrada</b><p>Nenhuma cobrança foi lançada para você.</p></section>:<section className={`student-financial-card ${financialData.payment.status==="Pago"?"ok":"pending"}`}><span>{financialData.payment.status==="Pago"?"PAGAMENTO REGISTRADO":"PENDÊNCIA"}</span><h2>{(financialData.payment.amount_cents/100).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</h2><p>Vencimento: {new Date(`${financialData.payment.due_date}T12:00:00`).toLocaleDateString("pt-BR")}</p>{financialData.payment.status==="Pendente"&&<div><small>CHAVE PIX</small><b>{financialData.settings?.pix_key||"Aguardando o professor informar"}</b><em>{financialData.settings?.pix_name||""}</em>{financialData.settings?.pix_key&&<button onClick={()=>void copyText(financialData.settings.pix_key)}>Copiar chave Pix</button>}</div>}{financialData.payment.status==="Pago"&&<strong>✓ Pago</strong>}</section>}</>}
-    {tab==="Mais"&&moreView==="integrations"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setIntegrationState("");setAppleSetup(null)}}>← Voltar</button><span className="overline">RELÓGIO E APLICATIVOS</span><h1>Integrações</h1><p>Conecte de onde a Zonas-App deve receber seus treinos realizados. Nada é acessado sem a sua autorização, e você pode desconectar quando quiser.</p>{appleSetup&&<section className="apple-ingest"><b>Seu token do Apple Saúde</b><p>O Apple Saúde não conversa direto com servidores. No iPhone, crie um Atalho que leia seus treinos e envie para o endereço abaixo com o cabeçalho <code>x-zonas-ingest-token</code>. Este token aparece uma única vez.</p><label>Endereço<code>{appleSetup.ingestUrl}</code></label><label>Token<code>{appleSetup.ingestToken}</code></label><div><button onClick={()=>void copyText(appleSetup.ingestToken)}>Copiar token</button><button onClick={()=>setAppleSetup(null)}>Já guardei</button></div></section>}<section className="integration-center">{(providers.length?providers:PROVIDER_PREVIEW).map((provider:ProviderCard)=>{const icons:Record<string,string>={strava:"S",garmin:"G",zepp:"A",apple:"●"};const connected=provider.connection?.status==="Conectado";const preferred=integrationPreference===provider.label;return <article key={provider.id} className={connected?"selected":""}><i>{icons[provider.id]||"○"}</i><div><b>{provider.label}</b><p>{provider.notes}</p><small>{connected?"CONECTADO COM AUTORIZAÇÃO SUA":provider.connection?.status==="Suspensa"?"CONEXÃO SUSPENSA · O PROFESSOR PRECISA RECONFIGURAR O SERVIÇO":!providers.length?"VERIFICANDO DISPONIBILIDADE…":provider.available===false?"AGUARDANDO CADASTRO OFICIAL DO PROFESSOR":"DISPONÍVEL PARA CONECTAR"}</small>{provider.connection?.last_sync_at&&<em className="integration-last-sync">Última importação: {new Date(Number(provider.connection.last_sync_at)).toLocaleString("pt-BR")}</em>}</div><div className="integration-actions">{connected?<><button onClick={()=>providerAction(provider.id,"disconnect")}>Desconectar</button>{provider.id==="strava"&&<button className="connected" disabled={integrationState==="saving"} onClick={()=>providerAction(provider.id,"sync")}>Sincronizar agora</button>}</>:<button disabled={integrationState==="saving"||provider.available===false} onClick={()=>providerAction(provider.id,"connect")}>{provider.available===false?"Indisponível":provider.authType==="device"?"Gerar token":"Conectar"}</button>}{!connected&&!preferred&&<button className="integration-prefer" disabled={integrationState==="saving"} onClick={()=>saveIntegration(provider.label)}>Marcar preferência</button>}</div></article>})}<footer><b>Como funciona</b><p>Você autoriza o serviço → a Zonas-App importa a atividade concluída → ela é comparada ao treino planejado → você e o professor veem a porcentagem de acerto. A Garmin também poderá receber o treino estruturado quando as APIs forem liberadas.</p></footer>{integrationState==="saved"&&<p className="integration-success">Pronto. Suas conexões foram atualizadas.</p>}{integrationState.startsWith("sincronizado:")&&<p className="integration-success">Importação concluída: {plural(Number(integrationState.split(":")[1]) || 0, "atividade nova", "atividades novas")}.</p>}{integrationState==="sync-unavailable"&&<p className="integration-setup">A importação automática deste serviço ainda depende da liberação oficial da API.</p>}{integrationState==="setup-required"&&<p className="integration-setup">O fluxo seguro está pronto. Falta o professor cadastrar a Zonas-App no portal deste serviço e inserir as credenciais oficiais.</p>}{integrationState==="apple-ready"&&<p className="integration-success">Token gerado. Configure o Atalho no seu iPhone com os dados acima.</p>}{integrationState==="error"&&<p className="pain-error">Não foi possível concluir. Tente novamente.</p>}</section></>}
+    {tab==="Mais"&&moreView==="integrations"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setIntegrationState("");setAppleSetup(null)}}>← Voltar</button><span className="overline">RELÓGIO E APLICATIVOS</span><h1>Integrações</h1><p>Conecte de onde a Zonas-App deve receber seus treinos realizados. Nada é acessado sem a sua autorização, e você pode desconectar quando quiser.</p>{appleSetup&&<section className="apple-ingest"><b>{appleSetup.provider==="zepp"?"Seu token do Amazfit":"Seu token do Apple Saúde"}</b><p>{appleSetup.instructions}</p><label>Endereço<code>{appleSetup.ingestUrl}</code></label>{appleSetup.workoutUrl&&<label>Treino do dia<code>{appleSetup.workoutUrl}</code></label>}<label>Token<code>{appleSetup.ingestToken}</code></label><div><button onClick={()=>void copyText(appleSetup.ingestToken)}>Copiar token</button><button onClick={()=>setAppleSetup(null)}>Já guardei</button></div></section>}<section className="integration-center">{(providers.length?providers:PROVIDER_PREVIEW).map((provider:ProviderCard)=>{const icons:Record<string,string>={strava:"S",garmin:"G",zepp:"A",apple:"●"};const connected=provider.connection?.status==="Conectado";const preferred=integrationPreference===provider.label;return <article key={provider.id} className={connected?"selected":""}><i>{icons[provider.id]||"○"}</i><div><b>{provider.label}</b><p>{provider.notes}</p><small>{connected?"CONECTADO COM AUTORIZAÇÃO SUA":provider.connection?.status==="Suspensa"?"CONEXÃO SUSPENSA · O PROFESSOR PRECISA RECONFIGURAR O SERVIÇO":!providers.length?"VERIFICANDO DISPONIBILIDADE…":provider.available===false?"AGUARDANDO CADASTRO OFICIAL DO PROFESSOR":"DISPONÍVEL PARA CONECTAR"}</small>{provider.connection?.last_sync_at&&<em className="integration-last-sync">Última importação: {new Date(Number(provider.connection.last_sync_at)).toLocaleString("pt-BR")}</em>}</div><div className="integration-actions">{connected?<><button onClick={()=>providerAction(provider.id,"disconnect")}>Desconectar</button>{provider.id==="strava"&&<button className="connected" disabled={integrationState==="saving"} onClick={()=>providerAction(provider.id,"sync")}>Sincronizar agora</button>}</>:<button disabled={integrationState==="saving"||provider.available===false} onClick={()=>providerAction(provider.id,"connect")}>{provider.available===false?"Indisponível":provider.authType==="device"?"Gerar token":"Conectar"}</button>}{!connected&&!preferred&&<button className="integration-prefer" disabled={integrationState==="saving"} onClick={()=>saveIntegration(provider.label)}>Marcar preferência</button>}</div></article>})}<footer><b>Como funciona</b><p>Você autoriza o serviço → a Zonas-App importa a atividade concluída → ela é comparada ao treino planejado → você e o professor veem a porcentagem de acerto. A Garmin também poderá receber o treino estruturado quando as APIs forem liberadas.</p></footer>{integrationState==="saved"&&<p className="integration-success">Pronto. Suas conexões foram atualizadas.</p>}{integrationState.startsWith("sincronizado:")&&<p className="integration-success">Importação concluída: {plural(Number(integrationState.split(":")[1]) || 0, "atividade nova", "atividades novas")}.</p>}{integrationState==="sync-unavailable"&&<p className="integration-setup">A importação automática deste serviço ainda depende da liberação oficial da API.</p>}{integrationState==="setup-required"&&<p className="integration-setup">O fluxo seguro está pronto. Falta o professor cadastrar a Zonas-App no portal deste serviço e inserir as credenciais oficiais.</p>}{integrationState==="apple-ready"&&<p className="integration-success">Token gerado. Configure o Atalho no seu iPhone com os dados acima.</p>}{integrationState==="error"&&<p className="pain-error">Não foi possível concluir. Tente novamente.</p>}</section></>}
     {tab==="Mais"&&moreView==="pain"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setPainState("")}}>← Voltar</button><span className="overline">AVISO AO TREINADOR</span><h1>Dores e lesões</h1><p>Preencha em menos de um minuto. O treinador receberá o aviso para revisar seu próximo treino.</p>{painState==="saved"?<section className="pain-success"><b>✓</b><h2>Aviso enviado ao treinador</h2><p>Evite treinos intensos enquanto houver dor. O treinador verá o relato antes de ajustar sua programação.</p><button onClick={()=>{setMoreView("menu");setPainState("")}}>Concluir</button></section>:<section className="pain-form"><label>Onde está o desconforto?<div className="pain-options">{["Joelho","Canela","Panturrilha","Coxa","Quadril","Pé/tornozelo","Coluna","Outro"].map(area=><button key={area} className={painArea===area?"selected":""} onClick={()=>setPainArea(area)}>{area}</button>)}</div></label><label>Intensidade da dor <b>{painIntensity}/10</b><input type="range" min="1" max="10" value={painIntensity} onChange={e=>setPainIntensity(+e.target.value)}/><div className="range-labels"><span>Leve</span><span>Forte</span></div></label><label>A dor atrapalhou o treino?<div className="pain-impact">{["Não treinei","Parei durante","Reduzi o ritmo","Consegui terminar"].map(item=><button key={item} className={painImpact===item?"selected":""} onClick={()=>setPainImpact(item)}>{item}</button>)}</div></label><label>Observação <small>opcional</small><textarea value={painNote} onChange={e=>setPainNote(e.target.value)} placeholder="Conte rapidamente quando começou ou qual movimento incomoda." maxLength={240}/></label>{painState==="error"&&<p className="pain-error">Não foi possível enviar. Tente novamente.</p>}<button className="pain-send" disabled={!painArea||!painImpact||painState==="saving"} onClick={sendPainReport}>{painState==="saving"?"Enviando…":"Avisar meu treinador"}</button><small className="pain-guidance">Em caso de dor intensa, inchaço importante ou dificuldade para caminhar, procure atendimento de saúde.</small></section>}</>}
     {tab==="Mais"&&moreView==="races"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setRaceState("")}}>← Voltar</button><span className="overline">OBJETIVOS E MARCAS</span><h1>Provas e recordes</h1><p>Cadastre sua prova. O treinador analisa e confirma como ela entra no planejamento.</p><section className="race-record-head"><article><small>RECORDE NOS 10 KM</small><b>{raceData.records?.find((r:any)=>r.distance==="10 km")?.result_time||"—"}</b><span>{raceData.records?.some((r:any)=>r.distance==="10 km")?"Melhor marca registrada":"Nenhuma marca registrada"}</span></article><article><small>PRÓXIMA PROVA</small><b>{raceData.races?.[0]?.name||"Nenhuma cadastrada"}</b><span>{raceData.races?.[0]?`${String(raceData.races[0].race_date).split("-").reverse().join("/")} · ${raceData.races[0].distance}`:"Cadastre abaixo para o professor analisar"}</span></article></section><section className="race-record-form"><span className="overline">NOVA PROVA</span><h2>Quero correr esta prova</h2><div className="race-fields"><label>Nome da prova<input value={raceForm.name} onChange={e=>setRaceForm({...raceForm,name:e.target.value})} placeholder="Ex.: Meia de Pomerode"/></label><label>Data<input type="date" value={raceForm.raceDate} onChange={e=>setRaceForm({...raceForm,raceDate:e.target.value})}/></label><label>Distância<select value={raceForm.distance} onChange={e=>setRaceForm({...raceForm,distance:e.target.value})}>{["5 km","10 km","21,1 km","42,2 km","Outra"].map(d=><option key={d}>{d}</option>)}</select></label><label>Cidade <small>opcional</small><input value={raceForm.city} onChange={e=>setRaceForm({...raceForm,city:e.target.value})}/></label><label className="full">Objetivo <small>opcional</small><input value={raceForm.goal} onChange={e=>setRaceForm({...raceForm,goal:e.target.value})} placeholder="Concluir, buscar recorde ou tempo desejado"/></label></div><button disabled={!raceForm.name||!raceForm.raceDate||raceState==="saving"} onClick={()=>saveRaceRecord("race")}>{raceState==="race-saved"?"Prova enviada para análise ✓":"Enviar prova ao treinador"}</button></section><section className="race-record-form compact"><span className="overline">NOVO RECORDE PESSOAL</span><h2>Registrar melhor marca</h2><div className="race-fields"><label>Distância<select value={recordForm.distance} onChange={e=>setRecordForm({...recordForm,distance:e.target.value})}>{["1,5 km","3 km","5 km","10 km","21,1 km","42,2 km"].map(d=><option key={d}>{d}</option>)}</select></label><label>Tempo<input value={recordForm.resultTime} onChange={e=>setRecordForm({...recordForm,resultTime:e.target.value})} placeholder="00:38:25"/></label><label>Data <small>opcional</small><input type="date" value={recordForm.raceDate} onChange={e=>setRecordForm({...recordForm,raceDate:e.target.value})}/></label><label>Prova <small>opcional</small><input value={recordForm.eventName} onChange={e=>setRecordForm({...recordForm,eventName:e.target.value})}/></label></div>{raceState==="error"&&<p className="pain-error">Não foi possível salvar. Tente novamente.</p>}<button disabled={!recordForm.resultTime||raceState==="saving"} onClick={()=>saveRaceRecord("record")}>{raceState==="record-saved"?"Recorde registrado ✓":"Salvar recorde"}</button></section></>}
     {tab==="Hoje"&&showTraining&&<WorkoutAnalysis secureStudentMode={secureStudentMode} weekStart={savedWeek?.week_start} workoutDay={today.key} session={todaySession}/>}
     {tab==="Hoje"&&studentAlerts.length>0&&<section className="student-notification-center"><header><span>🔔</span><div><small>NOVIDADES DO SEU TREINADOR</small><b>{plural(studentAlerts.length, "aviso")} para você</b></div></header>{studentAlerts.slice(0,3).map(alert=><article key={alert.id} className={alert.tone}><i>{alert.icon}</i><span><b>{alert.title}</b><small>{alert.detail}</small><button onClick={alert.open}>{alert.action} →</button></span>{!alert.exigeAcao&&<button aria-label="Marcar aviso como lido" onClick={()=>dismissStudentAlert(alert.id)}>×</button>}</article>)}</section>}{tab==="Hoje"&&todaySummary}{tab==="Hoje"&&<RecentWorkouts itens={executions.filter((item:ExecucaoRegistrada)=>Number(item.created_at)>=Date.now()-7*86_400_000)}/>}  
+    <Assinatura />
   </section>
   {/* A Central de avisos só existia no painel do treinador e no diagnóstico, e
       a área do aluno chamava `avise()` sem ter onde mostrar: o envio do teste

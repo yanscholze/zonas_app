@@ -1,91 +1,94 @@
 {
-  // Configuração de implantação na Cloudflare.
-  //
-  // O desenvolvimento não lê este arquivo: o plugin da Cloudflare no
-  // `vite.config.ts` recebe a configuração embutida, montada a partir de
-  // `.openai/hosting.json`. Este arquivo é o que o `wrangler deploy` usa.
-  //
-  // As duas precisam concordar nos bindings, e um teste garante isso
-  // (`tests/rendered-html.test.mjs`): sem ele, funcionaria em desenvolvimento e
-  // quebraria em produção, que é o pior lugar para descobrir.
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "zonasapp",
-  "main": "./worker/index.ts",
-  "compatibility_date": "2026-08-01",
-  "compatibility_flags": ["nodejs_compat"],
-
-  // Os arquivos estáticos que o build gera. O worker os alcança por `env.ASSETS`
-  // e responde tudo o que não for rota de API.
-  "assets": {
-    "directory": "./dist/client",
-    "binding": "ASSETS"
-  },
-
-  // O banco. `database_id` precisa ser preenchido com o id real depois de criar
-  // o banco na conta — `wrangler d1 create zonasapp` devolve esse id.
-  //
-  // As tabelas nascem sozinhas: `ensureTables` e `ensureColumns` criam o que
-  // falta na primeira requisição que toca cada uma. Não há passo de migração
-  // separado para rodar antes do primeiro acesso.
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "zonasapp",
-      "database_id": "PREENCHER_COM_O_ID_DO_D1"
-    }
-  ],
-
-  // Redimensionamento das imagens servidas pelo próprio worker.
-  "images": {
-    "binding": "IMAGES"
-  },
-
-  // Configuração, não segredo: ligam ou desligam comportamento e não têm valor
-  // sigiloso, então ficam à vista e versionadas. As integrações começam
-  // desligadas porque dependem de cadastro oficial junto a cada fabricante — a
-  // tela já explica isso ao treinador.
-  //
-  // Nenhum segredo aqui. Tudo o que é segredo entra por `wrangler secret put`,
-  // que grava na conta e nunca no repositório — que é público.
-  "vars": {
-    "GARMIN_ACTIVITY_API_ENABLED": "false",
-    "GARMIN_TRAINING_API_ENABLED": "false",
-    "GARMIN_TRAINING_API_URL": ""
-  },
-
-  // Ambiente de ensaio.
-  //
-  // Outro worker, outro banco, outros segredos. Serve para experimentar sem
-  // tocar nos alunos de verdade — hoje não há onde testar uma mudança de banco
-  // a não ser em cima de dado real, e nesta sessão isso já custou uma tabela
-  // apagada e devolvida à mão.
-  //
-  // Herda `main`, `assets` e `compatibility_*` da configuração acima; o que se
-  // repete aqui é só o que muda. Os segredos NÃO são herdados: cada ambiente
-  // guarda os seus, e é isso que impede um teste de alcançar a conta do Strava
-  // de produção. Grave-os com `--env ensaio`.
-  //
-  //   npx wrangler d1 create zonasapp-ensaio
-  //   npx wrangler secret put DEV_LOGIN --env ensaio
-  //   npm run deploy:ensaio
-  "env": {
-    "ensaio": {
-      "name": "zonasapp-ensaio",
-      "d1_databases": [
-        {
-          "binding": "DB",
-          "database_name": "zonasapp-ensaio",
-          "database_id": "PREENCHER_COM_O_ID_DO_D1_DE_ENSAIO"
-        }
-      ],
-      "images": {
-        "binding": "IMAGES"
-      },
-      "vars": {
-        "GARMIN_ACTIVITY_API_ENABLED": "false",
-        "GARMIN_TRAINING_API_ENABLED": "false",
-        "GARMIN_TRAINING_API_URL": ""
-      }
-    }
-  }
+	// Configuração de implantação na Cloudflare.
+	//
+	// O desenvolvimento não lê este arquivo: o plugin da Cloudflare no
+	// `vite.config.ts` recebe a configuração embutida, montada a partir de
+	// `.openai/hosting.json`. Este arquivo é o que o `wrangler deploy` usa.
+	//
+	// As duas precisam concordar nos bindings, e um teste garante isso
+	// (`tests/rendered-html.test.mjs`): sem ele, funcionaria em desenvolvimento e
+	// quebraria em produção, que é o pior lugar para descobrir.
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "zonasapp",
+	"main": "./worker/index.ts",
+	"compatibility_date": "2026-08-01",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	// Os arquivos estáticos que o build gera. O worker os alcança por `env.ASSETS`
+	// e responde tudo o que não for rota de API.
+	"assets": {
+		"directory": "./dist/client",
+		"binding": "ASSETS"
+	},
+	// O banco. `database_id` precisa ser preenchido com o id real depois de criar
+	// o banco na conta — `wrangler d1 create zonasapp` devolve esse id.
+	//
+	// As tabelas nascem sozinhas: `ensureTables` e `ensureColumns` criam o que
+	// falta na primeira requisição que toca cada uma. Não há passo de migração
+	// separado para rodar antes do primeiro acesso.
+	"d1_databases": [
+		{
+			// O worker lê `env.DB` — 289 vezes, e o tipo `Env` só declara essa.
+			// Havia uma segunda entrada para o MESMO banco com o binding
+			// "zonasapp", que é o nome que o painel da Cloudflare sugere ao
+			// copiar o trecho. Nada no código a lê, e duas portas para o mesmo
+			// banco é o tipo de coisa que diverge na primeira alteração: alguém
+			// troca o id de uma e não da outra.
+			"binding": "DB",
+			"database_name": "zonasapp",
+			"database_id": "ec892bc3-89e1-4125-b4d9-25dcc0ecea33"
+		}
+	],
+	// Redimensionamento das imagens servidas pelo próprio worker.
+	"images": {
+		"binding": "IMAGES"
+	},
+	// Configuração, não segredo: ligam ou desligam comportamento e não têm valor
+	// sigiloso, então ficam à vista e versionadas. As integrações começam
+	// desligadas porque dependem de cadastro oficial junto a cada fabricante — a
+	// tela já explica isso ao treinador.
+	//
+	// Nenhum segredo aqui. Tudo o que é segredo entra por `wrangler secret put`,
+	// que grava na conta e nunca no repositório — que é público.
+	"vars": {
+		"GARMIN_ACTIVITY_API_ENABLED": "false",
+		"GARMIN_TRAINING_API_ENABLED": "false",
+		"GARMIN_TRAINING_API_URL": ""
+	},
+	// Ambiente de ensaio.
+	//
+	// Outro worker, outro banco, outros segredos. Serve para experimentar sem
+	// tocar nos alunos de verdade — hoje não há onde testar uma mudança de banco
+	// a não ser em cima de dado real, e nesta sessão isso já custou uma tabela
+	// apagada e devolvida à mão.
+	//
+	// Herda `main`, `assets` e `compatibility_*` da configuração acima; o que se
+	// repete aqui é só o que muda. Os segredos NÃO são herdados: cada ambiente
+	// guarda os seus, e é isso que impede um teste de alcançar a conta do Strava
+	// de produção. Grave-os com `--env ensaio`.
+	//
+	//   npx wrangler d1 create zonasapp-ensaio
+	//   npx wrangler secret put DEV_LOGIN --env ensaio
+	//   npm run deploy:ensaio
+	"env": {
+		"ensaio": {
+			"name": "zonasapp-ensaio",
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "zonasapp-ensaio",
+					"database_id": "PREENCHER_COM_O_ID_DO_D1_DE_ENSAIO"
+				}
+			],
+			"images": {
+				"binding": "IMAGES"
+			},
+			"vars": {
+				"GARMIN_ACTIVITY_API_ENABLED": "false",
+				"GARMIN_TRAINING_API_ENABLED": "false",
+				"GARMIN_TRAINING_API_URL": ""
+			}
+		}
+	}
 }

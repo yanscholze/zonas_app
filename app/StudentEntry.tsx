@@ -8,6 +8,15 @@ import { signOut, type Session } from "./AuthGate";
 type Registration = { id:string;name:string;phone?:string;objective?:string;distance:string;training_days:string;integration:string;status:"Pendente"|"Aprovado"|"Recusado" };
 const days=["SEG","TER","QUA","QUI","SEX","SÁB","DOM"];
 
+/* O código do treinador vem no link que ele enviou. Sem ele o pedido chega sem
+   dono e vai para a lista de todos os treinadores — que é o que acontecia antes
+   de o link carregar o convite, e o que continua valendo para quem tiver um link
+   antigo salvo. */
+const conviteDoLink = () => {
+  try { return new URLSearchParams(window.location.search).get("convite") || undefined; }
+  catch { return undefined; }
+};
+
 export default function StudentEntry({ session: account }: { session: Session }) {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
   const [request,setRequest]=useState<Registration|null|undefined>(undefined);
@@ -19,7 +28,7 @@ export default function StudentEntry({ session: account }: { session: Session })
   ]).then(([sessionData,requestData])=>{setSession(sessionData?.role==="student"?sessionData:null);setRequest(requestData.request||null)}).catch(()=>{setSession(null);setRequest(null)});
   useEffect(()=>{load()},[]);
   const toggleDay=(day:string)=>setForm(value=>({...value,trainingDays:value.trainingDays.includes(day)?value.trainingDays.filter(item=>item!==day):[...value.trainingDays,day]}));
-  const submit=async()=>{setState("saving");try{const response=await fetch("/api/access-request",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(form)});if(!response.ok)throw new Error();await load();setState("idle")}catch{setState("error")}};
+  const submit=async()=>{setState("saving");try{const response=await fetch("/api/access-request",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({...form,invite:conviteDoLink()})});if(!response.ok)throw new Error();await load();setState("idle")}catch{setState("error")}};
   if (session === undefined || request === undefined) return <main className="secure-access-denied"><section><span>Z</span><small>ACESSO PROTEGIDO</small><h1>Verificando seu acesso…</h1></section></main>;
   if (session && session.role === "student") return <StudentView athleteName={session.athleteName} />;
   if(request?.status==="Pendente") return <main className="student-registration"><section className="registration-status"><span>Z</span><small>CADASTRO ENVIADO</small><h1>Aguardando liberação do professor</h1><p>Seu cadastro chegou ao treinador. Você receberá acesso somente depois que ele conferir e aprovar.</p><div><b>{request.name}</b><small>{request.distance} · {request.integration}</small></div><InstallApp inline/><button onClick={load}>Verificar novamente</button><button className="registration-signout" onClick={()=>void signOut()}>Sair desta conta</button></section></main>;

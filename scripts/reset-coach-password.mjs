@@ -25,7 +25,9 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { webcrypto as crypto } from "node:crypto";
 
-const PASSWORD_ITERATIONS = 210_000;
+/* Precisa ser igual ao worker/auth.ts: acima de 100.000 o runtime dos Workers
+   recusa, e a senha gerada aqui não seria conferível em produção. */
+const PASSWORD_ITERATIONS = 100_000;
 const MIN_PASSWORD_LENGTH = 8;
 const D1_DIRECTORY = ".wrangler/state/v3/d1/miniflare-D1DatabaseObject";
 

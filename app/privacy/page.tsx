@@ -1,3 +1,5 @@
+import { Assinatura } from "../assinatura";
+
 export const metadata={title:"Privacidade | Zonas-App",description:"Política de privacidade da plataforma Zonas-App."};
 
 /**
@@ -14,9 +16,9 @@ export const metadata={title:"Privacidade | Zonas-App",description:"Política de
  * comum de quem presta serviço.
  */
 const CONTROLADOR={
-  nome:"Yan Scholze",
+  nome:"Yan Augusto Scholze",
   documento:"CPF 074.226.659-12",
-  encarregado:"Yan Scholze",
+  encarregado:"Yan Augusto Scholze",
   email:"yanaugustoscholze@gmail.com",
 };
 
@@ -84,4 +86,5 @@ export default function PrivacyPage(){return <main className="legal-page"><secti
 <p>Esta política pode ser atualizada para acompanhar novas funcionalidades, exigências legais e regras dos serviços conectados. A data no topo indica a última revisão.</p>
 
 <p className="legal-links"><a href="/terms">Termos de Uso</a></p>
+<Assinatura />
 </section></main>}

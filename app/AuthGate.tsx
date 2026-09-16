@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import InstallApp from "./InstallApp";
+import { Assinatura } from "./assinatura";
 
 export type Session =
   /** Conta de manutenção: acesso irrestrito, com diagnóstico do sistema. */
@@ -9,7 +10,9 @@ export type Session =
   /** Proprietário: treinador que também cria e confere os treinadores da equipe. */
   | { authenticated: true; role: "owner"; email: string; name: string; mustChangePassword: boolean }
   | { authenticated: true; role: "coach"; email: string; name: string; mustChangePassword: boolean }
-  | { authenticated: true; role: "student"; email: string; name: string; athleteName: string; mustChangePassword: boolean };
+  | { authenticated: true; role: "student"; email: string; name: string; athleteName: string; mustChangePassword: boolean }
+  /** Conta criada, atleta ainda não vinculado: a pessoa vai pedir acesso. */
+  | { authenticated: true; role: "pendente"; email: string; name: string; mustChangePassword: boolean };
 
 type Mode = "login" | "register";
 
@@ -63,6 +66,7 @@ export default function AuthGate({ children }: { children: (session: Session, re
           <span className="auth-mark">Z</span>
           <p>Verificando seu acesso…</p>
         </section>
+        <Assinatura />
       </main>
     );
   }
@@ -117,6 +121,11 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
         setState("idle");
         return;
       }
+      /* No login a tela desmonta e o estado morre com ela. No cadastro não: a
+         conta nasce sem atleta, a pessoa segue para pedir acesso, e esta tela
+         continua montada — deixar o estado em "sending" congelava o botão em
+         "Enviando…" com a conta já criada. */
+      setState("idle");
       onSignedIn();
     } catch {
       setError("Sem conexão com o servidor. Tente novamente.");
@@ -200,6 +209,7 @@ function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
 
         <InstallApp inline />
       </section>
+      <Assinatura />
     </main>
   );
 }
@@ -289,6 +299,7 @@ function ChangePassword({ session, onChanged }: { session: Session; onChanged: (
           </button>
         </footer>
       </section>
+      <Assinatura />
     </main>
   );
 }

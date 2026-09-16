@@ -13,8 +13,20 @@ mkdir -p \
 
 export SITES_ENV_READY=1
 export SITES_PROJECT_ROOT="${project_root}"
-export HOME="${runtime_root}/home"
-export XDG_CONFIG_HOME="${runtime_root}/xdg-config"
+
+# A caixa de areia mantém HOME e XDG_CONFIG_HOME dentro do projeto, para que
+# build e lint não escrevam na conta de quem roda. Mas o `wrangler deploy`
+# precisa da credencial da Cloudflare, que fica em ~/.config/.wrangler — com o
+# HOME redirecionado ele não a encontra, conclui que não há login e falha com
+# "non-interactive environment", uma mensagem que não fala de HOME nenhum.
+#
+# Só o deploy pede esta exceção, e ela é explícita: nada mais no projeto a liga.
+if [[ "${SITES_MANTER_CREDENCIAIS:-}" == "1" ]]; then
+  export TMPDIR="${runtime_root}/tmp"
+else
+  export HOME="${runtime_root}/home"
+  export XDG_CONFIG_HOME="${runtime_root}/xdg-config"
+fi
 export TMPDIR="${runtime_root}/tmp"
 export WRANGLER_WRITE_LOGS=false
 export WRANGLER_LOG_PATH="${runtime_root}/wrangler/logs"

@@ -5,6 +5,7 @@ import {
   MIN_PASSWORD_LENGTH,
   accountByEmail,
   createAccount,
+  constantTimeEquals,
   createSession,
   destroySession,
   destroySessionsForUser,
@@ -89,12 +90,17 @@ const TRAINING_BODY_LIMIT = 256 * 1024;
    sobrariam menos de 45 KB de JPEG. O teto do que é gravado continua menor que
    este, em `save_receipt`, e bem abaixo do limite de uma linha do D1. */
 const FINANCIAL_BODY_LIMIT = 512 * 1024;
+/* Importar a biblioteca inteira é um corpo grande por natureza: as dez de
+   fábrica dão 619 KB com as 155 semanas e os 790 treinos dentro. O teto vale só
+   para esta rota — as outras seguem no limite apertado, porque nenhuma delas tem
+   motivo para receber tanto. */
+const PLAN_IMPORT_BODY_LIMIT = 2 * 1024 * 1024;
 const SECURITY_LOG_RETENTION_DAYS = 90;
 const SECURITY_LOG_RETENTION_MS = SECURITY_LOG_RETENTION_DAYS * 86_400_000;
 
 const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/athletes": new Set(["name","initials","distance","phase","week","nextWorkout","status","phone","email","trainingDays","integration","action","reason"]),
-  "/api/plans": new Set(["action","planId","name","distance","weeks","frequency","level","goal","phases"]),
+  "/api/plans": new Set(["action","planId","name","distance","weeks","frequency","level","goal","phases","plans"]),
   "/api/athlete-profile": new Set(["athleteName","phone","birthDate","objective","integration","trainingDays","noTargetRace"]),
   "/api/athlete-planning": new Set(["athleteName","plan","phase","weekNumber","totalWeeks"]),
   "/api/performance-tests": new Set(["athleteName","testDate","distanceKm","minutes","seconds","age","id","action","zones","tempoRuns"]),
@@ -102,7 +108,7 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/pain-reports": new Set(["athleteName","bodyArea","intensity","trainingImpact","note","action","id","weekStart","status","conduct"]),
   "/api/races-records": new Set(["kind","athleteName","name","raceDate","distance","city","goal","priority","resultTime","eventName","action","id","status"]),
   "/api/athlete-access": new Set(["athleteName","email","status"]),
-  "/api/access-request": new Set(["name","phone","objective","distance","trainingDays","integration"]),
+  "/api/access-request": new Set(["name","phone","objective","distance","trainingDays","integration","invite"]),
   "/api/access-requests": new Set(["id","action"]),
   "/api/backups": new Set(["action","id","label"]),
   "/api/student/pain-reports": new Set(["bodyArea","intensity","trainingImpact","note"]),
@@ -120,8 +126,9 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/accounts": new Set(["action","email","name","athleteName","password"]),
   "/api/integrations": new Set(["action","provider","athleteName","payload","weekStart","workoutDay"]),
   "/api/integrations/strava/subscription": new Set(["action","id"]),
-  "/api/dev/coaches": new Set(["action","email","name","password"]),
-  "/api/equipe": new Set(["action","email","name","password"]),
+  "/api/dev/coaches": new Set(["action","email","name","password","role","athleteName"]),
+  "/api/equipe": new Set(["action","email","name","password","role","athleteName"]),
+  "/api/convite": new Set(["action","code","days","maxUses"]),
   "/api/dev/accounts": new Set(["action","email","role"]),
   "/api/student/integrations": new Set(["action","provider"]),
 };
@@ -218,6 +225,7 @@ async function validateApiEnvelope(request: Request, env: Env, url: URL): Promis
     return await recusaNaPorta(env, request, url, "json_content_type_required", 415);
   }
   const limit = url.pathname.includes("training-weeks") ? TRAINING_BODY_LIMIT
+    : url.pathname === "/api/plans" ? PLAN_IMPORT_BODY_LIMIT
     : url.pathname === "/api/financial" ? FINANCIAL_BODY_LIMIT
     : JSON_BODY_LIMIT;
   const declaredLength = Number(request.headers.get("content-length") || 0);
@@ -495,6 +503,76 @@ const recoverableTables = ["athletes", "athlete_profiles", "athlete_planning", "
  */
 const tabelasConferidas = new Set<string>();
 
+/**
+ * Garante o esquema inteiro, uma vez por instância.
+ *
+ * Cada handler vinha declarando as tabelas que toca. Funcionava porque o banco
+ * de desenvolvimento já tinha tudo criado por outros caminhos — mas num banco
+ * novo, o primeiro handler a consultar uma tabela que ele não declarou responde
+ * 503. Foi o que aconteceu na estreia: `equipeApi` conta planilhas por
+ * treinador e não declarava `custom_plans`, então o painel do dev abria e
+ * falhava com "no such table: custom_plans".
+ *
+ * O problema não é o handler que esqueceu; é ter de lembrar. Isto roda uma vez
+ * por instância e sai barato: `tabelasConferidas` corta a repetição, e o custo
+ * é um lote de CREATE TABLE IF NOT EXISTS numa ida ao D1 — I/O, não CPU, o que
+ * importa no limite de tempo de processador dos Workers.
+ */
+/* O predicado de tipo não serve aqui: `Parameters<typeof tableSql>[0]` é a
+   união de todas as tabelas concretas, e o TypeScript não aceita estreitar para
+   ela a partir de `unknown`. A conversão é segura porque o filtro é o marcador
+   que o próprio Drizzle põe em cada tabela. */
+const TODAS_AS_TABELAS = Object.values(schema).filter(
+  valor => typeof valor === "object" && valor !== null && Symbol.for("drizzle:Name") in valor,
+) as Array<Parameters<typeof tableSql>[0]>;
+
+/* Assinatura do esquema: muda quando qualquer tabela, coluna ou índice muda.
+   Sai do próprio SQL gerado, então não há lista à parte para alguém esquecer de
+   atualizar — mudou o schema, muda a assinatura. */
+let assinaturaDoEsquema = "";
+function assinaturaDasTabelas(): string {
+  if (assinaturaDoEsquema) return assinaturaDoEsquema;
+  const sql = TODAS_AS_TABELAS.map(tabela => tableSql(tabela).join("")).sort().join("");
+  let hash = 5381;
+  for (let i = 0; i < sql.length; i += 1) hash = (hash * 33) ^ sql.charCodeAt(i);
+  assinaturaDoEsquema = `${(hash >>> 0).toString(36)}-${TODAS_AS_TABELAS.length}`;
+  return assinaturaDoEsquema;
+}
+
+let esquemaConferidoNestaInstancia = false;
+
+async function garanteEsquema(env: Env): Promise<void> {
+  if (esquemaConferidoNestaInstancia) return;
+
+  /* Antes isto rodava o `ensureTables` inteiro em toda instância nova: 31
+     PRAGMA table_info SEQUENCIAIS mais 33 lotes, cerca de 64 idas ao D1. Cada
+     ida é rede, e no Workers instância nova acontece o tempo todo — era isso
+     que fazia a primeira requisição de cada uma demorar.
+     Agora uma consulta responde "o esquema já está na versão que este código
+     espera?". Quando está, e é o caso quase sempre, o custo é essa consulta. */
+  const assinatura = assinaturaDasTabelas();
+  const [, gravado] = await env.DB.batch([
+    // O SQL vem do schema, como o de toda tabela: uma fonte só.
+    env.DB.prepare(createTableSql(schema.schemaState)),
+    env.DB.prepare("SELECT signature FROM schema_state WHERE id = 1 LIMIT 1"),
+  ]);
+  const atual = (gravado?.results as Array<{ signature?: string }> | undefined)?.[0]?.signature;
+  if (atual === assinatura) {
+    /* A assinatura confere: o banco tem exatamente o que este código espera.
+       Marcar tudo como conferido é o que faz os `ensureTables` espalhados pelos
+       handlers virarem no-op — sem isto eles refazem o PRAGMA de cada tabela
+       que tocam, e a economia se perde no primeiro handler que roda. */
+    for (const tabela of TODAS_AS_TABELAS) tabelasConferidas.add(nomeDaTabela(tabela));
+    esquemaConferidoNestaInstancia = true;
+    return;
+  }
+
+  await ensureTables(env, ...TODAS_AS_TABELAS);
+  await env.DB.prepare("INSERT INTO schema_state (id, signature) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET signature = excluded.signature")
+    .bind(assinatura).run();
+  esquemaConferidoNestaInstancia = true;
+}
+
 async function ensureTables(env: Env, ...tabelas: Array<Parameters<typeof tableSql>[0]>): Promise<void> {
   const pendentes = tabelas.filter(tabela => !tabelasConferidas.has(nomeDaTabela(tabela)));
   if (!pendentes.length) return;
@@ -748,6 +826,10 @@ async function resolveApiIdentity(request: Request, env: Env): Promise<ApiIdenti
   if (session.role === "dev") return { role: "dev", email: session.email, visitandoEmail: session.visitando?.email };
   if (session.role === "owner") return { role: "owner", email: session.email, visitandoEmail: session.visitando?.email };
   if (session.role === "coach") return { role: "coach", email: session.email };
+  /* Conta criada e atleta ainda não vinculado: não é identidade de aluno, e as
+     rotas de /api/student/* devem recusá-la. Ela só serve para pedir acesso, e
+     esse pedido resolve a sessão por conta própria, sem passar por aqui. */
+  if (session.role === "pendente") return null;
   await ensureAthleteAccess(env);
   const row = await env.DB.prepare(
     "SELECT athlete_name FROM athlete_access WHERE athlete_name = ? AND status = 'Ativo' LIMIT 1",
@@ -915,6 +997,34 @@ async function foraDaCarteiraDoTreinador(
   return null;
 }
 
+/**
+ * Cria a conta de acesso de um aluno, com o vínculo que a torna utilizável.
+ *
+ * Uma conta de aluno é três coisas, não uma: a linha em `user_accounts`, o
+ * `athlete_name` que a liga ao atleta, e o `athlete_access` ativo. Sem o nome,
+ * `identityFromRequest` devolve null e a pessoa fica presa numa sessão que não
+ * resolve; sem o acesso, ela é recusada na porta com a senha certa.
+ *
+ * Existia só dentro do cadastro do treinador. Quando o painel de manutenção
+ * passou a criar contas de qualquer papel, copiar essas três linhas para lá
+ * daria duas maneiras de criar aluno — e é assim que uma delas fica para trás
+ * na primeira mudança.
+ */
+async function criaContaDeAluno(
+  env: Env,
+  request: Request,
+  dados: { email: string; name: string; athleteName: string; senha: string },
+): Promise<Response | null> {
+  const problema = passwordProblem(dados.senha);
+  if (problema) return Response.json({ error: problema, minLength: MIN_PASSWORD_LENGTH }, { status: 400 });
+  await createAccount(env.DB, {
+    email: dados.email, name: dados.name, role: "student", athleteName: dados.athleteName,
+    password: dados.senha, mustChangePassword: true, status: "Ativo",
+  });
+  await linkAthleteAccess(env, dados.athleteName, dados.email, "Ativo", normalizedAuthenticatedEmail(request) ?? "sistema");
+  return null;
+}
+
 async function coachAccountsApi(request: Request, env: Env): Promise<Response> {
   const carteira = carteiraDe(request);
   const recorte = carteira
@@ -950,13 +1060,8 @@ async function coachAccountsApi(request: Request, env: Env): Promise<Response> {
       return Response.json({ error: "email_already_registered" }, { status: 409 });
     }
     const temporaryPassword = boundedText(input.password, 200) || generateTemporaryPassword();
-    const problem = passwordProblem(temporaryPassword);
-    if (problem) return Response.json({ error: problem, minLength: MIN_PASSWORD_LENGTH }, { status: 400 });
-    await createAccount(env.DB, {
-      email, name, role: "student", athleteName, password: temporaryPassword,
-      mustChangePassword: true, status: "Ativo",
-    });
-    await linkAthleteAccess(env, athleteName, email, "Ativo", normalizedAuthenticatedEmail(request) ?? "sistema");
+    const criado = await criaContaDeAluno(env, request, { email, name, athleteName, senha: temporaryPassword });
+    if (criado instanceof Response) return criado;
     // A senha temporária aparece uma única vez, no retorno desta chamada.
     return Response.json({ created: true, email, athleteName, temporaryPassword }, { status: 201 });
   }
@@ -1064,6 +1169,88 @@ async function ensureAccessRequests(env: Env) {
   await ensureTables(env, schema.accessRequests);
 }
 
+/**
+ * O código de convite de um treinador, criado na primeira vez que ele pede.
+ *
+ * Um por treinador, e estável: se mudasse a cada visita, os links já enviados
+ * parariam de amarrar e o aluno voltaria a chegar sem dono.
+ */
+const DIA_EM_MS = 86_400_000;
+
+/** Emite um convite novo para o treinador, com prazo e limite escolhidos. */
+async function emiteConvite(env: Env, carteira: string, dias: number, usos: number | null): Promise<Record<string, unknown>> {
+  const codigo = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+  const agora = Date.now();
+  const expira = agora + dias * DIA_EM_MS;
+  await env.DB.prepare("INSERT INTO coach_invites (code, coach_email, expires_at, max_uses, uses, revoked_at, created_at) VALUES (?, ?, ?, ?, 0, NULL, ?)")
+    .bind(codigo, carteira, expira, usos, agora).run();
+  return { code: codigo, expiresAt: expira, maxUses: usos, uses: 0 };
+}
+
+/**
+ * Convites do treinador: lista, emite e revoga.
+ *
+ * Um convite não é mais eterno. Link sem validade é link que vaza depois — fica
+ * num grupo, num print, num e-mail encaminhado — e continua abrindo cadastro
+ * meses adiante, na carteira de quem já nem lembra de tê-lo enviado.
+ */
+async function conviteApi(request: Request, env: Env): Promise<Response> {
+  const carteira = carteiraDe(request);
+  if (!carteira) return Response.json({ error: "coach_scope_required" }, { status: 403 });
+  const agora = Date.now();
+
+  if (request.method === "GET") {
+    const linhas = await env.DB.prepare(
+      "SELECT code, expires_at, max_uses, uses, revoked_at, created_at FROM coach_invites WHERE coach_email = ? ORDER BY created_at DESC LIMIT 20",
+    ).bind(carteira).all();
+    return Response.json({ convites: linhas.results, agora });
+  }
+
+  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+  const input = await request.json() as Record<string, unknown>;
+  const acao = boundedText(input.action, 20) || "create";
+
+  if (acao === "revoke") {
+    const codigo = boundedText(input.code, 40);
+    if (!codigo) return Response.json({ error: "code_required" }, { status: 400 });
+    const r = await env.DB.prepare("UPDATE coach_invites SET revoked_at = ? WHERE code = ? AND coach_email = ? AND revoked_at IS NULL")
+      .bind(agora, codigo, carteira).run() as { meta?: { changes?: number } };
+    if (!Number(r?.meta?.changes ?? 0)) return Response.json({ error: "invite_not_found" }, { status: 404 });
+    return Response.json({ revoked: true, code: codigo });
+  }
+
+  /* Prazo obrigatório e curto por padrão. `usos` nulo é sem limite; 1 é o link
+     de uma pessoa só, que é o caso mais comum de cadastro individual. */
+  const dias = Number(input.days ?? 7);
+  if (!Number.isInteger(dias) || dias < 1 || dias > 90) return Response.json({ error: "invalid_expiry" }, { status: 400 });
+  const usosBrutos = input.maxUses;
+  const usos = usosBrutos === null || usosBrutos === undefined ? null : Number(usosBrutos);
+  if (usos !== null && (!Number.isInteger(usos) || usos < 1 || usos > 500)) return Response.json({ error: "invalid_max_uses" }, { status: 400 });
+
+  return Response.json(await emiteConvite(env, carteira, dias, usos), { status: 201 });
+}
+
+/**
+ * Resolve o código para um treinador, se o convite ainda vale.
+ *
+ * Expirado, revogado ou esgotado devolve null — e o cadastro segue sem dono, em
+ * vez de ser recusado: negar o acesso puniria o aluno por um link velho, que não
+ * é escolha dele.
+ */
+async function donoDoConvite(env: Env, codigo: string): Promise<string | null> {
+  if (!codigo) return null;
+  const linha = await env.DB.prepare(
+    "SELECT coach_email, expires_at, max_uses, uses, revoked_at FROM coach_invites WHERE code = ? LIMIT 1",
+  ).bind(codigo).first() as { coach_email?: string; expires_at?: number; max_uses?: number | null; uses?: number; revoked_at?: number | null } | null;
+  if (!linha?.coach_email) return null;
+  if (linha.revoked_at) return null;
+  if (linha.expires_at && Number(linha.expires_at) <= Date.now()) return null;
+  if (linha.max_uses !== null && linha.max_uses !== undefined && Number(linha.uses ?? 0) >= Number(linha.max_uses)) return null;
+  /* O uso é contado aqui, na hora em que o convite de fato amarra alguém. */
+  await env.DB.prepare("UPDATE coach_invites SET uses = uses + 1 WHERE code = ?").bind(codigo).run();
+  return linha.coach_email;
+}
+
 async function accessRequestApi(request: Request, env: Env, sessionEmail: string, sessionName: string): Promise<Response> {
   const email = sessionEmail;
   if (email === coachEmailOf(env)) return Response.json({ error: "student_request_only" }, { status: 403 });
@@ -1086,11 +1273,18 @@ async function accessRequestApi(request: Request, env: Env, sessionEmail: string
     if (!name || name.length < 3 || !allowedDistances.includes(distance) || !trainingDays.length || !allowedIntegrations.includes(integration)) return Response.json({ error: "invalid_registration" }, { status: 400 });
     const existing = await env.DB.prepare("SELECT status FROM access_requests WHERE email = ? LIMIT 1").bind(email).first() as {status?:string}|null;
     if (existing?.status === "Aprovado") return Response.json({ error: "already_approved" }, { status: 409 });
+    /* O código vem do link que o treinador enviou. Sem ele o pedido chega sem
+       dono e cai na lista de todos — o comportamento antigo, mantido para quem
+       já tinha o link genérico salvo. Código inválido não vira erro: vira
+       pedido sem dono, porque recusar o cadastro por causa de um link velho
+       puniria o aluno por algo que não é dele. */
+    const convite = boundedText(input.invite, 40);
+    const dono = await donoDoConvite(env, convite);
     const id = crypto.randomUUID(); const now = Date.now();
-    await env.DB.prepare(`INSERT INTO access_requests (id,email,name,phone,objective,distance,training_days,integration,status,reviewed_by,reviewed_at,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,NULL,NULL,?,?)
-      ON CONFLICT(email) DO UPDATE SET name=excluded.name,phone=excluded.phone,objective=excluded.objective,distance=excluded.distance,training_days=excluded.training_days,integration=excluded.integration,status='Pendente',reviewed_by=NULL,reviewed_at=NULL,updated_at=excluded.updated_at`)
-      .bind(id,email,name,phone||null,objective||null,distance,JSON.stringify(trainingDays),integration,"Pendente",now,now).run();
+    await env.DB.prepare(`INSERT INTO access_requests (id,email,name,phone,objective,distance,training_days,integration,status,coach_email,reviewed_by,reviewed_at,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,NULL,NULL,?,?)
+      ON CONFLICT(email) DO UPDATE SET name=excluded.name,phone=excluded.phone,objective=excluded.objective,distance=excluded.distance,training_days=excluded.training_days,integration=excluded.integration,status='Pendente',coach_email=COALESCE(excluded.coach_email,access_requests.coach_email),reviewed_by=NULL,reviewed_at=NULL,updated_at=excluded.updated_at`)
+      .bind(id,email,name,phone||null,objective||null,distance,JSON.stringify(trainingDays),integration,"Pendente",dono,now,now).run();
     return Response.json({ id, email, status:"Pendente", createdAt:now }, { status: 201 });
   }
   return new Response("Method not allowed", { status: 405 });
@@ -1100,7 +1294,13 @@ async function accessRequestsCoachApi(request: Request, env: Env): Promise<Respo
   await Promise.all([ensureAccessRequests(env), ensureAthleteAccess(env)]);
   await ensureTables(env, schema.athletes, schema.athleteProfiles, schema.athletePlanning);
   if (request.method === "GET") {
-    const result = await env.DB.prepare("SELECT * FROM access_requests ORDER BY CASE status WHEN 'Pendente' THEN 0 ELSE 1 END, created_at DESC LIMIT 100").all();
+    /* Agora que o pedido carrega o treinador, a lista pode ser recortada. Os
+       sem dono aparecem para todos de propósito: vieram do link genérico, e
+       esconder seria perder o aluno em vez de protegê-lo. */
+    const meus = carteiraDe(request);
+    const result = meus
+      ? await env.DB.prepare("SELECT * FROM access_requests WHERE coach_email = ? OR coach_email IS NULL ORDER BY CASE status WHEN 'Pendente' THEN 0 ELSE 1 END, created_at DESC LIMIT 100").bind(meus).all()
+      : await env.DB.prepare("SELECT * FROM access_requests ORDER BY CASE status WHEN 'Pendente' THEN 0 ELSE 1 END, created_at DESC LIMIT 100").all();
     return Response.json({ requests: result.results });
   }
   if (request.method === "POST") {
@@ -1127,7 +1327,11 @@ async function accessRequestsCoachApi(request: Request, env: Env): Promise<Respo
        dele. Ficava órfão até `atribuiAlunosSemDono` entregá-lo ao treinador
        principal — então um aluno aprovado por outro treinador caía na carteira
        errada, e era assim que a separação furava na origem. */
-    if(!existingName?.id) statements.push(env.DB.prepare("INSERT INTO athletes (id,name,initials,distance,phase,week,next_workout,status,phone,email,training_days,integration,coach_email,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(athleteId,name,initials,distance,phase,`1 de ${totalWeeks}`,"Aguardando programação",null,row.phone||null,email,days,integration,carteiraDe(request),now));
+    /* O dono é o treinador do CONVITE, não quem clicou em aprovar: o aluno
+       chegou pelo link de alguém, e é essa pessoa que ele espera ter do outro
+       lado. Só quando o pedido não tem convite — link antigo, genérico — é que
+       quem aprova assume. */
+    if(!existingName?.id) statements.push(env.DB.prepare("INSERT INTO athletes (id,name,initials,distance,phase,week,next_workout,status,phone,email,training_days,integration,coach_email,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(athleteId,name,initials,distance,phase,`1 de ${totalWeeks}`,"Aguardando programação",null,row.phone||null,email,days,integration,row.coach_email||carteiraDe(request),now));
     statements.push(
       env.DB.prepare("INSERT INTO athlete_profiles (athlete_name,phone,birth_date,objective,integration,training_days,updated_at) VALUES (?,?,NULL,?,?,?,?) ON CONFLICT(athlete_name) DO UPDATE SET phone=excluded.phone,objective=excluded.objective,integration=excluded.integration,training_days=excluded.training_days,updated_at=excluded.updated_at").bind(name,row.phone||null,row.objective||null,integration,days,now),
       env.DB.prepare("INSERT INTO athlete_planning (athlete_name,plan,phase,week_number,total_weeks,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(athlete_name) DO UPDATE SET plan=excluded.plan,phase=excluded.phase,week_number=excluded.week_number,total_weeks=excluded.total_weeks,updated_at=excluded.updated_at").bind(name,plan,phase,1,totalWeeks,now),
@@ -2489,8 +2693,11 @@ async function stravaWebhookApi(request: Request, url: URL, env: Env, ctx: Execu
     const token = url.searchParams.get("hub.verify_token");
     const desafio = url.searchParams.get("hub.challenge");
     if (modo !== "subscribe" || !desafio) return Response.json({ error: "invalid_subscription" }, { status: 400 });
-    // Sem o token combinado, qualquer um poderia inscrever um endpoint nosso.
-    if (!env.STRAVA_WEBHOOK_VERIFY_TOKEN || token !== env.STRAVA_WEBHOOK_VERIFY_TOKEN) {
+    /* Sem o token combinado, qualquer um poderia inscrever um endpoint nosso.
+       A comparação é em tempo constante: com `!==`, que para na primeira letra
+       diferente, quem chama mede o tempo da resposta e descobre o token
+       caractere a caractere. */
+    if (!env.STRAVA_WEBHOOK_VERIFY_TOKEN || !constantTimeEquals(token ?? "", env.STRAVA_WEBHOOK_VERIFY_TOKEN)) {
       return Response.json({ error: "invalid_verify_token" }, { status: 403 });
     }
     return Response.json({ "hub.challenge": desafio });
@@ -2581,19 +2788,31 @@ async function stravaSubscriptionApi(request: Request, url: URL, env: Env): Prom
 
 /* --- Apple Saúde: token de ingestão para o Atalho do iOS ------------------- */
 
-async function issueDeviceIngestToken(env: Env, athleteName: string): Promise<string> {
+/**
+ * Emite o token que um aparelho usa para falar com o sistema.
+ *
+ * Serve a qualquer provedor do tipo "device" — o Atalho do iPhone e o mini-app
+ * do relógio Amazfit usam o mesmo mecanismo, e o que muda é só quem o apresenta.
+ * O provedor estava cravado em 'apple' nas três instruções, o que fazia o token
+ * do relógio nascer marcado como Apple e as atividades dele chegarem rotuladas
+ * assim no painel do treinador.
+ *
+ * Um token ativo por aluno e provedor: emitir de novo revoga o anterior, porque
+ * token antigo que continua valendo é token que ninguém sabe onde está.
+ */
+async function issueDeviceIngestToken(env: Env, athleteName: string, provider: ProviderId): Promise<string> {
   const token = Array.from(crypto.getRandomValues(new Uint8Array(24)), byte => byte.toString(16).padStart(2, "0")).join("");
   const now = Date.now();
   await env.DB.batch([
-    env.DB.prepare("UPDATE device_ingest_tokens SET revoked_at = ? WHERE athlete_name = ? AND provider = 'apple' AND revoked_at IS NULL").bind(now, athleteName),
-    env.DB.prepare("INSERT INTO device_ingest_tokens (token_hash, athlete_name, provider, created_at, last_used_at, revoked_at) VALUES (?, ?, 'apple', ?, NULL, NULL)")
-      .bind(await sha256Text(token), athleteName, now),
+    env.DB.prepare("UPDATE device_ingest_tokens SET revoked_at = ? WHERE athlete_name = ? AND provider = ? AND revoked_at IS NULL").bind(now, athleteName, provider),
+    env.DB.prepare("INSERT INTO device_ingest_tokens (token_hash, athlete_name, provider, created_at, last_used_at, revoked_at) VALUES (?, ?, ?, ?, NULL, NULL)")
+      .bind(await sha256Text(token), athleteName, provider, now),
   ]);
   await env.DB.prepare(`INSERT INTO external_integrations
     (id, athlete_name, provider, external_athlete_id, scopes, access_token_encrypted, refresh_token_encrypted, expires_at, status, last_sync_at, updated_at)
     VALUES (?, ?, ?, NULL, 'workouts', '', '', 0, 'Conectado', NULL, ?)
     ON CONFLICT(athlete_name, provider) DO UPDATE SET status = 'Conectado', updated_at = excluded.updated_at`)
-    .bind(crypto.randomUUID(), athleteName, PROVIDERS.apple.label, now).run();
+    .bind(crypto.randomUUID(), athleteName, PROVIDERS[provider].label, now).run();
   return token;
 }
 
@@ -2601,16 +2820,135 @@ async function issueDeviceIngestToken(env: Env, athleteName: string): Promise<st
  * Recebe treinos enviados pelo iPhone. Autentica pelo token de ingestão, não
  * pela sessão do navegador, porque quem chama aqui é um Atalho do iOS.
  */
+/**
+ * O treino do dia, pronto para um relógio executar.
+ *
+ * Existe porque o relógio não sabe o que é "Z1". As etapas da planilha falam em
+ * zonas, que só viram ritmo depois de cruzar com o teste de desempenho do
+ * atleta — e essa conta é do servidor, não do mini-app: fazê-la no relógio
+ * obrigaria a mandar o teste inteiro para lá e a repetir a fórmula em
+ * JavaScript, onde ela sairia do lugar na primeira mudança.
+ *
+ * Autentica pelo mesmo token de ingestão que o aparelho já usa para enviar. Um
+ * token, os dois sentidos.
+ */
+async function deviceWorkoutApi(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
+  await ensureIntegrationTables(env);
+
+  const apresentado = boundedText(request.headers.get("x-zonas-ingest-token"), 100);
+  if (!/^[a-f0-9]{48}$/.test(apresentado)) return Response.json({ error: "ingest_token_required" }, { status: 401 });
+  const vinculo = await env.DB.prepare(
+    "SELECT athlete_name FROM device_ingest_tokens WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1",
+  ).bind(await sha256Text(apresentado)).first() as { athlete_name?: string } | null;
+  if (!vinculo?.athlete_name) return Response.json({ error: "invalid_ingest_token" }, { status: 401 });
+  const atleta = vinculo.athlete_name;
+
+  /* Os mesmos ajudantes que a importação de atividade usa para decidir semana e
+     dia. Uma conta só para "que dia é hoje no planejamento": duas divergiriam no
+     primeiro fuso ou virada de semana. */
+  const agora = Date.now();
+  const hoje = { key: workoutDayOf(agora), weekStart: weekStartOf(agora), iso: new Date(agora).toISOString().slice(0, 10) };
+  const semana = await env.DB.prepare(
+    "SELECT sessions, status, plan, phase, week_label FROM training_weeks WHERE athlete_name = ? AND week_start = ? LIMIT 1",
+  ).bind(atleta, hoje.weekStart).first() as { sessions?: string; status?: string; plan?: string; phase?: string; week_label?: string } | null;
+
+  /* Semana não liberada é semana que o aluno não deve ver — nem pelo relógio.
+     Devolver 200 com o treino seria furar a revisão do treinador pelo caminho
+     que ninguém está olhando. */
+  if (!semana || semana.status !== "Liberada") {
+    return Response.json({ athlete: atleta, day: hoje.key, workout: null, reason: "week_not_released" });
+  }
+
+  let sessoes: Record<string, unknown> = {};
+  try { sessoes = JSON.parse(String(semana.sessions ?? "{}")) as Record<string, unknown>; } catch { sessoes = {}; }
+  const sessao = sessoes[hoje.key] as Record<string, unknown> | undefined;
+  if (!sessao || sessao.removed) {
+    return Response.json({ athlete: atleta, day: hoje.key, workout: null, reason: "rest_day" });
+  }
+
+  /* As zonas do teste aprovado mais recente. Sem teste, as etapas vão sem alvo
+     de ritmo: o relógio ainda consegue guiar por tempo e distância, que é melhor
+     que não mandar nada. */
+  const teste = await env.DB.prepare(
+    "SELECT zones, fc_max FROM performance_tests WHERE athlete_name = ? AND status = 'Aprovado' ORDER BY test_date DESC, created_at DESC LIMIT 1",
+  ).bind(atleta).first() as { zones?: string; fc_max?: number } | null;
+
+  const faixas = new Map<string, { label: string; slow: number; fast: number }>();
+  try {
+    for (const zona of JSON.parse(String(teste?.zones ?? "[]")) as Array<Record<string, unknown>>) {
+      faixas.set(String(zona.z), { label: String(zona.label ?? ""), slow: Number(zona.slow), fast: Number(zona.fast) });
+    }
+  } catch { /* sem zonas: segue sem alvo */ }
+
+  const alvo = (zona?: unknown) => {
+    const faixa = zona ? faixas.get(String(zona).toUpperCase()) : undefined;
+    if (!faixa || !Number.isFinite(faixa.slow) || !Number.isFinite(faixa.fast)) return null;
+    return { zone: String(zona).toUpperCase(), label: faixa.label, paceSlowSeconds: faixa.slow, paceFastSeconds: faixa.fast };
+  };
+
+  /* As etapas viram um formato plano, sem "kind" e sem zona solta: cada uma diz
+     quanto dura, em que ritmo, e quantas vezes repete. É o que um relógio
+     consegue executar sem interpretar o vocabulário da planilha. */
+  const etapas: Array<Record<string, unknown>> = [];
+  for (const bruta of (Array.isArray(sessao.steps) ? sessao.steps : []) as Array<Record<string, unknown>>) {
+    if (bruta?.kind === "repeat") {
+      etapas.push({
+        type: "repeat",
+        label: String(bruta.label ?? "Série principal"),
+        repetitions: Number(bruta.repetitions) || 1,
+        effort: {
+          seconds: Number.isFinite(Number(bruta.effortMinutes)) ? Math.round(Number(bruta.effortMinutes) * 60) : null,
+          meters: Number.isFinite(Number(bruta.effortMeters)) ? Number(bruta.effortMeters) : null,
+          target: alvo(bruta.effortZone),
+        },
+        recovery: {
+          seconds: Number.isFinite(Number(bruta.recoveryMinutes)) ? Math.round(Number(bruta.recoveryMinutes) * 60) : null,
+          meters: Number.isFinite(Number(bruta.recoveryMeters)) ? Number(bruta.recoveryMeters) : null,
+          target: alvo(bruta.recoveryZone),
+        },
+      });
+      continue;
+    }
+    etapas.push({
+      type: "simple",
+      label: String(bruta?.label ?? "Etapa"),
+      seconds: Number.isFinite(Number(bruta?.minutes)) ? Math.round(Number(bruta?.minutes) * 60) : null,
+      meters: Number.isFinite(Number(bruta?.meters)) ? Number(bruta?.meters) : null,
+      target: alvo(bruta?.zone),
+    });
+  }
+
+  return Response.json({
+    athlete: atleta,
+    day: hoje.key,
+    date: hoje.iso,
+    workout: {
+      title: String(sessao.title ?? sessao.type ?? "Treino do dia"),
+      description: String(sessao.description ?? ""),
+      estimatedSeconds: Number.isFinite(Number(sessao.durationMinutes)) ? Math.round(Number(sessao.durationMinutes) * 60) : null,
+      estimatedMeters: Number.isFinite(Number(sessao.estimatedKm)) ? Math.round(Number(sessao.estimatedKm) * 1000) : null,
+      maxHeartRate: Number(teste?.fc_max) || null,
+      steps: etapas,
+    },
+    plan: { name: semana.plan ?? null, phase: semana.phase ?? null, week: semana.week_label ?? null },
+  });
+}
+
 async function deviceIngestApi(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
   await ensureIntegrationTables(env);
   const presented = boundedText(request.headers.get("x-zonas-ingest-token"), 100);
   if (!/^[a-f0-9]{48}$/.test(presented)) return Response.json({ error: "ingest_token_required" }, { status: 401 });
 
+  /* O provedor vem do token, não de uma constante. Estava cravado em "apple", e
+     os treinos vindos do relógio Amazfit chegavam rotulados como Apple Saúde no
+     painel do treinador — dado certo, origem errada. */
   const record = await env.DB.prepare(
-    "SELECT athlete_name FROM device_ingest_tokens WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1",
-  ).bind(await sha256Text(presented)).first() as { athlete_name?: string } | null;
+    "SELECT athlete_name, provider FROM device_ingest_tokens WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1",
+  ).bind(await sha256Text(presented)).first() as { athlete_name?: string; provider?: string } | null;
   if (!record?.athlete_name) return Response.json({ error: "invalid_ingest_token" }, { status: 401 });
+  const provider = (record.provider && record.provider in PROVIDERS ? record.provider : "apple") as ProviderId;
 
   const input = await request.json() as Record<string, unknown>;
   const workouts = Array.isArray(input.workouts) ? input.workouts.slice(0, 50) : [];
@@ -2618,7 +2956,7 @@ async function deviceIngestApi(request: Request, env: Env): Promise<Response> {
 
   let imported = 0;
   for (const raw of workouts) {
-    if (raw && typeof raw === "object" && await storeActivity(env, record.athlete_name, "apple", raw as Record<string, unknown>)) {
+    if (raw && typeof raw === "object" && await storeActivity(env, record.athlete_name, provider, raw as Record<string, unknown>)) {
       imported += 1;
     }
   }
@@ -2626,7 +2964,7 @@ async function deviceIngestApi(request: Request, env: Env): Promise<Response> {
   await env.DB.batch([
     env.DB.prepare("UPDATE device_ingest_tokens SET last_used_at = ? WHERE token_hash = ?").bind(now, await sha256Text(presented)),
     env.DB.prepare("UPDATE external_integrations SET last_sync_at = ?, updated_at = ? WHERE athlete_name = ? AND provider = ?")
-      .bind(now, now, record.athlete_name, PROVIDERS.apple.label),
+      .bind(now, now, record.athlete_name, PROVIDERS[provider].label),
   ]);
   return Response.json({ imported, received: workouts.length });
 }
@@ -2698,13 +3036,18 @@ async function studentIntegrationsApi(request: Request, env: Env, athleteName: s
     // A Apple não tem autorização em servidor: o vínculo é um token que o
     // atleta cola no Atalho do iOS.
     if (provider.authType === "device") {
-      const ingestToken = await issueDeviceIngestToken(env, athleteName);
+      const ingestToken = await issueDeviceIngestToken(env, athleteName, provider.id);
       return Response.json({
         provider: provider.id,
         authType: "device",
         ingestToken,
         ingestUrl: `${new URL(request.url).origin}/api/ingest/device`,
-        instructions: "No iPhone, crie um Atalho que leia os treinos do app Saúde e envie um POST para o endereço acima com o cabeçalho x-zonas-ingest-token. O token aparece uma única vez.",
+        /* A instrução é por provedor. Era a do Atalho do iPhone para os dois, e o
+           aluno com Amazfit lia que precisava de um iPhone. */
+        workoutUrl: `${new URL(request.url).origin}/api/ingest/device/workout`,
+        instructions: provider.id === "zepp"
+          ? "No aplicativo Zepp do celular, instale o mini-app ZonasApp e cole este token nas configurações dele. A partir daí o treino do dia chega ao relógio e o resultado volta sozinho — você não precisa abrir nada. O token aparece uma única vez."
+          : "No iPhone, crie um Atalho que leia os treinos do app Saúde e envie um POST para o endereço acima com o cabeçalho x-zonas-ingest-token. O token aparece uma única vez.",
       });
     }
     return await beginOauthFlow(request, env, provider, athleteName, email);
@@ -2985,13 +3328,39 @@ async function equipeApi(request: Request, env: Env): Promise<Response> {
     const senhaFinal = senha || `${generateTemporaryPassword()}a1`;
     if (senha && problema) return Response.json({ error: problema, minLength: MIN_PASSWORD_LENGTH }, { status: 400 });
     if (await accountByEmail(env.DB, email)) return Response.json({ error: "email_already_registered" }, { status: 409 });
-    /* Sempre "coach": nem o proprietário nem a manutenção criam um par por esta
-       porta. Promover alguém é outro ato, e deve ser deliberado. O treinador
-       nasce sem aluno e sem planilha — a carteira e a biblioteca dele são dele,
-       e começam vazias. */
-    await createAccount(env.DB, { email, name, role: "coach", password: senhaFinal, mustChangePassword: true, status: "Ativo" });
-    await registraNaSeguranca(env, request, "Nova conta de treinador", `Criada por quem tinha permissão: ${email}`, "/api/equipe");
-    return Response.json({ created: true, email, name, temporaryPassword: senhaFinal }, { status: 201 });
+
+    /* O papel é escolhido na criação, e "dev" não está entre as opções.
+       Criar manutenção é dar acesso irrestrito, e quem pudesse fazê-lo por esta
+       porta daria a si mesmo o que a hierarquia existe para negar: a conta de
+       manutenção continua nascendo só do DEV_LOGIN do ambiente.
+       "owner" é só para a manutenção: proprietário criando proprietário é criar
+       um par, não um subordinado. */
+    const papel = boundedText(input.role, 10) || "coach";
+    const papeisAceitos = quemPede?.role === "dev" ? ["owner", "coach", "student"] : ["coach", "student"];
+    if (!papeisAceitos.includes(papel)) return Response.json({ error: "invalid_role", allowed: papeisAceitos }, { status: 400 });
+
+    if (papel === "student") {
+      /* Conta de aluno sem `athlete_name` não entra: `identityFromRequest`
+         devolve null e a pessoa fica presa numa sessão que não resolve. E sem
+         `athlete_access` ativo ela é recusada na porta. Quem sabe fazer isso
+         certo é `criaContaDeAluno`, o mesmo caminho que o treinador usa —
+         escrever um segundo aqui daria duas maneiras de criar aluno, que é como
+         uma delas fica para trás. */
+      const athleteName = boundedText(input.athleteName, 120);
+      if (!athleteName) return Response.json({ error: "athlete_required" }, { status: 400 });
+      const dono = await env.DB.prepare("SELECT coach_email FROM athletes WHERE name = ? LIMIT 1").bind(athleteName).first() as { coach_email?: string } | null;
+      if (!dono) return Response.json({ error: "athlete_not_found" }, { status: 404 });
+      const resultado = await criaContaDeAluno(env, request, { email, name, athleteName, senha: senhaFinal });
+      if (resultado instanceof Response) return resultado;
+      await registraNaSeguranca(env, request, "Nova conta de aluno", `Criada por quem tinha permissão: ${email} · atleta ${athleteName}`, "/api/equipe");
+      return Response.json({ created: true, email, name, role: papel, athleteName, temporaryPassword: senhaFinal }, { status: 201 });
+    }
+
+    /* Treinador e proprietário nascem sem aluno e sem planilha — a carteira e a
+       biblioteca são deles, e começam vazias. */
+    await createAccount(env.DB, { email, name, role: papel as "owner" | "coach", password: senhaFinal, mustChangePassword: true, status: "Ativo" });
+    await registraNaSeguranca(env, request, papel === "owner" ? "Nova conta de proprietário" : "Nova conta de treinador", `Criada por quem tinha permissão: ${email}`, "/api/equipe");
+    return Response.json({ created: true, email, name, role: papel, temporaryPassword: senhaFinal }, { status: 201 });
   }
 
   if (acao === "visit") {
@@ -3187,6 +3556,73 @@ async function customPlansApi(request: Request, env: Env): Promise<Response> {
     return Response.json({ deleted: true });
   }
 
+  if (acao === "import") {
+    /* Importação de biblioteca.
+     *
+     * O formato é o mesmo que a exportação produz, e é deliberadamente simples:
+     * uma lista de planilhas, cada uma com as semanas e os treinos dentro. Nada
+     * de id, dono ou data — esses são de quem importa, não de quem exportou, e
+     * aceitar id de fora deixaria um arquivo sobrescrever a planilha de outro.
+     *
+     * Nome que já existe não vira erro nem duplicata: a planilha é substituída
+     * inteira, semanas incluídas. É o que "importar de novo" deve fazer — quem
+     * corrige o arquivo e reimporta espera o resultado do arquivo, não a soma
+     * dele com o que estava lá.
+     */
+    const planilhas = Array.isArray(input.plans) ? input.plans : [];
+    if (!planilhas.length) return Response.json({ error: "no_plans" }, { status: 400 });
+    if (planilhas.length > 40) return Response.json({ error: "too_many_plans" }, { status: 413 });
+
+    const comandos: Array<ReturnType<typeof env.DB.prepare>> = [];
+    let semanasImportadas = 0;
+    const nomes: string[] = [];
+
+    for (const bruta of planilhas as Array<Record<string, unknown>>) {
+      const nome = boundedText(bruta.name, 60);
+      const semanasDeclaradas = Number(bruta.weeks);
+      if (nome.length < 3) return Response.json({ error: "plan_name_too_short", plano: nome }, { status: 400 });
+      if (!Number.isInteger(semanasDeclaradas) || semanasDeclaradas < 1 || semanasDeclaradas > 52) {
+        return Response.json({ error: "invalid_week_count", plano: nome }, { status: 400 });
+      }
+      const fases = Array.isArray(bruta.phases) ? bruta.phases.map(f => boundedText(f, 30)).filter(Boolean).slice(0, 8) : [];
+      nomes.push(nome);
+
+      /* Substituir e não somar: apaga a versão anterior desta biblioteca antes
+         de escrever a nova, senão as semanas velhas sobreviveriam à importação. */
+      comandos.push(env.DB.prepare("DELETE FROM plan_template_overrides WHERE plan_name = ? AND coach_email = ?").bind(nome, dono));
+      comandos.push(env.DB.prepare("DELETE FROM custom_plans WHERE name = ? AND coach_email = ?").bind(nome, dono));
+      comandos.push(env.DB.prepare(
+        `INSERT INTO custom_plans (id,name,distance,weeks,frequency,level,goal,phases,created_by,coach_email,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      ).bind(crypto.randomUUID(), nome, boundedText(bruta.distance, 30) || "Livre", semanasDeclaradas,
+        boundedText(bruta.frequency, 40) || `${semanasDeclaradas} semanas`,
+        boundedText(bruta.level, 30) || "Importada", boundedText(bruta.goal, 160) || "Planilha importada",
+        JSON.stringify(fases.length ? fases : ["Base", "Desenvolvimento", "Específica"]),
+        normalizedAuthenticatedEmail(request) ?? "importação", dono, now));
+
+      const semanas = (bruta.weeksContent && typeof bruta.weeksContent === "object") ? bruta.weeksContent as Record<string, unknown> : {};
+      for (const [numero, sessoes] of Object.entries(semanas)) {
+        const semana = Number(numero);
+        if (!Number.isInteger(semana) || semana < 1 || semana > semanasDeclaradas) continue;
+        if (!Array.isArray(sessoes) || sessoes.length > 10 || !validStructuredValue(sessoes)) {
+          return Response.json({ error: "invalid_template", plano: nome, semana }, { status: 400 });
+        }
+        const json = JSON.stringify(sessoes);
+        if (json.length > 200_000) return Response.json({ error: "template_too_large", plano: nome, semana }, { status: 413 });
+        comandos.push(env.DB.prepare(
+          `INSERT INTO plan_template_overrides (id,plan_name,week_number,sessions_json,updated_by,coach_email,updated_at)
+           VALUES (?,?,?,?,?,?,?)`,
+        ).bind(crypto.randomUUID(), nome, semana, json, normalizedAuthenticatedEmail(request) ?? "importação", dono, now));
+        semanasImportadas += 1;
+      }
+    }
+
+    /* Em lote e não uma a uma: são centenas de comandos, e cada ida ao D1 é
+       rede. Vai tudo ou não vai nada, que é o que se espera de uma importação. */
+    for (let i = 0; i < comandos.length; i += 50) await env.DB.batch(comandos.slice(i, i + 50));
+    return Response.json({ imported: true, planilhas: nomes.length, semanas: semanasImportadas, nomes });
+  }
+
   const id = boundedText(input.planId, 40) || crypto.randomUUID();
   const name = boundedText(input.name, 60);
   const weeks = Number(input.weeks);
@@ -3362,6 +3798,13 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
     }
 
     // Chamado pelo Atalho do iOS, autenticado por token de ingestão.
+    /* O relógio busca o treino do dia pelo mesmo token com que envia o
+       resultado: um token, os dois sentidos. */
+    if (url.pathname === "/api/ingest/device/workout") {
+      try { return await deviceWorkoutApi(request, env); }
+      catch (falha) { return await applicationFailure(env, request, "treino do aparelho", "device_workout_unavailable", falha); }
+    }
+
     if (url.pathname === "/api/ingest/device") {
       try { return await deviceIngestApi(request, env); }
       catch (falha) { return await applicationFailure(env, request, "envio do Apple Saúde", "device_ingest_failed", falha); }
@@ -3422,6 +3865,12 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
     /* Dois caminhos, um handler. A manutenção chega por /api/dev/coaches, que já
        existia; o proprietário chega por /api/equipe, que é o nome do que ele vê.
        Quem separa o que cada um enxerga é o papel, não a rota. */
+    if (url.pathname === "/api/convite") {
+      if (!isCoachLevel(resolvedIdentities.get(request) ?? null)) return Response.json({ error: "coach_access_required" }, { status: 403 });
+      try { return await conviteApi(request, env); }
+      catch (falha) { return await applicationFailure(env, request, "convite", "invite_unavailable", falha); }
+    }
+
     if (url.pathname === "/api/dev/coaches" || url.pathname === "/api/equipe") {
       const negado = requireOwnerApiAccess(request);
       if (negado) return negado;
@@ -3547,6 +3996,10 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
 
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    /* Falhar aqui não pode derrubar a resposta: se o banco estiver fora, quem
+       reporta isso é o handler, com a área e o código dele — não uma exceção
+       genérica antes de qualquer rota ser escolhida. */
+    try { await garanteEsquema(env); } catch { /* o handler reporta */ }
     const response = await routeRequest(request, env, ctx);
     return withSecurityHeaders(request, response);
   },

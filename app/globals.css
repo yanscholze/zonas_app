@@ -14708,3 +14708,233 @@ p, span, b, strong, small, em, li, td, th, label {
   color: var(--gold);
   font-weight: var(--fw-bold);
 }
+
+/* -----------------------------------------------------------------------------
+   Importar biblioteca de planilhas.
+   ----------------------------------------------------------------------------- */
+.plan-acoes {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* O campo de arquivo do navegador traz o próprio texto e não se estiliza; o
+   rótulo visível é o `span`, e o campo fica escondido sem sair do foco do
+   teclado. Mesmo desenho do anexo de treino e do comprovante. */
+.plan-importar {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  cursor: pointer;
+}
+
+.plan-importar:hover { border-color: var(--gold); color: var(--gold); }
+
+.plan-importar>input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* -----------------------------------------------------------------------------
+   Validade do link de convite.
+   ----------------------------------------------------------------------------- */
+.invite-validade {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--line-soft);
+}
+
+.invite-validade p {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+.invite-validade p b { color: var(--text); }
+.invite-sem-link { color: var(--gold) !important; }
+
+.invite-revogar {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--red);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  cursor: pointer;
+}
+
+.invite-emitir {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.invite-emitir button {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.invite-emitir button:hover:not(:disabled) { border-color: var(--gold); color: var(--gold); }
+
+/* -----------------------------------------------------------------------------
+   Assinatura de quem fez e mantém.
+
+   Apagada de propósito: quem usa o sistema todo dia não precisa relê-la, e ela
+   não pode competir com o conteúdo. Mas quem procura o responsável — um aluno
+   com dúvida, alguém avaliando a plataforma — precisa achar sem perguntar.
+   ----------------------------------------------------------------------------- */
+.assinatura {
+  margin: var(--space-10) 0 0;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: var(--fs-overline);
+  line-height: var(--lh-snug);
+  text-align: center;
+  opacity: .7;
+}
+
+.assinatura a {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid currentColor;
+}
+
+.assinatura a:hover { color: var(--gold); }
+
+/* Na área do aluno o fundo é claro: a mesma discrição pede outra tinta. */
+.student .assinatura {
+  border-top-color: var(--aluno-linha);
+  color: var(--aluno-apoio);
+}
+
+.student .assinatura a:hover { color: var(--aluno-dourado); }
+
+/* -----------------------------------------------------------------------------
+   Como um aluno entra.
+
+   Havia três lugares para cadastrar um aluno, e eles não faziam a mesma coisa:
+   um criava a ficha sem o login, outro o login sem a ficha, e só o terceiro
+   criava tudo. Quem usasse o do meio ficava com um aluno que não conseguia
+   entrar, sem nada na tela dizendo o que faltava. Os dois caminhos que existem
+   passam a ficar lado a lado, cada um dizendo o que faz.
+   ----------------------------------------------------------------------------- */
+.entrada-caminhos {
+  margin-bottom: var(--space-6);
+}
+
+.entrada-caminhos>div:first-child h2 {
+  margin: var(--space-1) 0 0;
+  font-size: var(--fs-lg);
+}
+
+.entrada-caminhos>div:first-child p {
+  margin: var(--space-1) 0 var(--space-4);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.entrada-opcoes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--space-3);
+}
+
+.entrada-opcoes article {
+  display: grid;
+  align-content: start;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+}
+
+.entrada-opcoes b { font-size: var(--fs-md); }
+
+.entrada-opcoes p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+}
+
+.entrada-opcoes button { justify-self: start; margin-top: var(--space-1); }
+
+.entrada-opcoes small {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-style: italic;
+}
+
+/* Quem ainda não tem acesso, na aba de contas: um lembrete, não um formulário —
+   criar é em Cadastros. */
+.account-pendentes {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--gold);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.account-pendentes span { color: var(--text); font-size: var(--fs-sm); }
+.account-pendentes small { color: var(--muted); font-size: var(--fs-xs); }
+
+/* A manutenção no painel do treinador, sem estar na área de ninguém.
+
+   Sem carteira, os endereços que dependem de um treinador recusam com 403 — e a
+   primeira ação a falhar culpava o dado do treinador, não a falta de contexto.
+   Dizer antes evita o diagnóstico errado. */
+.dev-sem-area {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--gold);
+  background: #241f12;
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.dev-sem-area b { color: var(--gold2); }
+
+.dev-sem-area button {
+  flex: none;
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--gold);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--gold);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  cursor: pointer;
+}

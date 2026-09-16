@@ -112,7 +112,18 @@ export const trainingWeeks = sqliteTable("training_weeks", {
   sessions: text("sessions").notNull(),
   status: text("status").notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
-});
+}, (table) => ({
+  /* Uma semana por aluno por data de início — e o `INSERT ... ON CONFLICT
+     (athlete_name, week_start)` que grava o treino depende deste índice para
+     existir. Ele estava no banco de desenvolvimento, criado por uma versão
+     antiga do schema, mas não estava DECLARADO aqui: sobreviveu ali e nunca
+     nasceu num banco novo. Em produção, liberar a semana do aluno respondia
+     "ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint".
+
+     Índice que existe só no banco de quem desenvolve é pior que índice ausente:
+     faz o erro aparecer só onde ninguém está olhando. */
+  athleteStartIdx: uniqueIndex("training_weeks_athlete_start_idx").on(table.athleteName, table.weekStart),
+}));
 
 export const painReports = sqliteTable("pain_reports", {
   id: text("id").primaryKey(),
@@ -224,7 +235,13 @@ export const deviceIngestTokens = sqliteTable("device_ingest_tokens", {
   tokenHash: text("token_hash").primaryKey(), athleteName: text("athlete_name").notNull(), provider: text("provider").notNull(),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(), lastUsedAt: integer("last_used_at"), revokedAt: integer("revoked_at"),
 }, (table) => ({
-  athleteIdx: index("device_ingest_tokens_athlete_idx").on(table.athleteName, table.provider),
+  athleteIdx: /* ÚNICO, e não apenas índice: o `INSERT ... ON CONFLICT(athlete_name,
+     provider)` que renova o token depende disso. Era `index()`, e a gravação
+     teria falhado com "ON CONFLICT clause does not match any PRIMARY KEY or
+     UNIQUE constraint" — o mesmo erro de `training_weeks`, esperando alguém
+     conectar um relógio Apple. Um token ativo por aluno e provedor é a regra
+     que o código já assume. */
+  uniqueIndex("device_ingest_tokens_athlete_idx").on(table.athleteName, table.provider),
 }));
 
 /** Contas de login da própria Zonas-App. */
@@ -341,6 +358,9 @@ export const accessRequests = sqliteTable("access_requests", {
   trainingDays: text("training_days").notNull(),
   integration: text("integration").notNull(),
   status: text("status").notNull(),
+  /* De qual treinador é o convite pelo qual esta pessoa chegou. Sem isto o
+     pedido não tinha dono e ia para a lista de todos. */
+  coachEmail: text("coach_email"),
   reviewedBy: text("reviewed_by"),
   reviewedAt: integer("reviewed_at"),
   createdAt: integer("created_at").notNull(),
@@ -424,6 +444,53 @@ export const trainingWeekAudit = sqliteTable("training_week_audit", {
 }, (table) => ({
   athleteWeekIdx: index("training_week_audit_athlete_week_idx").on(table.athleteName, table.weekStart, table.createdAt),
 }));
+
+/**
+ * Versão do esquema que o banco tem.
+ *
+ * Existe para responder, numa consulta só, "o banco já está como este código
+ * espera?". Antes toda instância nova refazia o `ensureTables` inteiro — 31
+ * PRAGMA sequenciais e mais de trinta lotes, cerca de 64 idas ao D1 — e como no
+ * Workers instância nova acontece o tempo todo, isso aparecia como lentidão na
+ * primeira requisição de cada uma.
+ *
+ * A assinatura sai do próprio SQL gerado das tabelas, então muda sozinha quando
+ * o esquema muda: não há lista à parte para alguém esquecer de atualizar.
+ */
+/**
+ * O código de convite de cada treinador.
+ *
+ * O link de cadastro era o mesmo para todos, então o aluno chegava sem dono: ele
+ * pedia acesso, e quem aprovasse primeiro virava o treinador dele. Com um
+ * treinador só isso passava; com equipe, o aluno do Jonas podia cair na carteira
+ * de outro por ordem de clique.
+ *
+ * O código é opaco de propósito. Pôr o e-mail do treinador na URL o expõe a
+ * quem receber o link e deixa qualquer um forjar o vínculo digitando outro
+ * endereço. Assim o link diz "este treinador" sem dizer quem ele é, e só um
+ * código emitido aqui resolve para alguém.
+ */
+export const coachInvites = sqliteTable("coach_invites", {
+  code: text("code").primaryKey(),
+  coachEmail: text("coach_email").notNull(),
+  /* Prazo e limite de uso são coisas diferentes e ambas fazem falta.
+     O link de uso único vai para uma pessoa: o treinador cadastra o aluno que
+     acabou de fechar. O link com prazo vai para um grupo: uma turma que começa,
+     um post que fica no ar por uma semana. Um só dos dois obriga a contornar o
+     outro — mandar dez links iguais, ou deixar um link eterno circulando.
+     Nulo em `usosMaximos` significa sem limite de uso; o prazo é sempre
+     obrigatório, porque link sem validade é link que vaza depois. */
+  expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
+  maxUses: integer("max_uses"),
+  uses: integer("uses").notNull().default(0),
+  revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => ({ coachIdx: index("coach_invites_coach_idx").on(table.coachEmail) }));
+
+export const schemaState = sqliteTable("schema_state", {
+  id: integer("id").primaryKey(),
+  signature: text("signature").notNull(),
+});
 
 export const applicationErrors = sqliteTable("application_errors", {
   id: text("id").primaryKey(),
