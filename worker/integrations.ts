@@ -191,18 +191,85 @@ export function normalizeActivity(provider: ProviderId, raw: Record<string, unkn
     };
   }
   if (provider === "garmin") {
-    const id = String(raw.summaryId ?? raw.activityId ?? "");
-    const startSeconds = Number(raw.startTimeInSeconds ?? NaN);
-    if (!id || !Number.isFinite(startSeconds)) return null;
-    return {
-      externalId: id,
-      startedAt: startSeconds * 1000,
-      sport: String(raw.activityType ?? "RUNNING"),
-      distanceMeters: finiteNumber(raw.distanceInMeters),
-      movingSeconds: finiteNumber(raw.durationInSeconds),
-      elapsedSeconds: finiteNumber(raw.durationInSeconds),
-      averageHeartRate: finiteNumber(raw.averageHeartRateInBeatsPerMinute),
-    };
+  /*
+   * O Garmin Bridge usa python-garminconnect, que retorna o formato
+   * interno do Garmin Connect, diferente do formato da Activity API
+   * oficial do Developer Program.
+   */
+
+  const id = String(
+    raw.activityId ??
+    raw.activityUUID ??
+    ""
+  );
+
+  /*
+   * python-garminconnect retorna:
+   *
+   * startTimeGMT: "2026-09-16 21:04:00"
+   * beginTimestamp: 1789592640000
+   *
+   * beginTimestamp já está em milissegundos e é a fonte mais segura.
+   */
+  const beginTimestamp = Number(raw.beginTimestamp ?? NaN);
+
+  let startedAt: number;
+
+  if (Number.isFinite(beginTimestamp)) {
+    startedAt = beginTimestamp;
+  } else {
+    const startTime = String(
+      raw.startTimeGMT ??
+      raw.startTimeLocal ??
+      ""
+    );
+
+    startedAt = Date.parse(
+      startTime.includes("T")
+        ? startTime
+        : startTime.replace(" ", "T") + "Z"
+    );
+  }
+
+  if (!id || !Number.isFinite(startedAt)) {
+    return null;
+  }
+
+  const activityType =
+    raw.activityType &&
+    typeof raw.activityType === "object"
+      ? raw.activityType as Record<string, unknown>
+      : {};
+
+  return {
+    externalId: id,
+
+    startedAt,
+
+    sport: String(
+      activityType.typeKey ??
+      "running"
+    ),
+
+    distanceMeters:
+      finiteNumber(raw.distance),
+
+    movingSeconds:
+      finiteNumber(raw.duration),
+
+    elapsedSeconds:
+      finiteNumber(
+        raw.elapsedDuration ??
+        raw.duration
+      ),
+
+    averageHeartRate:
+      finiteNumber(
+        raw.averageHR ??
+        raw.averageHeartRate
+      ),
+  };
+}
   }
   if (provider === "zepp") {
     const id = String(raw.trackid ?? raw.id ?? "");

@@ -52,3 +52,13 @@ next-env.d.ts
 .agents/
 .claude/skills/
 skills-lock.json
+
+# Garmin Bridge
+garmin-bridge/.venv/
+garmin-bridge/__pycache__/
+garmin-bridge/**/__pycache__/
+garmin-bridge/.env
+
+# Tokens Garmin - NUNCA versionar
+garmin-bridge/tokenstore/*
+!garmin-bridge/tokenstore/.gitkeep

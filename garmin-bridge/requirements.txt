@@ -1,0 +1,5 @@
+garminconnect[workout]
+fastapi
+uvicorn[standard]
+python-dotenv
+pydantic
