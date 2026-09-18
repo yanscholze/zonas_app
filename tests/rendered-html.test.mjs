@@ -3780,3 +3780,145 @@ test("refuses to send a Garmin workout until the program is approved", async () 
   assert.match(worker, /const treino = toGarminWorkout\(/);
   assert.match(worker, /action === "send_workout"/);
 });
+
+/* --- Tradução de treino para o Garmin -------------------------------------
+ *
+ * O conversor é puro: entra o treino resolvido, sai o JSON do Garmin. Testá-lo
+ * sem rede é o ponto — tradução de formato erra em silêncio, e o erro só
+ * apareceria na rua, com o aluno já correndo no ritmo errado.
+ */
+
+const treinoDeIntervalo = () => ({
+  title: "Velocidade 6 × 400 m",
+  description: "Série principal na pista",
+  estimatedSeconds: 2280,
+  estimatedMeters: 6600,
+  maxHeartRate: 188,
+  steps: [
+    { type: "simple", label: "Aquecimento", seconds: 600, meters: null,
+      target: { zone: "Z1", label: "Recuperação", paceSlowSeconds: 420, paceFastSeconds: 360 } },
+    { type: "repeat", label: "Série principal", repetitions: 6,
+      effort: { seconds: null, meters: 400,
+        target: { zone: "Z5", label: "VO₂ máximo", paceSlowSeconds: 270, paceFastSeconds: 250 } },
+      recovery: { seconds: 60, meters: null,
+        target: { zone: "Z1", label: "Recuperação", paceSlowSeconds: 420, paceFastSeconds: 360 } } },
+    { type: "simple", label: "Desaquecimento", seconds: 480, meters: null, target: null },
+  ],
+});
+
+test("ritmo em segundos por km vira velocidade em metros por segundo", async () => {
+  const { ritmoParaVelocidade } = await import("../worker/garmin-treino.ts");
+  /* 5:00/km = 300 s/km = 3,333 m/s. O Garmin guarda velocidade, não ritmo:
+     mandar 300 faria o relógio pedir 300 m/s ao aluno. */
+  assert.equal(ritmoParaVelocidade(300), 3.333333);
+  assert.equal(ritmoParaVelocidade(250), 4);
+  assert.equal(ritmoParaVelocidade(0), 0, "ritmo zero não pode virar divisão por zero");
+  assert.equal(ritmoParaVelocidade(NaN), 0);
+});
+
+test("o rótulo da planilha decide o tipo do passo no Garmin", async () => {
+  const { tipoDoPasso } = await import("../worker/garmin-treino.ts");
+  assert.equal(tipoDoPasso("Aquecimento").chave, "warmup");
+  assert.equal(tipoDoPasso("aquecimento leve").chave, "warmup");
+  /* "Desaquecimento" contém "aquec": sem a exceção, o desaquecimento seria
+     classificado como aquecimento e o relógio pintaria o fim do treino como
+     começo. */
+  assert.equal(tipoDoPasso("Desaquecimento").chave, "cooldown");
+  assert.equal(tipoDoPasso("Volta à calma").chave, "cooldown");
+  assert.equal(tipoDoPasso("Recuperação").chave, "recovery");
+  assert.equal(tipoDoPasso("Pausa").chave, "recovery");
+  assert.equal(tipoDoPasso("Ritmo forte").chave, "interval");
+});
+
+test("o treino traduzido tem a forma que o Garmin aceita", async () => {
+  const { treinoParaGarmin } = await import("../worker/garmin-treino.ts");
+  const g = treinoParaGarmin(treinoDeIntervalo());
+
+  assert.equal(g.sportType.sportTypeKey, "running");
+  assert.equal(g.workoutName, "Velocidade 6 × 400 m");
+  assert.equal(g.workoutSegments.length, 1);
+
+  const passos = g.workoutSegments[0].workoutSteps;
+  assert.equal(passos.length, 3, "aquecimento, série e desaquecimento no primeiro nível");
+
+  const [aquecimento, serie, desaquecimento] = passos;
+  assert.equal(aquecimento.type, "ExecutableStepDTO");
+  assert.equal(aquecimento.stepType.stepTypeKey, "warmup");
+  assert.equal(aquecimento.endCondition.conditionTypeKey, "time");
+  assert.equal(aquecimento.endConditionValue, 600);
+
+  assert.equal(serie.type, "RepeatGroupDTO");
+  assert.equal(serie.numberOfIterations, 6);
+  assert.equal(serie.endCondition.conditionTypeKey, "iterations");
+  assert.equal(serie.workoutSteps.length, 2, "esforço e recuperação");
+
+  const [esforco, pausa] = serie.workoutSteps;
+  assert.equal(esforco.endCondition.conditionTypeKey, "distance");
+  assert.equal(esforco.endConditionValue, 400);
+  assert.equal(esforco.preferredEndConditionUnit.unitKey, "meter",
+    "distância sem unidade vira jarda em conta configurada no sistema imperial");
+  assert.equal(pausa.stepType.stepTypeKey, "recovery");
+
+  assert.equal(desaquecimento.stepType.stepTypeKey, "cooldown");
+  assert.equal(desaquecimento.targetType.workoutTargetTypeKey, "no.target",
+    "sem zona no treino, o passo vai sem alvo em vez de com alvo inventado");
+});
+
+test("o alvo de ritmo vai do mais lento para o mais rápido", async () => {
+  const { treinoParaGarmin, ritmoParaVelocidade } = await import("../worker/garmin-treino.ts");
+  const esforco = treinoParaGarmin(treinoDeIntervalo())
+    .workoutSegments[0].workoutSteps[1].workoutSteps[0];
+
+  assert.equal(esforco.targetType.workoutTargetTypeKey, "pace.zone");
+  /* Z5 vai de 270 s/km (lento) a 250 s/km (rápido). Em velocidade isso inverte:
+     3,70 m/s a 4,00 m/s. `targetValueOne` tem de ser o MENOR — trocar a ordem
+     faz o relógio avisar que o aluno está rápido demais quando está certo. */
+  assert.equal(esforco.targetValueOne, ritmoParaVelocidade(270));
+  assert.equal(esforco.targetValueTwo, ritmoParaVelocidade(250));
+  assert.ok(esforco.targetValueOne < esforco.targetValueTwo);
+});
+
+test("a ordem dos passos é contínua, inclusive dentro da série", async () => {
+  const { treinoParaGarmin } = await import("../worker/garmin-treino.ts");
+  const passos = treinoParaGarmin(treinoDeIntervalo()).workoutSegments[0].workoutSteps;
+
+  /* O Garmin monta a fila do relógio por `stepOrder`. Reiniciar a numeração
+     dentro do grupo faz os passos aparecerem fora de sequência. */
+  const ordens = [];
+  for (const p of passos) {
+    ordens.push(p.stepOrder);
+    for (const filho of p.workoutSteps ?? []) ordens.push(filho.stepOrder);
+  }
+  assert.deepEqual(ordens, [1, 2, 3, 4, 5]);
+
+  const serie = passos[1];
+  for (const filho of serie.workoutSteps) {
+    assert.equal(filho.childStepId, serie.childStepId,
+      "o passo precisa apontar para a série a que pertence");
+  }
+});
+
+test("série sem pausa declarada não ganha um passo de zero segundos", async () => {
+  const { treinoParaGarmin } = await import("../worker/garmin-treino.ts");
+  const g = treinoParaGarmin({
+    title: "Contínuo", description: "", estimatedSeconds: null, estimatedMeters: null, maxHeartRate: null,
+    steps: [{ type: "repeat", label: "Blocos", repetitions: 3,
+      effort: { seconds: 300, meters: null, target: null },
+      recovery: { seconds: null, meters: null, target: null } }],
+  });
+  const serie = g.workoutSegments[0].workoutSteps[0];
+  assert.equal(serie.workoutSteps.length, 1,
+    "passo de recuperação vazio faria o relógio apitar sem ter o que executar");
+});
+
+test("passo sem tempo e sem distância termina no botão de volta", async () => {
+  const { treinoParaGarmin } = await import("../worker/garmin-treino.ts");
+  const g = treinoParaGarmin({
+    title: "Livre", description: "", estimatedSeconds: null, estimatedMeters: null, maxHeartRate: null,
+    steps: [{ type: "simple", label: "Corrida livre", seconds: null, meters: null, target: null }],
+  });
+  const passo = g.workoutSegments[0].workoutSteps[0];
+  assert.equal(passo.endCondition.conditionTypeKey, "lap.button",
+    "inventar uma duração que o treinador não escreveu é pior que deixar o aluno decidir");
+  assert.equal(passo.endConditionValue, null);
+});

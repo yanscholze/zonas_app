@@ -1,6 +1,8 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { treinoParaGarmin } from "./garmin-treino";
+import { entrar as entrarNoGarmin, subirTreino as subirTreinoNoGarmin, agendarTreino as agendarTreinoNoGarmin } from "./garmin-conexao";
 import {
   MIN_PASSWORD_LENGTH,
   accountByEmail,
@@ -2832,40 +2834,34 @@ async function issueDeviceIngestToken(env: Env, athleteName: string, provider: P
  * Autentica pelo mesmo token de ingestão que o aparelho já usa para enviar. Um
  * token, os dois sentidos.
  */
-async function deviceWorkoutApi(request: Request, env: Env): Promise<Response> {
-  if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
-  await ensureIntegrationTables(env);
-
-  const apresentado = boundedText(request.headers.get("x-zonas-ingest-token"), 100);
-  if (!/^[a-f0-9]{48}$/.test(apresentado)) return Response.json({ error: "ingest_token_required" }, { status: 401 });
-  const vinculo = await env.DB.prepare(
-    "SELECT athlete_name FROM device_ingest_tokens WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1",
-  ).bind(await sha256Text(apresentado)).first() as { athlete_name?: string } | null;
-  if (!vinculo?.athlete_name) return Response.json({ error: "invalid_ingest_token" }, { status: 401 });
-  const atleta = vinculo.athlete_name;
-
-  /* Os mesmos ajudantes que a importação de atividade usa para decidir semana e
-     dia. Uma conta só para "que dia é hoje no planejamento": duas divergiriam no
-     primeiro fuso ou virada de semana. */
-  const agora = Date.now();
-  const hoje = { key: workoutDayOf(agora), weekStart: weekStartOf(agora), iso: new Date(agora).toISOString().slice(0, 10) };
+/**
+ * O treino de um dia, com as zonas já convertidas em ritmo.
+ *
+ * É a fonte única do "treino resolvido": o relógio Amazfit consome isto pelo
+ * endpoint de ingestão, e o envio ao Garmin consome a mesma coisa antes de
+ * traduzir para o formato deles. Duas leituras da planilha divergiriam na
+ * primeira mudança de regra — e a regra aqui inclui a que mais importa, que é
+ * semana não liberada não sair.
+ */
+async function treinoResolvido(
+  env: Env,
+  atleta: string,
+  weekStart: string,
+  diaChave: string,
+): Promise<{ treino: Record<string, unknown> | null; motivo?: string; plano?: Record<string, unknown> }> {
   const semana = await env.DB.prepare(
     "SELECT sessions, status, plan, phase, week_label FROM training_weeks WHERE athlete_name = ? AND week_start = ? LIMIT 1",
-  ).bind(atleta, hoje.weekStart).first() as { sessions?: string; status?: string; plan?: string; phase?: string; week_label?: string } | null;
+  ).bind(atleta, weekStart).first() as { sessions?: string; status?: string; plan?: string; phase?: string; week_label?: string } | null;
 
-  /* Semana não liberada é semana que o aluno não deve ver — nem pelo relógio.
-     Devolver 200 com o treino seria furar a revisão do treinador pelo caminho
-     que ninguém está olhando. */
-  if (!semana || semana.status !== "Liberada") {
-    return Response.json({ athlete: atleta, day: hoje.key, workout: null, reason: "week_not_released" });
-  }
+  /* Semana não liberada é semana que o aluno não deve ver — nem pelo relógio,
+     nem pelo calendário do Garmin. Devolver o treino seria furar a revisão do
+     treinador pelo caminho que ninguém está olhando. */
+  if (!semana || semana.status !== "Liberada") return { treino: null, motivo: "week_not_released" };
 
   let sessoes: Record<string, unknown> = {};
   try { sessoes = JSON.parse(String(semana.sessions ?? "{}")) as Record<string, unknown>; } catch { sessoes = {}; }
-  const sessao = sessoes[hoje.key] as Record<string, unknown> | undefined;
-  if (!sessao || sessao.removed) {
-    return Response.json({ athlete: atleta, day: hoje.key, workout: null, reason: "rest_day" });
-  }
+  const sessao = sessoes[diaChave] as Record<string, unknown> | undefined;
+  if (!sessao || sessao.removed) return { treino: null, motivo: "rest_day" };
 
   /* As zonas do teste aprovado mais recente. Sem teste, as etapas vão sem alvo
      de ritmo: o relógio ainda consegue guiar por tempo e distância, que é melhor
@@ -2919,11 +2915,8 @@ async function deviceWorkoutApi(request: Request, env: Env): Promise<Response> {
     });
   }
 
-  return Response.json({
-    athlete: atleta,
-    day: hoje.key,
-    date: hoje.iso,
-    workout: {
+  return {
+    treino: {
       title: String(sessao.title ?? sessao.type ?? "Treino do dia"),
       description: String(sessao.description ?? ""),
       estimatedSeconds: Number.isFinite(Number(sessao.durationMinutes)) ? Math.round(Number(sessao.durationMinutes) * 60) : null,
@@ -2931,8 +2924,173 @@ async function deviceWorkoutApi(request: Request, env: Env): Promise<Response> {
       maxHeartRate: Number(teste?.fc_max) || null,
       steps: etapas,
     },
-    plan: { name: semana.plan ?? null, phase: semana.phase ?? null, week: semana.week_label ?? null },
+    plano: { name: semana.plan ?? null, phase: semana.phase ?? null, week: semana.week_label ?? null },
+  };
+}
+
+async function deviceWorkoutApi(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
+  await ensureIntegrationTables(env);
+
+  const apresentado = boundedText(request.headers.get("x-zonas-ingest-token"), 100);
+  if (!/^[a-f0-9]{48}$/.test(apresentado)) return Response.json({ error: "ingest_token_required" }, { status: 401 });
+  const vinculo = await env.DB.prepare(
+    "SELECT athlete_name FROM device_ingest_tokens WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1",
+  ).bind(await sha256Text(apresentado)).first() as { athlete_name?: string } | null;
+  if (!vinculo?.athlete_name) return Response.json({ error: "invalid_ingest_token" }, { status: 401 });
+  const atleta = vinculo.athlete_name;
+
+  /* Os mesmos ajudantes que a importação de atividade usa para decidir semana e
+     dia. Uma conta só para "que dia é hoje no planejamento": duas divergiriam no
+     primeiro fuso ou virada de semana. */
+  const agora = Date.now();
+  const hoje = { key: workoutDayOf(agora), weekStart: weekStartOf(agora), iso: new Date(agora).toISOString().slice(0, 10) };
+
+  const resolvido = await treinoResolvido(env, atleta, hoje.weekStart, hoje.key);
+  if (!resolvido.treino) {
+    return Response.json({ athlete: atleta, day: hoje.key, workout: null, reason: resolvido.motivo });
+  }
+
+  return Response.json({
+    athlete: atleta,
+    day: hoje.key,
+    date: hoje.iso,
+    workout: resolvido.treino,
+    plan: resolvido.plano,
   });
+}
+
+/**
+ * Envio da semana ao Garmin Connect do atleta.
+ *
+ * O treinador liga a conta do aluno uma vez e depois manda a semana inteira: os
+ * treinos sobem e cada um é agendado no dia certo do calendário. É o
+ * agendamento que faz o treino aparecer no relógio sozinho — sem ele o treino
+ * fica na biblioteca esperando o aluno procurar, e a integração não teria
+ * ganhado nada sobre escrever à mão.
+ *
+ * O caminho usa a API do aplicativo do celular, com a senha do atleta. As
+ * consequências disso estão escritas em `garmin-conexao.ts` e valem a leitura
+ * antes de mexer aqui.
+ */
+async function garminCoachApi(request: Request, env: Env): Promise<Response> {
+  await ensureIntegrationTables(env);
+  const carteira = recorteDaCarteira(carteiraDe(request));
+
+  if (request.method === "GET") {
+    /* Só os alunos deste treinador. Sem o recorte, um treinador veria a qual
+       conta do Garmin o aluno de outro está ligado. */
+    const linhas = await env.DB.prepare(
+      `SELECT athlete_name, status, login_email, last_sync_at, updated_at
+         FROM external_integrations
+        WHERE provider = ? AND ${carteira.clausula} ORDER BY athlete_name`,
+    ).bind(PROVIDERS.garmin.label, ...carteira.valores).all();
+    return Response.json({ conexoes: linhas.results ?? [] });
+  }
+
+  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+
+  if (!env.STRAVA_TOKEN_ENCRYPTION_KEY) {
+    /* Sem chave não há como cifrar a senha, e guardar em texto puro a senha do
+       Garmin de um aluno não é opção — nem por um dia, nem "só para testar". */
+    return Response.json({ error: "chave_de_cifra_ausente" }, { status: 503 });
+  }
+
+  const corpo = await request.json().catch(() => ({})) as Record<string, unknown>;
+  const acao = String(corpo.acao ?? "");
+  const atleta = boundedText(String(corpo.athleteName ?? ""), 120);
+  if (!atleta) return Response.json({ error: "aluno_obrigatorio" }, { status: 400 });
+  if (await foraDaCarteira(env, request, atleta)) {
+    return Response.json({ error: "aluno_fora_da_carteira" }, { status: 403 });
+  }
+
+  if (acao === "desconectar") {
+    await env.DB.prepare(
+      "DELETE FROM external_integrations WHERE athlete_name = ? AND provider = ?",
+    ).bind(atleta, PROVIDERS.garmin.label).run();
+    return Response.json({ desconectado: true });
+  }
+
+  if (acao === "conectar") {
+    const emailGarmin = boundedText(String(corpo.garminEmail ?? ""), 160);
+    const senha = String(corpo.garminPassword ?? "");
+    if (!emailGarmin || !senha) return Response.json({ error: "credenciais_obrigatorias" }, { status: 400 });
+
+    /* Entra ANTES de guardar. Guardar primeiro deixaria no banco uma senha que
+       não funciona, e o treinador só descobriria no dia em que tentasse mandar a
+       semana — longe daqui, com o erro parecendo outra coisa. */
+    const sessao = await entrarNoGarmin(emailGarmin, senha);
+    if (!sessao.ok) return Response.json({ error: sessao.falha, detalhe: sessao.detalhe ?? null }, { status: 400 });
+
+    const agora = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO external_integrations
+         (id, athlete_name, provider, external_athlete_id, scopes, access_token_encrypted, refresh_token_encrypted,
+          expires_at, status, login_email, login_password_encrypted, updated_at)
+       VALUES (?, ?, ?, '', '', '', '', 0, 'Conectado', ?, ?, ?)
+       ON CONFLICT(athlete_name, provider) DO UPDATE SET
+         status = 'Conectado', login_email = excluded.login_email,
+         login_password_encrypted = excluded.login_password_encrypted, updated_at = excluded.updated_at`,
+    ).bind(
+      crypto.randomUUID(), atleta, PROVIDERS.garmin.label, emailGarmin,
+      await encryptIntegrationToken(senha, env.STRAVA_TOKEN_ENCRYPTION_KEY), agora,
+    ).run();
+
+    return Response.json({ conectado: true, conta: emailGarmin });
+  }
+
+  if (acao === "enviar-semana") {
+    const weekStart = boundedText(String(corpo.weekStart ?? ""), 12);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(weekStart)) {
+      return Response.json({ error: "semana_invalida" }, { status: 400 });
+    }
+
+    const vinculo = await env.DB.prepare(
+      "SELECT login_email, login_password_encrypted FROM external_integrations WHERE athlete_name = ? AND provider = ? LIMIT 1",
+    ).bind(atleta, PROVIDERS.garmin.label).first() as { login_email?: string; login_password_encrypted?: string } | null;
+    if (!vinculo?.login_email || !vinculo.login_password_encrypted) {
+      return Response.json({ error: "aluno_sem_garmin" }, { status: 409 });
+    }
+
+    const senha = await decryptIntegrationToken(vinculo.login_password_encrypted, env.STRAVA_TOKEN_ENCRYPTION_KEY);
+    const sessao = await entrarNoGarmin(vinculo.login_email, senha);
+    if (!sessao.ok) return Response.json({ error: sessao.falha, detalhe: sessao.detalhe ?? null }, { status: 502 });
+
+    /* Um login para a semana inteira. Entrar a cada treino multiplicaria por
+       sete as chances de esbarrar no limite de tentativas do Garmin — e é o
+       login, não o envio, que é o passo frágil deste caminho. */
+    const enviados: Array<Record<string, unknown>> = [];
+    const inicio = new Date(`${weekStart}T12:00:00Z`);
+
+    for (let i = 0; i < DIAS_DA_SEMANA.length; i += 1) {
+      const dia = DIAS_DA_SEMANA[i];
+      const resolvido = await treinoResolvido(env, atleta, weekStart, dia);
+      if (!resolvido.treino) { enviados.push({ dia, enviado: false, motivo: resolvido.motivo }); continue; }
+
+      const data = new Date(inicio.getTime() + i * 86400000).toISOString().slice(0, 10);
+      const traduzido = treinoParaGarmin(resolvido.treino as never, `${resolvido.treino.title} · ${dia}`);
+
+      const subida = await subirTreinoNoGarmin(sessao.valor, traduzido);
+      if (!subida.ok) { enviados.push({ dia, enviado: false, motivo: subida.falha }); continue; }
+
+      const agenda = await agendarTreinoNoGarmin(sessao.valor, subida.valor, data);
+      enviados.push({
+        dia, data, enviado: agenda.ok, idNoGarmin: subida.valor,
+        motivo: agenda.ok ? null : agenda.falha,
+      });
+    }
+
+    const total = enviados.filter(e => e.enviado).length;
+    if (total > 0) {
+      const agora = Date.now();
+      await env.DB.prepare(
+        "UPDATE external_integrations SET last_sync_at = ?, updated_at = ? WHERE athlete_name = ? AND provider = ?",
+      ).bind(agora, agora, atleta, PROVIDERS.garmin.label).run();
+    }
+    return Response.json({ enviados, total });
+  }
+
+  return Response.json({ error: "acao_desconhecida" }, { status: 400 });
 }
 
 async function deviceIngestApi(request: Request, env: Env): Promise<Response> {
@@ -3890,6 +4048,13 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
     if (url.pathname === "/api/integrations/strava/subscription") {
       try { return await stravaSubscriptionApi(request, url, env); }
       catch (falha) { return await applicationFailure(env, request, "inscrição do Strava", "strava_subscription_failed", falha); }
+    }
+
+    if (url.pathname === "/api/integrations/garmin") {
+      const negado = requireCoachApiAccess(request);
+      if (negado) return negado;
+      try { return await garminCoachApi(request, env); }
+      catch (falha) { return await applicationFailure(env, request, "envio ao Garmin", "garmin_send_failed", falha); }
     }
 
     if (url.pathname === "/api/integrations") {

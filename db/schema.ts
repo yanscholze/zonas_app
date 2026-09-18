@@ -208,6 +208,14 @@ export const externalIntegrations = sqliteTable("external_integrations", {
   externalAthleteId: text("external_athlete_id"), scopes: text("scopes").notNull(), accessTokenEncrypted: text("access_token_encrypted").notNull(),
   refreshTokenEncrypted: text("refresh_token_encrypted").notNull(), expiresAt: integer("expires_at").notNull(), status: text("status").notNull(),
   lastSyncAt: integer("last_sync_at"), updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  /* Caminho por senha, usado hoje só pelo Garmin.
+     A API oficial do Garmin exige aprovação que ainda não temos, e a que o
+     aplicativo do celular usa entra com e-mail e senha da conta do atleta. Os
+     dois campos ficam aqui, e não numa tabela à parte, porque descrevem o mesmo
+     fato que o resto da linha: o vínculo deste atleta com este provedor.
+     O e-mail fica legível — o treinador precisa ver a qual conta o aluno ligou.
+     A senha é cifrada com a mesma chave dos tokens. */
+  loginEmail: text("login_email"), loginPasswordEncrypted: text("login_password_encrypted"),
 }, (table) => ({ athleteProviderIdx: uniqueIndex("external_integrations_athlete_provider_idx").on(table.athleteName, table.provider) }));
 
 /** Fluxos OAuth em andamento. Guarda o `code_verifier` exigido pelo PKCE da Garmin. */
