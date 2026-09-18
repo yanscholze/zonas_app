@@ -1,0 +1,4 @@
+# Dependências do SDK e pacote gerado pelo `zeus build`.
+# O .zab é artefato de build: sai do código, não entra nele.
+node_modules/
+dist/
