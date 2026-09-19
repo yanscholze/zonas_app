@@ -14939,135 +14939,62 @@ p, span, b, strong, small, em, li, td, th, label {
   cursor: pointer;
 }
 
-/* --- Envio da semana ao Garmin -------------------------------------------
+/* --- Login do aluno num serviço externo ----------------------------------
  *
- * Mesma linguagem das outras seções da aba de integrações: painel escuro,
- * cabeçalho com sobretítulo, corpo em blocos. Nada de cartão novo nem de
- * destaque próprio — o painel é mais um item da lista, não uma tela à parte.
+ * Aparece dentro do cartão do provedor, na tela de Integrações do aluno. Segue
+ * a mesma linguagem do `.apple-ingest`, que é o vizinho imediato: mesma borda
+ * dourada de "atenção aqui", mesma grade de campos.
+ *
+ * O aviso de que a senha não é guardada vem ANTES dos campos de propósito.
+ * Depois deles seria aviso que se lê após digitar.
  */
-.garmin-envio {
+.login-externo {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 11px;
+  margin-top: var(--space-3);
+  padding: var(--space-4);
   background: var(--panel);
-  border: 1px solid var(--line);
+  border: 1px solid var(--gold);
   border-radius: var(--radius-lg);
-  padding: var(--space-6);
-  margin-bottom: var(--space-6);
 }
 
-.garmin-envio>header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-4);
-  margin-bottom: var(--space-5);
-}
-
-.garmin-envio>header h2 { font-size: var(--fs-lg); margin: var(--space-1) 0; }
-.garmin-envio>header p { color: var(--muted); font-size: var(--fs-sm); max-width: 62ch; }
-.garmin-envio>header b {
-  flex: none;
+.login-externo p {
+  font-size: var(--fs-sm);
   color: var(--muted);
-  font-size: var(--fs-xs);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  padding: var(--space-1) var(--space-3);
+  line-height: 1.55;
 }
 
-.garmin-envio label { display: block; }
-.garmin-envio label small {
-  display: block;
+.login-externo p b { color: var(--text); }
+
+.login-externo label {
+  display: grid;
+  gap: 5px;
+}
+
+.login-externo small {
   color: var(--muted);
   font-size: var(--fs-overline);
   letter-spacing: .08em;
-  margin-bottom: var(--space-1);
 }
 
-.garmin-envio select,
-.garmin-envio input {
-  width: 100%;
+.login-externo input {
   height: var(--control-md);
   background: var(--surface-1);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   color: var(--text);
   padding: 0 var(--space-3);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-base);
 }
 
-.garmin-envio select:focus,
-.garmin-envio input:focus { border-color: var(--gold); outline: none; }
+.login-externo input:focus { border-color: var(--gold); outline: none; }
 
-.garmin-escolha { max-width: 420px; }
+.login-externo>div { display: flex; gap: var(--space-2); flex-wrap: wrap; }
 
-/* O aviso sobre guardar a senha do aluno. Fica acima dos campos de propósito:
-   depois deles seria aviso que se lê após digitar. */
-.garmin-aviso {
-  border-left: 2px solid var(--gold);
-  padding: var(--space-2) var(--space-4);
-  margin: var(--space-5) 0 var(--space-4);
+.login-externo em {
+  font-style: normal;
   color: var(--muted);
-  font-size: var(--fs-sm);
-  max-width: 68ch;
-}
-
-.garmin-campos {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: var(--space-4);
-  margin-bottom: var(--space-4);
-  max-width: 620px;
-}
-
-.garmin-pronto {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: var(--space-5);
-  margin-top: var(--space-5);
-}
-
-.garmin-conta { display: flex; flex-direction: column; gap: 2px; }
-.garmin-conta small { color: var(--muted); font-size: var(--fs-overline); letter-spacing: .08em; }
-.garmin-conta strong { font-size: var(--fs-sm); }
-.garmin-conta span { color: var(--muted); font-size: var(--fs-xs); }
-
-.garmin-pronto>label { width: 200px; }
-.garmin-acoes { display: flex; gap: var(--space-3); }
-
-/* Dia a dia, inclusive os que não foram. O verde e o vermelho carregam texto
-   junto: cor sozinha não informa quem não distingue as duas. */
-.garmin-resultado {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: var(--space-2);
-  margin-top: var(--space-5);
-}
-
-.garmin-resultado article {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-3);
   font-size: var(--fs-xs);
-}
-
-.garmin-resultado article.ok { border-color: color-mix(in srgb, var(--green) 45%, var(--line)); }
-.garmin-resultado article.nao { color: var(--muted); }
-.garmin-resultado article b { font-size: var(--fs-sm); min-width: 3.2em; }
-.garmin-resultado article.ok b { color: var(--green); }
-
-.garmin-envio>footer {
-  margin-top: var(--space-6);
-  padding-top: var(--space-4);
-  border-top: 1px solid var(--line-soft);
-}
-
-.garmin-envio>footer p { color: var(--muted); font-size: var(--fs-xs); max-width: 78ch; }
-.garmin-envio>footer em { color: var(--text); font-style: normal; }
-
-@media (max-width: 720px) {
-  .garmin-envio { padding: var(--space-4); }
-  .garmin-envio>header { flex-direction: column; }
-  .garmin-pronto>label { width: 100%; }
+  line-height: 1.5;
 }

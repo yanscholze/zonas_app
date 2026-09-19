@@ -20,7 +20,11 @@
  */
 
 export type ProviderId = "strava" | "garmin" | "zepp" | "apple";
-export type AuthType = "oauth2" | "oauth2-pkce" | "device";
+/* "senha" é o caminho em que o ATLETA entra com a conta dele e o sistema guarda
+   só o token devolvido — a senha é usada na troca e descartada na mesma
+   requisição, nunca chega ao banco. É o caso do Garmin, cuja API oficial exige
+   aprovação que ainda não temos. */
+export type AuthType = "oauth2" | "oauth2-pkce" | "device" | "senha";
 
 export type ProviderDefinition = {
   id: ProviderId;
@@ -65,14 +69,26 @@ export const PROVIDERS: Record<ProviderId, ProviderDefinition> = {
   garmin: {
     id: "garmin",
     label: "Garmin",
-    authType: "oauth2-pkce",
-    authorizeUrl: "https://connect.garmin.com/oauth2Confirm",
+    /* O atleta entra com a conta dele e guardamos só o token.
+     *
+     * Era "oauth2-pkce", apontando para o Garmin Connect Developer Program —
+     * que exige aprovação que não temos e uma Training API cuja URL só vem no
+     * material de aprovação. Enquanto isso não existe, o caminho é o mesmo que o
+     * aplicativo Garmin Connect do celular usa.
+     *
+     * Quem digita a senha é o ATLETA, na área dele, e ela morre na troca pelo
+     * token: o banco guarda token e refresh, nunca a senha. */
+    authType: "senha",
+    authorizeUrl: null,
     tokenUrl: "https://diauth.garmin.com/di-oauth2-service/oauth/token",
-    scope: "ACTIVITY_EXPORT WORKOUT_IMPORT",
-    requiredEnv: ["GARMIN_CONSUMER_KEY", "GARMIN_CONSUMER_SECRET", "STRAVA_TOKEN_ENCRYPTION_KEY"],
+    scope: null,
+    /* Só a chave de cifra. A consumer key e o secret serviam ao caminho OAuth
+       do programa de desenvolvedores; exigi-los aqui faria a tela dizer
+       "credenciais não configuradas" para uma integração que funciona. */
+    requiredEnv: ["STRAVA_TOKEN_ENCRYPTION_KEY"],
     canImportActivities: true,
     canSendWorkouts: true,
-    notes: "Exige aprovação no Garmin Connect Developer Program antes de responder.",
+    notes: "O atleta entra com a conta do Garmin Connect. A Zonas-App guarda apenas o token de acesso.",
     // Endpoint público da Health/Activity API. A janela é obrigatória e o
     // próprio Garmin limita o intervalo por chamada.
     activitiesUrl: "https://apis.garmin.com/wellness-api/rest/activities",

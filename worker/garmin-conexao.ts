@@ -2,22 +2,31 @@
  * Conversa com o Garmin Connect pela API que o aplicativo do celular usa.
  *
  * ATENÇÃO, antes de mexer aqui: esta NÃO é a API oficial do Garmin Developer
- * Program. É a mesma que o aplicativo Garmin Connect usa no telefone, alcançada
- * com o e-mail e a senha do atleta. A escolha foi consciente — a oficial exige
- * aprovação que não temos e uma Training API cuja URL só vem no material de
- * aprovação —, mas ela traz três consequências que precisam ficar à vista:
+ * Program. É a mesma que o aplicativo Garmin Connect usa no telefone. A escolha
+ * foi consciente — a oficial exige aprovação que não temos e uma Training API
+ * cuja URL só vem no material de aprovação.
  *
- * 1. Guardamos a senha do Garmin do atleta. Cifrada, mas guardada. É credencial
- *    de um serviço de terceiro, e isso pesa em LGPD.
- * 2. O Garmin pode mudar este caminho sem aviso, porque não é contrato público.
- * 3. O login fica atrás da proteção anti-bot da Cloudflare. O cliente em Python
- *    contorna isso imitando a impressão digital TLS do Chrome (`curl_cffi`);
- *    um Worker não tem como fazer isso, e sai de um endereço de datacenter.
- *    Se o Garmin barrar, a resposta é 403 e não há o que ajustar no código —
- *    por isso `bloqueado_na_porta` é um resultado nomeado, e não "falhou".
+ * Quem digita a senha é o ATLETA, na área dele. Ela é usada aqui para obter o
+ * token e **não é guardada em lugar nenhum** — nem cifrada. O que fica no banco
+ * é o token e o refresh, e é o refresh que permite ao atleta entrar uma única
+ * vez. Se o desenho mudar e alguém precisar guardar a senha, isso é sinal de que
+ * o desenho está errado, não de que falta uma coluna.
  *
- * Os endereços e o formato vieram de cyberjunky/python-garminconnect, que é o
- * cliente que o Yan testou e viu funcionar pelo terminal.
+ * Duas consequências continuam valendo e não devem ser esquecidas:
+ *
+ * 1. O Garmin pode mudar este caminho sem aviso, porque não é contrato público.
+ *    Por isso cada falha tem nome próprio em vez de virar "deu erro".
+ * 2. A renovação depende do refresh. Quando ele também vence, ou o atleta troca
+ *    a senha no Garmin, não há recuperação automática: a conexão vira
+ *    "reconectar" e o atleta precisa entrar de novo.
+ *
+ * Sobre bloqueio anti-robô: em 18/09/2026 foi medido que um Worker alcança
+ * sso.garmin.com, diauth e connectapi com as MESMAS respostas que uma máquina
+ * doméstica — sem `cf-mitigated` e sem página de desafio. A impersonação de TLS
+ * que o cliente em Python faz serve à estratégia do formulário web, que não é
+ * esta. `bloqueado_na_porta` segue existindo por precaução, não por diagnóstico.
+ *
+ * Os endereços e o formato vieram de cyberjunky/python-garminconnect.
  */
 
 /* --- Endereços ------------------------------------------------------------ */
@@ -72,7 +81,14 @@ export type FalhaDoGarmin =
   | "limite_de_tentativas"
   | "garmin_indisponivel";
 
-export type Sessao = { token: string; expiraEm: number };
+/**
+ * A sessão do atleta no Garmin.
+ *
+ * `refresh` é o que torna o desenho viável: o atleta entra UMA vez, e daí em
+ * diante o sistema renova sozinho. Sem ele a senha teria de ficar guardada para
+ * poder entrar de novo — que é exatamente o que este caminho evita.
+ */
+export type Sessao = { token: string; refresh: string; expiraEm: number };
 
 export type Resultado<T> = { ok: true; valor: T } | { ok: false; falha: FalhaDoGarmin; detalhe?: string };
 
@@ -171,13 +187,13 @@ async function trocarTicket(ticket: string): Promise<Resultado<Sessao>> {
     if (!resposta.ok) { ultimoDetalhe = `HTTP ${resposta.status} em ${cliente}`; continue; }
 
     try {
-      const dados = await resposta.json() as { access_token?: string; expires_in?: number };
+      const dados = await resposta.json() as { access_token?: string; refresh_token?: string; expires_in?: number };
       if (!dados.access_token) { ultimoDetalhe = `sem access_token em ${cliente}`; continue; }
       /* Um minuto de folga antes do vencimento real: token que vence no meio do
          envio da semana derruba os treinos do fim da lista, e o treinador veria
          metade da semana no calendário do aluno. */
       const duracao = (Number(dados.expires_in) || 3600) - 60;
-      return { ok: true, valor: { token: dados.access_token, expiraEm: Date.now() + duracao * 1000 } };
+      return { ok: true, valor: { token: dados.access_token, refresh: dados.refresh_token ?? "", expiraEm: Date.now() + duracao * 1000 } };
     } catch (erro) {
       ultimoDetalhe = String(erro);
     }
@@ -251,4 +267,86 @@ export async function agendarTreino(sessao: Sessao, idDoTreino: number, dataIso:
   const r = await chamar(sessao, `/workout-service/schedule/${idDoTreino}`, { date: dataIso });
   if (!r.ok) return r;
   return { ok: true, valor: true };
+}
+
+/* --- Renovação ------------------------------------------------------------ */
+
+/**
+ * Lê o `client_id` de dentro do próprio token.
+ *
+ * A renovação precisa apresentar o MESMO cliente que emitiu o token, e a lista
+ * de clientes muda a cada trimestre do Garmin. Guardar o cliente numa coluna
+ * criaria um segundo lugar para o mesmo fato, que divergiria; o token já carrega
+ * a resposta no corpo dele.
+ *
+ * O token expirado continua legível: o vencimento impede de usá-lo, não de lê-lo.
+ */
+function clienteDoToken(token: string): string | null {
+  try {
+    const meio = token.split(".")[1];
+    if (!meio) return null;
+    const normal = meio.replace(/-/g, "+").replace(/_/g, "/");
+    const corpo = JSON.parse(atob(normal.padEnd(Math.ceil(normal.length / 4) * 4, "="))) as { client_id?: string };
+    return corpo.client_id ?? null;
+  } catch { return null; }
+}
+
+/**
+ * Renova a sessão sem pedir a senha de novo.
+ *
+ * É o que permite ao atleta entrar uma única vez. Quando a renovação falha — o
+ * refresh também vence, ou o atleta trocou a senha no Garmin —, não há
+ * recuperação automática possível: o resultado é `credenciais_invalidas`, e quem
+ * chama deve marcar a conexão como "reconectar" para o atleta ver.
+ */
+export async function renovar(sessao: Sessao): Promise<Resultado<Sessao>> {
+  if (!sessao.refresh) return { ok: false, falha: "credenciais_invalidas", detalhe: "sem refresh guardado" };
+
+  const cliente = clienteDoToken(sessao.token) ?? CLIENTES_DI[0];
+  const corpo = new URLSearchParams({
+    grant_type: "refresh_token",
+    client_id: cliente,
+    refresh_token: sessao.refresh,
+  });
+
+  let resposta: Response;
+  try {
+    resposta = await fetch(TROCA_DE_TICKET, {
+      method: "POST",
+      headers: {
+        "Authorization": `Basic ${btoa(`${cliente}:`)}`,
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "GCM-Android-5.23",
+      },
+      body: corpo.toString(),
+    });
+  } catch (erro) {
+    return { ok: false, falha: "garmin_indisponivel", detalhe: String(erro) };
+  }
+
+  if (resposta.status === 429) return { ok: false, falha: "limite_de_tentativas" };
+  if (resposta.status === 400 || resposta.status === 401) {
+    return { ok: false, falha: "credenciais_invalidas", detalhe: `HTTP ${resposta.status} na renovação` };
+  }
+  if (!resposta.ok) return { ok: false, falha: "garmin_indisponivel", detalhe: `HTTP ${resposta.status}` };
+
+  try {
+    const dados = await resposta.json() as { access_token?: string; refresh_token?: string; expires_in?: number };
+    if (!dados.access_token) return { ok: false, falha: "garmin_indisponivel", detalhe: "renovação sem access_token" };
+    const duracao = (Number(dados.expires_in) || 3600) - 60;
+    return {
+      ok: true,
+      valor: {
+        token: dados.access_token,
+        /* O Garmin pode ou não girar o refresh. Quando não manda um novo, o
+           antigo continua valendo — descartá-lo encerraria a sessão do atleta
+           por conta própria. */
+        refresh: dados.refresh_token || sessao.refresh,
+        expiraEm: Date.now() + duracao * 1000,
+      },
+    };
+  } catch (erro) {
+    return { ok: false, falha: "garmin_indisponivel", detalhe: String(erro) };
+  }
 }

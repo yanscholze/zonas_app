@@ -818,176 +818,12 @@ function AthletePainList({ athleteName, onOpen }: { athleteName: string; onOpen:
   </section>;
 }
 
-/**
- * Envio da semana ao Garmin Connect.
- *
- * Duas coisas acontecem aqui: ligar a conta do Garmin do aluno, uma vez, e
- * mandar a semana liberada para o calendário dele.
- *
- * A tela diz em voz alta que a senha do Garmin do aluno vai ser guardada.
- * Guardar credencial de terceiro serviço sem avisar quem digita seria o tipo de
- * coisa que se descobre depois, e é o aluno que paga a conta — não o treinador
- * que clicou.
- */
-function GarminEnvio({ alunos }: { alunos: string[] }) {
-  type Conexao = { athlete_name: string; status: string; login_email?: string; last_sync_at?: number };
-  type Linha = { dia: string; data?: string; enviado: boolean; motivo?: string | null; idNoGarmin?: number };
-
-  const [conexoes, setConexoes] = useState<Conexao[]>([]);
-  const [aluno, setAluno] = useState("");
-  const [emailGarmin, setEmailGarmin] = useState("");
-  const [senhaGarmin, setSenhaGarmin] = useState("");
-  const [semana, setSemana] = useState(() => segundaFeiraDe(new Date()));
-  const [ocupado, setOcupado] = useState("");
-  const [erro, setErro] = useState("");
-  const [resultado, setResultado] = useState<Linha[] | null>(null);
-
-  const carregar = useCallback(() => {
-    api.get<{ conexoes: Conexao[] }>("/api/integrations/garmin")
-      .then(r => setConexoes(r.conexoes || []))
-      .catch(() => setConexoes([]));
-  }, []);
-  useEffect(() => { carregar(); }, [carregar]);
-
-  const ligada = conexoes.find(c => c.athlete_name === aluno);
-
-  /* O vocabulário de falha do servidor vira frase com a próxima ação dentro.
-     "Falhou" mandaria o treinador tentar de novo em todos os casos, inclusive
-     nos dois em que tentar de novo não resolve nada. */
-  const explicar = (codigo: string) => ({
-    credenciais_invalidas: "E-mail ou senha do Garmin não conferem. Confirme com o aluno.",
-    verificacao_em_duas_etapas: "A conta tem verificação em duas etapas. Ela precisa ser desligada no Garmin para o envio automático funcionar.",
-    desafio_de_robo: "O Garmin pediu verificação de robô. Tente de novo em alguns minutos.",
-    bloqueado_na_porta: "O Garmin recusou a conexão vinda do servidor. É a proteção anti-robô deles, não a senha — veja a nota abaixo.",
-    limite_de_tentativas: "O Garmin bloqueou por excesso de tentativas. Espere alguns minutos.",
-    garmin_indisponivel: "O Garmin não respondeu. Tente de novo mais tarde.",
-    aluno_sem_garmin: "Este aluno ainda não teve a conta do Garmin ligada.",
-    chave_de_cifra_ausente: "Falta a chave de cifra no servidor. Sem ela a senha não pode ser guardada em segurança.",
-    week_not_released: "semana não liberada",
-    rest_day: "descanso",
-  } as Record<string, string>)[codigo] || codigo;
-
-  const conectar = async () => {
-    setErro(""); setOcupado("conectando");
-    try {
-      await api.post("/api/integrations/garmin", { acao: "conectar", athleteName: aluno, garminEmail: emailGarmin, garminPassword: senhaGarmin });
-      setSenhaGarmin(""); carregar();
-    } catch (falha) {
-      setErro(explicar((falha as { code?: string }).code || "") || describeError(falha));
-    } finally { setOcupado(""); }
-  };
-
-  const desconectar = async () => {
-    setOcupado("desconectando");
-    try { await api.post("/api/integrations/garmin", { acao: "desconectar", athleteName: aluno }); carregar(); }
-    catch (falha) { setErro(describeError(falha)); }
-    finally { setOcupado(""); }
-  };
-
-  const enviar = async () => {
-    setErro(""); setResultado(null); setOcupado("enviando");
-    try {
-      const r = await api.post<{ enviados: Linha[] }>("/api/integrations/garmin", { acao: "enviar-semana", athleteName: aluno, weekStart: semana });
-      setResultado(r.enviados || []); carregar();
-    } catch (falha) {
-      setErro(explicar((falha as { code?: string }).code || "") || describeError(falha));
-    } finally { setOcupado(""); }
-  };
-
-  return <section className="garmin-envio">
-    <header>
-      <div>
-        <span className="overline">TREINO NO RELÓGIO</span>
-        <h2>Enviar a semana para o Garmin</h2>
-        <p>Os treinos sobem para a conta do aluno e ficam agendados no dia certo. As zonas viram ritmo antes de subir.</p>
-      </div>
-      <b>{conexoes.length} {conexoes.length === 1 ? "aluno ligado" : "alunos ligados"}</b>
-    </header>
-
-    <div className="garmin-escolha">
-      <label>
-        <small>ALUNO</small>
-        <select value={aluno} onChange={e => { setAluno(e.target.value); setResultado(null); setErro(""); }}>
-          <option value="">Escolha o aluno…</option>
-          {alunos.map(nome => <option key={nome} value={nome}>{nome}{conexoes.some(c => c.athlete_name === nome) ? " · ligado" : ""}</option>)}
-        </select>
-      </label>
-    </div>
-
-    {aluno && !ligada && <div className="garmin-conectar">
-      <p className="garmin-aviso">
-        A senha do Garmin do aluno fica guardada e cifrada no servidor, porque o envio automático
-        precisa entrar na conta dele a cada semana. Peça a ele antes de digitar.
-      </p>
-      <div className="garmin-campos">
-        <label><small>E-MAIL DO GARMIN</small>
-          <input type="email" value={emailGarmin} onChange={e => setEmailGarmin(e.target.value)} placeholder="o e-mail da conta do aluno" autoComplete="off" />
-        </label>
-        <label><small>SENHA DO GARMIN</small>
-          <input type="password" value={senhaGarmin} onChange={e => setSenhaGarmin(e.target.value)} placeholder="a senha da conta do aluno" autoComplete="new-password" />
-        </label>
-      </div>
-      <button className="primary" disabled={!emailGarmin || !senhaGarmin || ocupado !== ""} onClick={() => void conectar()}>
-        {ocupado === "conectando" ? "Entrando no Garmin…" : "Ligar a conta"}
-      </button>
-    </div>}
-
-    {aluno && ligada && <div className="garmin-pronto">
-      <div className="garmin-conta">
-        <small>CONTA LIGADA</small>
-        <strong>{ligada.login_email}</strong>
-        <span>{ligada.last_sync_at ? `Último envio em ${new Date(Number(ligada.last_sync_at)).toLocaleString("pt-BR")}` : "Ainda não houve envio"}</span>
-      </div>
-      <label><small>SEMANA (SEGUNDA-FEIRA)</small>
-        <input type="date" value={semana} onChange={e => setSemana(e.target.value)} />
-      </label>
-      <div className="garmin-acoes">
-        <button className="primary" disabled={ocupado !== ""} onClick={() => void enviar()}>
-          {ocupado === "enviando" ? "Enviando…" : "Enviar a semana"}
-        </button>
-        <button className="ghost" disabled={ocupado !== ""} onClick={() => void desconectar()}>Desligar a conta</button>
-      </div>
-    </div>}
-
-    {erro && <p className="registration-error">{erro}</p>}
-
-    {resultado && <div className="garmin-resultado">
-      {/* Dia a dia, inclusive os que não foram. "3 de 7 enviados" esconderia
-          quais quatro faltaram, e o treinador precisa saber se foi descanso ou
-          se a semana não estava liberada. */}
-      {resultado.map(linha => <article key={linha.dia} className={linha.enviado ? "ok" : "nao"}>
-        <b>{linha.dia}</b>
-        <span>{linha.enviado ? `agendado para ${linha.data}` : explicar(String(linha.motivo ?? ""))}</span>
-      </article>)}
-    </div>}
-
-    <footer>
-      <p>
-        O envio usa a mesma via que o aplicativo Garmin Connect do celular, não a API oficial do
-        programa de desenvolvedores — que ainda depende de aprovação. Por isso o Garmin pode
-        recusar a conexão vinda do servidor mesmo com a senha certa: quando isso acontece, a
-        mensagem diz <em>recusou a conexão vinda do servidor</em>, e não há ajuste de senha que resolva.
-      </p>
-    </footer>
-  </section>;
-}
-
-/** A segunda-feira da semana de uma data, no formato que o servidor espera. */
-function segundaFeiraDe(data: Date): string {
-  const d = new Date(data.getTime());
-  /* getDay() devolve 0 para domingo. Sem o ajuste, domingo cairia na segunda
-     seguinte e o treinador mandaria a semana errada sem perceber. */
-  const desloca = (d.getDay() + 6) % 7;
-  d.setDate(d.getDate() - desloca);
-  return d.toISOString().slice(0, 10);
-}
-
 function CoachIntegrations(){
   type Row={athlete_name:string;integration:string;access_status:string;connection_status:string;last_source?:string;last_import_at?:number};
   const [rows,setRows]=useState<Row[]>([]);const [filter,setFilter]=useState("Todos");const [state,setState]=useState("loading");const [readiness,setReadiness]=useState<any[]>([]);
   useEffect(()=>{Promise.all([fetch("/api/integration-overview").then(r=>r.ok?r.json():Promise.reject()),fetch("/api/integration-readiness").then(r=>r.ok?r.json():Promise.reject())]).then(([overview,setup])=>{setRows(overview.integrations||[]);setReadiness(setup.providers||[]);setState("ready")}).catch(()=>setState("error"))},[]);
   const visible=rows.filter(row=>filter==="Todos"||row.integration===filter);const waiting=rows.filter(row=>row.connection_status==="Aguardando conexão oficial").length;const synced=rows.filter(row=>row.connection_status==="Sincronizado").length;
-  const siteOrigin=typeof window==="undefined"?"":window.location.origin;const applicationProfile=[{label:"Nome do aplicativo",value:"Zonas-App"},{label:"Site público",value:siteOrigin},{label:"Descrição curta",value:"Plataforma de corrida para planejamento, envio e análise individual de treinos."},{label:"Política de Privacidade",value:`${siteOrigin}/privacy`},{label:"Termos de Uso",value:`${siteOrigin}/terms`}];return <><section className="integration-application-profile"><header><div><span className="overline">CADASTRO NOS PORTAIS</span><h2>Ficha oficial da Zonas-App</h2><p>Use estes dados nos formulários Garmin e Zepp. As credenciais recebidas depois nunca devem ser coladas nesta tela.</p></div><b>PRONTA PARA COPIAR</b></header><div>{applicationProfile.map(item=><article key={item.label}><small>{item.label}</small><strong>{item.value}</strong><button onClick={()=>void copyText(item.value)}>Copiar</button></article>)}</div><footer><a href="/privacy" target="_blank">Ver Privacidade ↗</a><a href="/terms" target="_blank">Ver Termos ↗</a></footer></section><section className="provider-readiness"><header><div><span className="overline">PRIMEIRAS CONEXÕES</span><h2>Garmin e Amazfit</h2><p>Acompanhe a preparação oficial sem expor chaves ou afirmar uma conexão antes da aprovação.</p></div><b>ETAPA 1 DE 3</b></header><div>{readiness.map(provider=><article key={provider.id}><span className="provider-mark">{provider.id==="garmin"?"G":"A"}</span><div><h3>{provider.name}</h3><em className={provider.credentialsConfigured?"configured":"waiting"}>{provider.status}</em></div><ul><li className={provider.credentialsConfigured?"done":""}>Cadastro e credenciais oficiais</li><li className={provider.receiveActivities?"done":""}>Receber atividades realizadas</li><li className={provider.sendStructuredWorkouts?"done":""}>Enviar treinos estruturados</li></ul><a href={provider.id==="garmin"?"https://developer.garmin.com/gc-developer-program/overview/":"https://developer.zepp.com/"} target="_blank" rel="noreferrer">Abrir portal oficial ↗</a></article>)}</div><footer><b>Próxima ação</b><p>Cadastrar a Zonas-App nos portais oficiais. Depois, as credenciais protegidas ativarão os testes com contas reais.</p></footer></section><section className="integration-coach-summary"><article><small>ALUNOS COM PREFERÊNCIA</small><b>{rows.filter(row=>row.integration!=="Sem integração").length}</b><span>Strava, Garmin, Amazfit ou Apple</span></article><article><small>AGUARDANDO CONEXÃO</small><b>{waiting}</b><span>Dependem da API oficial</span></article><article><small>SINCRONIZADOS</small><b>{synced}</b><span>Importação automática ativa</span></article></section><GarminEnvio alunos={rows.map(r=>r.athlete_name)}/><section className="coach-integration-center"><header><div><span className="overline">CONTROLE DO PROFESSOR</span><h2>Integrações dos alunos</h2><p>Acompanhe a preferência escolhida e o estado real da conexão.</p></div><span className="honest-status">Sem conexão falsa: somente APIs autorizadas aparecem como sincronizadas.</span></header><div className="integration-filters">{["Todos","Strava","Garmin","Amazfit","Apple Saúde / Apple Watch","Sem integração"].map(item=><button key={item} className={filter===item?"selected":""} onClick={()=>setFilter(item)}>{item}</button>)}</div>{state==="loading"?<div className="feedback-empty">Carregando integrações…</div>:visible.length===0?<div className="feedback-empty">Nenhum aluno neste filtro.</div>:<div className="integration-table"><header><span>ALUNO</span><span>SERVIÇO</span><span>ACESSO</span><span>CONEXÃO</span><span>ÚLTIMA IMPORTAÇÃO</span></header>{visible.map(row=><article key={row.athlete_name}><b>{row.athlete_name}</b><span>{row.integration}</span><span>{row.access_status}</span><em className={row.connection_status==="Sincronizado"?"synced":row.connection_status==="Sem integração"?"off":"waiting"}>{row.connection_status}</em><span>{row.last_import_at?new Date(Number(row.last_import_at)).toLocaleString("pt-BR"):"Ainda não ocorreu"}</span></article>)}</div>}{state==="error"&&<p className="registration-error">Não foi possível carregar o controle de integrações.</p>}<footer><b>Integrações prioritárias: Garmin e Amazfit</b><p>A Garmin será preparada para receber atividades e enviar treinos estruturados. A Amazfit seguirá o fluxo permitido pelo Zepp OS e pelos modelos compatíveis.</p></footer></section></>;
+  const siteOrigin=typeof window==="undefined"?"":window.location.origin;const applicationProfile=[{label:"Nome do aplicativo",value:"Zonas-App"},{label:"Site público",value:siteOrigin},{label:"Descrição curta",value:"Plataforma de corrida para planejamento, envio e análise individual de treinos."},{label:"Política de Privacidade",value:`${siteOrigin}/privacy`},{label:"Termos de Uso",value:`${siteOrigin}/terms`}];return <><section className="integration-application-profile"><header><div><span className="overline">CADASTRO NOS PORTAIS</span><h2>Ficha oficial da Zonas-App</h2><p>Use estes dados nos formulários Garmin e Zepp. As credenciais recebidas depois nunca devem ser coladas nesta tela.</p></div><b>PRONTA PARA COPIAR</b></header><div>{applicationProfile.map(item=><article key={item.label}><small>{item.label}</small><strong>{item.value}</strong><button onClick={()=>void copyText(item.value)}>Copiar</button></article>)}</div><footer><a href="/privacy" target="_blank">Ver Privacidade ↗</a><a href="/terms" target="_blank">Ver Termos ↗</a></footer></section><section className="provider-readiness"><header><div><span className="overline">PRIMEIRAS CONEXÕES</span><h2>Garmin e Amazfit</h2><p>Acompanhe a preparação oficial sem expor chaves ou afirmar uma conexão antes da aprovação.</p></div><b>ETAPA 1 DE 3</b></header><div>{readiness.map(provider=><article key={provider.id}><span className="provider-mark">{provider.id==="garmin"?"G":"A"}</span><div><h3>{provider.name}</h3><em className={provider.credentialsConfigured?"configured":"waiting"}>{provider.status}</em></div><ul><li className={provider.credentialsConfigured?"done":""}>Cadastro e credenciais oficiais</li><li className={provider.receiveActivities?"done":""}>Receber atividades realizadas</li><li className={provider.sendStructuredWorkouts?"done":""}>Enviar treinos estruturados</li></ul><a href={provider.id==="garmin"?"https://developer.garmin.com/gc-developer-program/overview/":"https://developer.zepp.com/"} target="_blank" rel="noreferrer">Abrir portal oficial ↗</a></article>)}</div><footer><b>Próxima ação</b><p>Cadastrar a Zonas-App nos portais oficiais. Depois, as credenciais protegidas ativarão os testes com contas reais.</p></footer></section><section className="integration-coach-summary"><article><small>ALUNOS COM PREFERÊNCIA</small><b>{rows.filter(row=>row.integration!=="Sem integração").length}</b><span>Strava, Garmin, Amazfit ou Apple</span></article><article><small>AGUARDANDO CONEXÃO</small><b>{waiting}</b><span>Dependem da API oficial</span></article><article><small>SINCRONIZADOS</small><b>{synced}</b><span>Importação automática ativa</span></article></section><section className="coach-integration-center"><header><div><span className="overline">CONTROLE DO PROFESSOR</span><h2>Integrações dos alunos</h2><p>Acompanhe a preferência escolhida e o estado real da conexão.</p></div><span className="honest-status">Sem conexão falsa: somente APIs autorizadas aparecem como sincronizadas.</span></header><div className="integration-filters">{["Todos","Strava","Garmin","Amazfit","Apple Saúde / Apple Watch","Sem integração"].map(item=><button key={item} className={filter===item?"selected":""} onClick={()=>setFilter(item)}>{item}</button>)}</div>{state==="loading"?<div className="feedback-empty">Carregando integrações…</div>:visible.length===0?<div className="feedback-empty">Nenhum aluno neste filtro.</div>:<div className="integration-table"><header><span>ALUNO</span><span>SERVIÇO</span><span>ACESSO</span><span>CONEXÃO</span><span>ÚLTIMA IMPORTAÇÃO</span></header>{visible.map(row=><article key={row.athlete_name}><b>{row.athlete_name}</b><span>{row.integration}</span><span>{row.access_status}</span><em className={row.connection_status==="Sincronizado"?"synced":row.connection_status==="Sem integração"?"off":"waiting"}>{row.connection_status}</em><span>{row.last_import_at?new Date(Number(row.last_import_at)).toLocaleString("pt-BR"):"Ainda não ocorreu"}</span></article>)}</div>}{state==="error"&&<p className="registration-error">Não foi possível carregar o controle de integrações.</p>}<footer><b>Integrações prioritárias: Garmin e Amazfit</b><p>A Garmin será preparada para receber atividades e enviar treinos estruturados. A Amazfit seguirá o fluxo permitido pelo Zepp OS e pelos modelos compatíveis.</p></footer></section></>;
 }
 
 function SecurityCenter() {
@@ -2734,6 +2570,11 @@ export function StudentView({ onBack, athleteName = "Everton Barbosa" }: { onBac
      instrução, que vem do servidor: repeti-la aqui faria dois textos para a
      mesma coisa, e um deles envelheceria. */
   const [appleSetup,setAppleSetup]=useState<{provider:string;ingestToken:string;ingestUrl:string;workoutUrl?:string;instructions:string}|null>(null);
+  /* Qual provedor está pedindo login próprio. O formulário aparece embutido no
+     cartão do serviço, e não numa tela à parte: quem clicou em "Conectar" ali
+     não deve ser levado para outro lugar para terminar. */
+  const [loginExterno,setLoginExterno]=useState<string|null>(null);
+  const [contaExterna,setContaExterna]=useState("");const [senhaExterna,setSenhaExterna]=useState("");
   const [financialData,setFinancialData]=useState<any>(null);
   const [studentProfile,setStudentProfile]=useState<any>(undefined);
   const [studentTests,setStudentTests]=useState<any>(undefined);
@@ -2871,14 +2712,28 @@ export function StudentView({ onBack, athleteName = "Everton Barbosa" }: { onBac
   };
   const saveIntegration=async(integration:string)=>{setIntegrationState("saving");try{if(secureStudentMode){await api.post("/api/student/integration-preference",{integration})}setIntegrationPreference(integration);setIntegrationState("saved")}catch{setIntegrationState("error")}};
   /** Conecta, desconecta ou sincroniza um provedor pelo caminho unificado. */
-  const providerAction=async(providerId:string,action:"connect"|"disconnect"|"sync")=>{
+  const providerAction=async(providerId:string,action:"connect"|"disconnect"|"sync",credenciais?:{externalEmail:string;externalPassword:string})=>{
     setIntegrationState("saving");
     try{
-      const response=await fetch("/api/student/integrations",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({provider:providerId,action})});
+      const response=await fetch("/api/student/integrations",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({provider:providerId,action,...credenciais})});
       const data=await response.json().catch(()=>({}));
       if(response.status===503){setIntegrationState("setup-required");return}
-      if(!response.ok){setIntegrationState(data.error==="sync_not_available"?"sync-unavailable":"error");return}
+      if(!response.ok){
+        if(data.error==="sync_not_available"){setIntegrationState("sync-unavailable");return}
+        /* "Falhou" mandaria o atleta tentar de novo em todos os casos, inclusive
+           nos dois em que tentar de novo não resolve nada. */
+        const porNome:Record<string,string>={
+          credenciais_invalidas:"E-mail ou senha do Garmin não conferem.",
+          verificacao_em_duas_etapas:"Sua conta do Garmin usa verificação em duas etapas. Para conectar, desligue-a nas configurações do Garmin.",
+          desafio_de_robo:"O Garmin pediu uma verificação de segurança. Tente novamente em alguns minutos.",
+          limite_de_tentativas:"O Garmin bloqueou por excesso de tentativas. Espere alguns minutos.",
+          bloqueado_na_porta:"O Garmin recusou a conexão. Tente novamente mais tarde.",
+          garmin_indisponivel:"O Garmin não respondeu. Tente novamente mais tarde.",
+          credenciais_obrigatorias:"Preencha o e-mail e a senha da sua conta do Garmin.",
+        };
+        setIntegrationState(porNome[data.error]?`falha:${porNome[data.error]}`:"error");return}
       if(data.authType==="device"){setAppleSetup({provider:data.provider,ingestToken:data.ingestToken,ingestUrl:data.ingestUrl,workoutUrl:data.workoutUrl,instructions:data.instructions});setIntegrationState("apple-ready");await loadProviders();return}
+      if(data.connected){setLoginExterno(null);setContaExterna("");setSenhaExterna("");await loadProviders();setIntegrationState("saved");return}
       if(data.authorizationUrl){window.location.href=data.authorizationUrl;return}
       await loadProviders();
       setIntegrationState(action==="sync"?`sincronizado:${data.imported??0}`:"saved");
@@ -2951,7 +2806,13 @@ export function StudentView({ onBack, athleteName = "Everton Barbosa" }: { onBac
     {tab==="Mais"&&moreView==="tests"&&<StudentTestsView data={studentTests} back={()=>setMoreView("menu")} recarregar={recarregarTestes} secureStudentMode={secureStudentMode}/>} 
     {tab==="Mais"&&moreView==="profile"&&<StudentProfileView data={studentProfile} back={()=>setMoreView("menu")}/>} 
     {tab==="Mais"&&moreView==="financial"&&<><button className="student-back" onClick={()=>setMoreView("menu")}>← Voltar</button><span className="overline">MENSALIDADE</span><h1>Financeiro</h1><p>Aqui aparece somente a situação informada pelo professor.</p>{!financialData?<section className="student-financial-card"><p>Carregando sua mensalidade…</p></section>:financialData.preview?<section className="student-financial-card"><b>Prévia do professor</b><p>A mensalidade real do aluno não é exibida aqui. Consulte o Financeiro no seu painel.</p></section>:!financialData.payment?<section className="student-financial-card ok"><b>Sem pendência cadastrada</b><p>Nenhuma cobrança foi lançada para você.</p></section>:<section className={`student-financial-card ${financialData.payment.status==="Pago"?"ok":"pending"}`}><span>{financialData.payment.status==="Pago"?"PAGAMENTO REGISTRADO":"PENDÊNCIA"}</span><h2>{(financialData.payment.amount_cents/100).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}</h2><p>Vencimento: {new Date(`${financialData.payment.due_date}T12:00:00`).toLocaleDateString("pt-BR")}</p>{financialData.payment.status==="Pendente"&&<div><small>CHAVE PIX</small><b>{financialData.settings?.pix_key||"Aguardando o professor informar"}</b><em>{financialData.settings?.pix_name||""}</em>{financialData.settings?.pix_key&&<button onClick={()=>void copyText(financialData.settings.pix_key)}>Copiar chave Pix</button>}</div>}{financialData.payment.status==="Pago"&&<strong>✓ Pago</strong>}</section>}</>}
-    {tab==="Mais"&&moreView==="integrations"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setIntegrationState("");setAppleSetup(null)}}>← Voltar</button><span className="overline">RELÓGIO E APLICATIVOS</span><h1>Integrações</h1><p>Conecte de onde a Zonas-App deve receber seus treinos realizados. Nada é acessado sem a sua autorização, e você pode desconectar quando quiser.</p>{appleSetup&&<section className="apple-ingest"><b>{appleSetup.provider==="zepp"?"Seu token do Amazfit":"Seu token do Apple Saúde"}</b><p>{appleSetup.instructions}</p><label>Endereço<code>{appleSetup.ingestUrl}</code></label>{appleSetup.workoutUrl&&<label>Treino do dia<code>{appleSetup.workoutUrl}</code></label>}<label>Token<code>{appleSetup.ingestToken}</code></label><div><button onClick={()=>void copyText(appleSetup.ingestToken)}>Copiar token</button><button onClick={()=>setAppleSetup(null)}>Já guardei</button></div></section>}<section className="integration-center">{(providers.length?providers:PROVIDER_PREVIEW).map((provider:ProviderCard)=>{const icons:Record<string,string>={strava:"S",garmin:"G",zepp:"A",apple:"●"};const connected=provider.connection?.status==="Conectado";const preferred=integrationPreference===provider.label;return <article key={provider.id} className={connected?"selected":""}><i>{icons[provider.id]||"○"}</i><div><b>{provider.label}</b><p>{provider.notes}</p><small>{connected?"CONECTADO COM AUTORIZAÇÃO SUA":provider.connection?.status==="Suspensa"?"CONEXÃO SUSPENSA · O PROFESSOR PRECISA RECONFIGURAR O SERVIÇO":!providers.length?"VERIFICANDO DISPONIBILIDADE…":provider.available===false?"AGUARDANDO CADASTRO OFICIAL DO PROFESSOR":"DISPONÍVEL PARA CONECTAR"}</small>{provider.connection?.last_sync_at&&<em className="integration-last-sync">Última importação: {new Date(Number(provider.connection.last_sync_at)).toLocaleString("pt-BR")}</em>}</div><div className="integration-actions">{connected?<><button onClick={()=>providerAction(provider.id,"disconnect")}>Desconectar</button>{provider.id==="strava"&&<button className="connected" disabled={integrationState==="saving"} onClick={()=>providerAction(provider.id,"sync")}>Sincronizar agora</button>}</>:<button disabled={integrationState==="saving"||provider.available===false} onClick={()=>providerAction(provider.id,"connect")}>{provider.available===false?"Indisponível":provider.authType==="device"?"Gerar token":"Conectar"}</button>}{!connected&&!preferred&&<button className="integration-prefer" disabled={integrationState==="saving"} onClick={()=>saveIntegration(provider.label)}>Marcar preferência</button>}</div></article>})}<footer><b>Como funciona</b><p>Você autoriza o serviço → a Zonas-App importa a atividade concluída → ela é comparada ao treino planejado → você e o professor veem a porcentagem de acerto. A Garmin também poderá receber o treino estruturado quando as APIs forem liberadas.</p></footer>{integrationState==="saved"&&<p className="integration-success">Pronto. Suas conexões foram atualizadas.</p>}{integrationState.startsWith("sincronizado:")&&<p className="integration-success">Importação concluída: {plural(Number(integrationState.split(":")[1]) || 0, "atividade nova", "atividades novas")}.</p>}{integrationState==="sync-unavailable"&&<p className="integration-setup">A importação automática deste serviço ainda depende da liberação oficial da API.</p>}{integrationState==="setup-required"&&<p className="integration-setup">O fluxo seguro está pronto. Falta o professor cadastrar a Zonas-App no portal deste serviço e inserir as credenciais oficiais.</p>}{integrationState==="apple-ready"&&<p className="integration-success">Token gerado. Configure o Atalho no seu iPhone com os dados acima.</p>}{integrationState==="error"&&<p className="pain-error">Não foi possível concluir. Tente novamente.</p>}</section></>}
+    {tab==="Mais"&&moreView==="integrations"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setIntegrationState("");setAppleSetup(null)}}>← Voltar</button><span className="overline">RELÓGIO E APLICATIVOS</span><h1>Integrações</h1><p>Conecte de onde a Zonas-App deve receber seus treinos realizados. Nada é acessado sem a sua autorização, e você pode desconectar quando quiser.</p>{appleSetup&&<section className="apple-ingest"><b>{appleSetup.provider==="zepp"?"Seu token do Amazfit":"Seu token do Apple Saúde"}</b><p>{appleSetup.instructions}</p><label>Endereço<code>{appleSetup.ingestUrl}</code></label>{appleSetup.workoutUrl&&<label>Treino do dia<code>{appleSetup.workoutUrl}</code></label>}<label>Token<code>{appleSetup.ingestToken}</code></label><div><button onClick={()=>void copyText(appleSetup.ingestToken)}>Copiar token</button><button onClick={()=>setAppleSetup(null)}>Já guardei</button></div></section>}<section className="integration-center">{(providers.length?providers:PROVIDER_PREVIEW).map((provider:ProviderCard)=>{const icons:Record<string,string>={strava:"S",garmin:"G",zepp:"A",apple:"●"};const connected=provider.connection?.status==="Conectado";const preferred=integrationPreference===provider.label;return <article key={provider.id} className={connected?"selected":""}><i>{icons[provider.id]||"○"}</i><div><b>{provider.label}</b><p>{provider.notes}</p><small>{connected?"CONECTADO COM AUTORIZAÇÃO SUA":provider.connection?.status==="Suspensa"?"CONEXÃO SUSPENSA · O PROFESSOR PRECISA RECONFIGURAR O SERVIÇO":!providers.length?"VERIFICANDO DISPONIBILIDADE…":provider.available===false?"AGUARDANDO CADASTRO OFICIAL DO PROFESSOR":"DISPONÍVEL PARA CONECTAR"}</small>{provider.connection?.last_sync_at&&<em className="integration-last-sync">Última importação: {new Date(Number(provider.connection.last_sync_at)).toLocaleString("pt-BR")}</em>}</div><div className="integration-actions">{connected?<><button onClick={()=>providerAction(provider.id,"disconnect")}>Desconectar</button>{provider.id==="strava"&&<button className="connected" disabled={integrationState==="saving"} onClick={()=>providerAction(provider.id,"sync")}>Sincronizar agora</button>}</>:<button disabled={integrationState==="saving"||provider.available===false} onClick={()=>{if(provider.authType==="senha"){setLoginExterno(loginExterno===provider.id?null:provider.id);setIntegrationState("")}else{providerAction(provider.id,"connect")}}}>{provider.available===false?"Indisponível":provider.authType==="device"?"Gerar token":"Conectar"}</button>}{!connected&&!preferred&&<button className="integration-prefer" disabled={integrationState==="saving"} onClick={()=>saveIntegration(provider.label)}>Marcar preferência</button>}</div>{loginExterno===provider.id&&!connected&&<form className="login-externo" onSubmit={e=>{e.preventDefault();providerAction(provider.id,"connect",{externalEmail:contaExterna,externalPassword:senhaExterna})}}>
+      <p>Entre com a sua conta do {provider.label}. A Zonas-App guarda apenas a autorização — <b>a sua senha não é salva</b>, nem aqui nem no servidor.</p>
+      <label><small>E-MAIL DA SUA CONTA {provider.label.toUpperCase()}</small><input type="email" value={contaExterna} onChange={e=>setContaExterna(e.target.value)} autoComplete="off" required/></label>
+      <label><small>SENHA</small><input type="password" value={senhaExterna} onChange={e=>setSenhaExterna(e.target.value)} autoComplete="off" required/></label>
+      <div><button type="submit" disabled={integrationState==="saving"||!contaExterna||!senhaExterna}>{integrationState==="saving"?"Entrando…":"Conectar"}</button><button type="button" className="integration-prefer" onClick={()=>{setLoginExterno(null);setSenhaExterna("")}}>Cancelar</button></div>
+      <em>Se a sua conta usa verificação em duas etapas, será preciso desligá-la no Garmin para a sincronização automática funcionar.</em>
+    </form>}</article>})}<footer><b>Como funciona</b><p>Você autoriza o serviço → a Zonas-App importa a atividade concluída → ela é comparada ao treino planejado → você e o professor veem a porcentagem de acerto. Com o Garmin conectado, o caminho também é de ida: assim que o professor libera a semana, os treinos aparecem agendados no seu calendário, sem você fazer nada.</p></footer>{integrationState==="saved"&&<p className="integration-success">Pronto. Suas conexões foram atualizadas.</p>}{integrationState.startsWith("sincronizado:")&&<p className="integration-success">Importação concluída: {plural(Number(integrationState.split(":")[1]) || 0, "atividade nova", "atividades novas")}.</p>}{integrationState==="sync-unavailable"&&<p className="integration-setup">A importação automática deste serviço ainda depende da liberação oficial da API.</p>}{integrationState==="setup-required"&&<p className="integration-setup">O fluxo seguro está pronto. Falta o professor cadastrar a Zonas-App no portal deste serviço e inserir as credenciais oficiais.</p>}{integrationState==="apple-ready"&&<p className="integration-success">Token gerado. Configure o Atalho no seu iPhone com os dados acima.</p>}{integrationState.startsWith("falha:")&&<p className="pain-error">{integrationState.slice(6)}</p>}{integrationState==="error"&&<p className="pain-error">Não foi possível concluir. Tente novamente.</p>}</section></>}
     {tab==="Mais"&&moreView==="pain"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setPainState("")}}>← Voltar</button><span className="overline">AVISO AO TREINADOR</span><h1>Dores e lesões</h1><p>Preencha em menos de um minuto. O treinador receberá o aviso para revisar seu próximo treino.</p>{painState==="saved"?<section className="pain-success"><b>✓</b><h2>Aviso enviado ao treinador</h2><p>Evite treinos intensos enquanto houver dor. O treinador verá o relato antes de ajustar sua programação.</p><button onClick={()=>{setMoreView("menu");setPainState("")}}>Concluir</button></section>:<section className="pain-form"><label>Onde está o desconforto?<div className="pain-options">{["Joelho","Canela","Panturrilha","Coxa","Quadril","Pé/tornozelo","Coluna","Outro"].map(area=><button key={area} className={painArea===area?"selected":""} onClick={()=>setPainArea(area)}>{area}</button>)}</div></label><label>Intensidade da dor <b>{painIntensity}/10</b><input type="range" min="1" max="10" value={painIntensity} onChange={e=>setPainIntensity(+e.target.value)}/><div className="range-labels"><span>Leve</span><span>Forte</span></div></label><label>A dor atrapalhou o treino?<div className="pain-impact">{["Não treinei","Parei durante","Reduzi o ritmo","Consegui terminar"].map(item=><button key={item} className={painImpact===item?"selected":""} onClick={()=>setPainImpact(item)}>{item}</button>)}</div></label><label>Observação <small>opcional</small><textarea value={painNote} onChange={e=>setPainNote(e.target.value)} placeholder="Conte rapidamente quando começou ou qual movimento incomoda." maxLength={240}/></label>{painState==="error"&&<p className="pain-error">Não foi possível enviar. Tente novamente.</p>}<button className="pain-send" disabled={!painArea||!painImpact||painState==="saving"} onClick={sendPainReport}>{painState==="saving"?"Enviando…":"Avisar meu treinador"}</button><small className="pain-guidance">Em caso de dor intensa, inchaço importante ou dificuldade para caminhar, procure atendimento de saúde.</small></section>}</>}
     {tab==="Mais"&&moreView==="races"&&<><button className="student-back" onClick={()=>{setMoreView("menu");setRaceState("")}}>← Voltar</button><span className="overline">OBJETIVOS E MARCAS</span><h1>Provas e recordes</h1><p>Cadastre sua prova. O treinador analisa e confirma como ela entra no planejamento.</p><section className="race-record-head"><article><small>RECORDE NOS 10 KM</small><b>{raceData.records?.find((r:any)=>r.distance==="10 km")?.result_time||"—"}</b><span>{raceData.records?.some((r:any)=>r.distance==="10 km")?"Melhor marca registrada":"Nenhuma marca registrada"}</span></article><article><small>PRÓXIMA PROVA</small><b>{raceData.races?.[0]?.name||"Nenhuma cadastrada"}</b><span>{raceData.races?.[0]?`${String(raceData.races[0].race_date).split("-").reverse().join("/")} · ${raceData.races[0].distance}`:"Cadastre abaixo para o professor analisar"}</span></article></section><section className="race-record-form"><span className="overline">NOVA PROVA</span><h2>Quero correr esta prova</h2><div className="race-fields"><label>Nome da prova<input value={raceForm.name} onChange={e=>setRaceForm({...raceForm,name:e.target.value})} placeholder="Ex.: Meia de Pomerode"/></label><label>Data<input type="date" value={raceForm.raceDate} onChange={e=>setRaceForm({...raceForm,raceDate:e.target.value})}/></label><label>Distância<select value={raceForm.distance} onChange={e=>setRaceForm({...raceForm,distance:e.target.value})}>{["5 km","10 km","21,1 km","42,2 km","Outra"].map(d=><option key={d}>{d}</option>)}</select></label><label>Cidade <small>opcional</small><input value={raceForm.city} onChange={e=>setRaceForm({...raceForm,city:e.target.value})}/></label><label className="full">Objetivo <small>opcional</small><input value={raceForm.goal} onChange={e=>setRaceForm({...raceForm,goal:e.target.value})} placeholder="Concluir, buscar recorde ou tempo desejado"/></label></div><button disabled={!raceForm.name||!raceForm.raceDate||raceState==="saving"} onClick={()=>saveRaceRecord("race")}>{raceState==="race-saved"?"Prova enviada para análise ✓":"Enviar prova ao treinador"}</button></section><section className="race-record-form compact"><span className="overline">NOVO RECORDE PESSOAL</span><h2>Registrar melhor marca</h2><div className="race-fields"><label>Distância<select value={recordForm.distance} onChange={e=>setRecordForm({...recordForm,distance:e.target.value})}>{["1,5 km","3 km","5 km","10 km","21,1 km","42,2 km"].map(d=><option key={d}>{d}</option>)}</select></label><label>Tempo<input value={recordForm.resultTime} onChange={e=>setRecordForm({...recordForm,resultTime:e.target.value})} placeholder="00:38:25"/></label><label>Data <small>opcional</small><input type="date" value={recordForm.raceDate} onChange={e=>setRecordForm({...recordForm,raceDate:e.target.value})}/></label><label>Prova <small>opcional</small><input value={recordForm.eventName} onChange={e=>setRecordForm({...recordForm,eventName:e.target.value})}/></label></div>{raceState==="error"&&<p className="pain-error">Não foi possível salvar. Tente novamente.</p>}<button disabled={!recordForm.resultTime||raceState==="saving"} onClick={()=>saveRaceRecord("record")}>{raceState==="record-saved"?"Recorde registrado ✓":"Salvar recorde"}</button></section></>}
     {tab==="Hoje"&&showTraining&&<WorkoutAnalysis secureStudentMode={secureStudentMode} weekStart={savedWeek?.week_start} workoutDay={today.key} session={todaySession}/>}

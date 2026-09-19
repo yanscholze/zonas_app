@@ -2772,7 +2772,10 @@ test("describes the four providers honestly, including Apple's device-only path"
   void PROVIDERS; void SUPPORTED_PROVIDER_LABELS;
   // Cada provedor declara o seu tipo real de autorização.
   assert.match(source, /id: "strava"[\s\S]*?authType: "oauth2"/);
-  assert.match(source, /id: "garmin"[\s\S]*?authType: "oauth2-pkce"/);
+  /* O Garmin deixou de ser OAuth. O programa de desenvolvedores exige aprovação
+     que ainda não temos, e o caminho que funciona é o do aplicativo do celular:
+     o ATLETA entra com a conta dele e o sistema guarda só o token. */
+  assert.match(source, /id: "garmin"[\s\S]*?authType: "senha"/);
   /* O Zepp deixou de ser OAuth: a nuvem deles não publica leitura de atividades,
      e o SDK do Zepp OS resolve por outro lado — mini-app no relógio, Side
      Service no celular. Quem apresenta a credencial é um aparelho. */
@@ -2785,7 +2788,7 @@ test("describes the four providers honestly, including Apple's device-only path"
   assert.match(source, /id: "garmin"[\s\S]*?canSendWorkouts: true/);
 });
 
-test("uses PKCE for Garmin and keeps the verifier on the server", async () => {
+test("mantém a mecânica de PKCE pronta, com o verifier preso ao servidor", async () => {
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
   assert.match(worker, /code_challenge_method/);
   assert.match(worker, /"S256"/);
@@ -2878,8 +2881,12 @@ test("keeps a provider unavailable until its credentials exist", async () => {
   assert.equal(attempt.status, 503);
   const failure = await attempt.json();
   assert.equal(failure.error, "provider_setup_required");
-  // O erro diz o que falta, sem revelar valor de credencial nenhum.
-  assert.deepEqual(failure.missing, ["GARMIN_CONSUMER_KEY", "GARMIN_CONSUMER_SECRET", "STRAVA_TOKEN_ENCRYPTION_KEY"]);
+  /* O erro diz o que falta, sem revelar valor de credencial nenhum.
+     Hoje o Garmin depende de uma variável só: a chave de cifra, que protege o
+     token guardado. A consumer key e o secret serviam ao caminho OAuth do
+     programa de desenvolvedores, que não é mais o nosso — continuar exigindo-os
+     faria a tela recusar uma integração que funciona. */
+  assert.deepEqual(failure.missing, ["STRAVA_TOKEN_ENCRYPTION_KEY"]);
 });
 
 test("gives the coach a way back in, since no one can reset that password in the app", async () => {
@@ -3649,7 +3656,11 @@ test("blames the right side when a stored token cannot be read", async () => {
 test("uses PKCE only where the provider asks for it", async () => {
   const integrations = await readFile(new URL("../worker/integrations.ts", import.meta.url), "utf8");
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
-  assert.match(integrations, /id: "garmin"[\s\S]*?authType: "oauth2-pkce"/);
+  /* Nenhum provedor usa PKCE hoje — o Garmin era o único e passou a "senha".
+     A mecânica continua no worker porque ela é do TIPO de autorização, não do
+     provedor: apagá-la obrigaria a reescrevê-la quando o próximo provedor PKCE
+     aparecer. O que o teste guarda é que ela só se arma para quem pede. */
+  assert.match(integrations, /id: "garmin"[\s\S]*?authType: "senha"/);
   /* O Zepp deixou de ser OAuth. A nuvem deles não publica leitura de atividades,
      e a API interna só se alcança por engenharia reversa — usá-la quebraria os
      termos e poria a conta do atleta em risco. O SDK do Zepp OS resolve melhor:
@@ -3921,4 +3932,78 @@ test("passo sem tempo e sem distância termina no botão de volta", async () => 
   assert.equal(passo.endCondition.conditionTypeKey, "lap.button",
     "inventar uma duração que o treinador não escreveu é pior que deixar o aluno decidir");
   assert.equal(passo.endConditionValue, null);
+});
+
+/* --- A integração é do aluno, e a senha não fica ---------------------------
+ *
+ * Testes de contrato sobre o desenho, não sobre o caminho feliz. O que eles
+ * impedem é a regressão silenciosa: alguém acrescentar uma coluna de senha
+ * "para poder renovar", ou devolver o botão de enviar ao painel do treinador.
+ */
+
+test("nenhum lugar guarda a senha do serviço externo", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+
+  /* O atleta digita a senha uma vez e ela morre na troca pelo token. Uma coluna
+     para guardá-la desfaria a única coisa que torna este caminho aceitável. */
+  assert.doesNotMatch(schema, /login_password|senha_encrypted|password_encrypted/,
+    "o esquema não pode ter coluna de senha de serviço externo");
+  assert.doesNotMatch(worker, /INSERT[^;]*login_password|login_password\s*=/,
+    "nada no worker pode gravar senha de serviço externo");
+
+  /* A senha só pode aparecer como variável local do connect, indo para
+     `entrarNoGarmin`. Se aparecer perto de encryptIntegrationToken, virou
+     persistência. */
+  const trecho = worker.slice(worker.indexOf('provider.authType === "senha"'));
+  const ateOFim = trecho.slice(0, trecho.indexOf("return Response.json({ provider: provider.id, authType: \"senha\""));
+  assert.ok(ateOFim.includes("entrarNoGarmin(contaExterna, senhaExterna)"), "a senha é usada para entrar");
+  assert.doesNotMatch(ateOFim, /encryptIntegrationToken\(senhaExterna/,
+    "a senha nunca pode ser cifrada e guardada — o que se guarda é o token");
+});
+
+test("o treinador não tem botão de enviar ao Garmin", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const cliente = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+
+  /* Liberar a planilha é o gatilho. Um botão no painel do treinador seria uma
+     segunda forma de fazer a mesma coisa, e as duas divergiriam. */
+  assert.doesNotMatch(worker, /garminCoachApi/, "o envio não é ação do treinador");
+  assert.doesNotMatch(cliente, /GarminEnvio/, "o painel do treinador não tem tela de envio");
+  assert.match(worker, /ctx\.waitUntil\(enviarSemanaParaGarmin\(/,
+    "liberar a semana precisa disparar o envio");
+});
+
+test("o envio automático só dispara na transição para Liberada", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const chamada = worker.indexOf("ctx.waitUntil(enviarSemanaParaGarmin(");
+  /* Recorta a PARTIR do `if`, não 400 caracteres para trás: o comentário acima
+     da condição é longo e engolia a janela, fazendo o teste falhar por medir o
+     lugar errado. */
+  const gatilho = worker.slice(worker.lastIndexOf("if (", chamada), chamada);
+  /* Sem a comparação com o estado anterior, cada gravação de uma semana já
+     liberada reenviaria a semana inteira ao Garmin — e o atleta veria o
+     calendário dele encher de cópias. */
+  assert.match(gatilho, /normalizedWeek\.status === "Liberada"/);
+  assert.match(gatilho, /existingWeek\?\.status[\s\S]*?!== "Liberada"/);
+});
+
+test("a renovação não depende de senha guardada", async () => {
+  const conexao = await readFile(new URL("../worker/garmin-conexao.ts", import.meta.url), "utf8");
+  assert.match(conexao, /export async function renovar/);
+  /* O refresh é o que permite ao atleta entrar uma vez só. Sem ele o token
+     venceria em uma hora e a integração morreria. */
+  assert.match(conexao, /grant_type: "refresh_token"/);
+  assert.match(conexao, /refresh: dados\.refresh_token \|\| sessao\.refresh/,
+    "quando o Garmin não gira o refresh, o antigo continua valendo");
+});
+
+test("o Garmin não exige mais as credenciais do programa de desenvolvedores", async () => {
+  const integracoes = await readFile(new URL("../worker/integrations.ts", import.meta.url), "utf8");
+  const garmin = integracoes.slice(integracoes.indexOf("  garmin: {"), integracoes.indexOf("  zepp: {"));
+  assert.match(garmin, /authType: "senha"/);
+  /* Exigir a consumer key faria a tela dizer "aguardando cadastro oficial" para
+     uma integração que funciona, e o atleta não conseguiria conectar. */
+  assert.doesNotMatch(garmin, /GARMIN_CONSUMER_KEY|GARMIN_CONSUMER_SECRET/);
+  assert.match(garmin, /requiredEnv: \["STRAVA_TOKEN_ENCRYPTION_KEY"\]/);
 });
