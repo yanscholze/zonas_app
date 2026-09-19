@@ -4007,3 +4007,41 @@ test("o Garmin não exige mais as credenciais do programa de desenvolvedores", a
   assert.doesNotMatch(garmin, /GARMIN_CONSUMER_KEY|GARMIN_CONSUMER_SECRET/);
   assert.match(garmin, /requiredEnv: \["STRAVA_TOKEN_ENCRYPTION_KEY"\]/);
 });
+
+test("ativar acesso grava o atleta na conta de login, não só em athlete_access", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+
+  /* `resolveVisita` decide "aluno" ou "pendente" pela coluna athlete_name da
+     conta. Quem ativa acesso e grava só `athlete_access` deixa a pessoa presa na
+     tela de "Solicite seu cadastro" — com ficha criada, aprovada e com planilha.
+     Aconteceu em produção: a aprovação escrevia cinco tabelas e não essa. */
+  assert.match(auth, /if \(!account\.athlete_name\)[\s\S]{0,120}role: "pendente"/,
+    "a decisão continua sendo por user_accounts.athlete_name");
+
+  const sql = "INSERT INTO athlete_access";
+  let de = 0, sitios = 0;
+  while ((de = worker.indexOf(sql, de)) !== -1) {
+    sitios += 1;
+    /* A janela cobre o comando e o que vem logo depois: o vínculo da conta tem
+       de estar no mesmo trecho, seja executado ou posto no mesmo lote. */
+    const janela = worker.slice(de, de + 1400);
+    assert.match(janela, /vinculaContaAoAtleta\(/,
+      `o ${sitios}º INSERT INTO athlete_access não grava athlete_name na conta`);
+    de += sql.length;
+  }
+  assert.ok(sitios >= 3, `esperava ao menos 3 pontos de vínculo, achei ${sitios}`);
+
+  /* Um lugar só define o SQL. Três UPDATEs soltos divergiriam no primeiro
+     ajuste de coluna. */
+  assert.equal((worker.match(/UPDATE user_accounts SET athlete_name/g) || []).length, 1,
+    "o SQL do vínculo mora numa função só");
+});
+
+test("pedido já aprovado não acusa erro de preenchimento", async () => {
+  const entrada = await readFile(new URL("../app/StudentEntry.tsx", import.meta.url), "utf8");
+  /* "Confira os campos" para quem já foi aprovado manda procurar defeito em
+     dado que está certo. */
+  assert.match(entrada, /already_approved[\s\S]{0,80}reload\(\)/);
+  assert.match(entrada, /aguardando a liberação do professor/);
+});
