@@ -4045,3 +4045,27 @@ test("pedido já aprovado não acusa erro de preenchimento", async () => {
   assert.match(entrada, /already_approved[\s\S]{0,80}reload\(\)/);
   assert.match(entrada, /aguardando a liberação do professor/);
 });
+
+test("o envelope declara todo campo que o handler de integrações lê", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+
+  /* A forma do corpo é declarada em DOIS lugares: o allowlist do envelope e o
+     handler que lê os campos. Acrescentei externalEmail/externalPassword só no
+     handler, e o login do Garmin passou a ser recusado na porta sem nunca sair
+     do nosso servidor — cinco tentativas do aluno viraram `unexpected_field` e
+     a tela dizia apenas que não deu certo. */
+  const linha = worker.match(/"\/api\/student\/integrations": new Set\(\[([^\]]*)\]\)/);
+  assert.ok(linha, "o allowlist precisa declarar /api/student/integrations");
+  const declarados = new Set(linha[1].split(",").map((x) => x.trim().replace(/^"|"$/g, "")));
+
+  const inicio = worker.indexOf("async function studentIntegrationsApi");
+  const corpo = worker.slice(inicio, worker.indexOf("\nasync function", inicio + 10));
+  const lidos = new Set([...corpo.matchAll(/\binput\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]));
+
+  for (const campo of lidos) {
+    assert.ok(declarados.has(campo),
+      `o handler lê "${campo}" mas o envelope não o declara — o pedido morre em unexpected_field`);
+  }
+  assert.ok(lidos.has("externalEmail") && lidos.has("externalPassword"),
+    "o caminho por senha precisa dos dois campos");
+});

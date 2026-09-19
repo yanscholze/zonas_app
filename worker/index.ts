@@ -132,7 +132,11 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/equipe": new Set(["action","email","name","password","role","athleteName"]),
   "/api/convite": new Set(["action","code","days","maxUses"]),
   "/api/dev/accounts": new Set(["action","email","role"]),
-  "/api/student/integrations": new Set(["action","provider"]),
+  /* `externalEmail`/`externalPassword` só existem no caminho "senha", em que o
+     ATLETA entra com a conta dele. A senha atravessa esta porta e morre no
+     handler: o que se guarda é o token. Esquecer de declará-las aqui fez o login
+     do Garmin ser recusado na validação sem nunca sair do nosso servidor. */
+  "/api/student/integrations": new Set(["action","provider","externalEmail","externalPassword"]),
 };
 
 function boundedText(value: unknown, max: number): string {
