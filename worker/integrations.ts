@@ -211,11 +211,18 @@ export function normalizeActivity(provider: ProviderId, raw: Record<string, unkn
    * O Garmin Bridge usa python-garminconnect, que retorna o formato
    * interno do Garmin Connect, diferente do formato da Activity API
    * oficial do Developer Program.
+   *
+   * Os DOIS são aceitos aqui. A ponte é o caminho de hoje, mas a Activity API
+   * oficial continua implementada e passa a valer no dia em que a consumer key
+   * existir. Ler só um formato faria o outro devolver `null` — e atividade nula
+   * é descartada em silêncio, sem erro em lugar nenhum: o aluno correria e o
+   * treino sumiria sem ninguém saber por quê.
    */
 
   const id = String(
     raw.activityId ??
     raw.activityUUID ??
+    raw.summaryId ??      /* Activity API oficial */
     ""
   );
 
@@ -228,11 +235,17 @@ export function normalizeActivity(provider: ProviderId, raw: Record<string, unkn
    * beginTimestamp já está em milissegundos e é a fonte mais segura.
    */
   const beginTimestamp = Number(raw.beginTimestamp ?? NaN);
+  /* A oficial manda segundos; a ponte manda milissegundos. Confundir as duas
+     joga a atividade para 1970 ou para o ano 58000, e ela nunca casa com a
+     semana planejada. */
+  const startTimeInSeconds = Number(raw.startTimeInSeconds ?? NaN);
 
   let startedAt: number;
 
   if (Number.isFinite(beginTimestamp)) {
     startedAt = beginTimestamp;
+  } else if (Number.isFinite(startTimeInSeconds)) {
+    startedAt = startTimeInSeconds * 1000;
   } else {
     const startTime = String(
       raw.startTimeGMT ??
@@ -264,28 +277,30 @@ export function normalizeActivity(provider: ProviderId, raw: Record<string, unkn
 
     sport: String(
       activityType.typeKey ??
+      (typeof raw.activityType === "string" ? raw.activityType : null) ??
       "running"
     ),
 
     distanceMeters:
-      finiteNumber(raw.distance),
+      finiteNumber(raw.distance ?? raw.distanceInMeters),
 
     movingSeconds:
-      finiteNumber(raw.duration),
+      finiteNumber(raw.duration ?? raw.durationInSeconds),
 
     elapsedSeconds:
       finiteNumber(
         raw.elapsedDuration ??
-        raw.duration
+        raw.duration ??
+        raw.durationInSeconds
       ),
 
     averageHeartRate:
       finiteNumber(
         raw.averageHR ??
-        raw.averageHeartRate
+        raw.averageHeartRate ??
+        raw.averageHeartRateInBeatsPerMinute
       ),
   };
-}
   }
   if (provider === "zepp") {
     const id = String(raw.trackid ?? raw.id ?? "");

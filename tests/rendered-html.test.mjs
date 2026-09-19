@@ -666,7 +666,11 @@ test("names the data controller the privacy law requires", async () => {
 test("keeps the deploy config in step with the development bindings", async () => {
   const wranglerRaw = await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8");
   const viteConfig = await readFile(new URL("../vite.config.ts", import.meta.url), "utf8");
-  const hosting = JSON.parse(await readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"));
+  /* Os nomes dos bindings saíam de `.openai/hosting.json`, apagado junto com o
+     resto do andaime da OpenAI. Agora moram em `build/hosting.ts`, que é o que
+     o vite.config.ts lê e o que o plugin escreve no artefato. */
+  const hostingSrc = await readFile(new URL("../build/hosting.ts", import.meta.url), "utf8");
+  const hosting = { d1: hostingSrc.match(/d1:\s*"([^"]+)"/)?.[1] };
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
 
   /* O desenvolvimento não lê o wrangler.jsonc: o plugin da Cloudflare recebe a
@@ -3605,14 +3609,19 @@ test("normalizes a real activity from each provider", async () => {
     `import {normalizeActivity,averagePaceSeconds,weekStartOf,workoutDayOf} from './worker/integrations.ts';` +
     `const s=normalizeActivity('strava',{id:1,start_date:'2026-08-24T07:00:00Z',distance:10000,moving_time:3000,average_heartrate:155});` +
     `const g=normalizeActivity('garmin',{summaryId:'g1',startTimeInSeconds:1787554800,distanceInMeters:10000,durationInSeconds:3000,averageHeartRateInBeatsPerMinute:150});` +
+    /* O mesmo provedor com o formato da ponte em Python, que é o caminho de
+       hoje. Ler só um dos dois faz o outro virar null — e null é atividade
+       descartada em silêncio. */
+    `const gb=normalizeActivity('garmin',{activityId:'g2',beginTimestamp:1787554800000,distance:10000,duration:3000,averageHR:150,activityType:{typeKey:'running'}});` +
     `const z=normalizeActivity('zepp',{trackid:'z1',start_time:1787554800,dis:10000,run_time:3000,avg_heart_rate:145});` +
     `const a=normalizeActivity('apple',{uuid:'a1',startDate:'2026-08-24T07:00:00Z',totalDistanceMeters:10000,durationSeconds:3000,averageHeartRate:140});` +
-    `console.log(JSON.stringify({s,g,z,a,pace:averagePaceSeconds(s),semana:weekStartOf(s.startedAt),dia:workoutDayOf(s.startedAt)}))"`,
+    `console.log(JSON.stringify({s,g,gb,z,a,pace:averagePaceSeconds(s),semana:weekStartOf(s.startedAt),dia:workoutDayOf(s.startedAt)}))"`,
     { cwd: new URL("..", import.meta.url).pathname, encoding: "utf8", timeout: 180000 },
   );
   const d = JSON.parse(saida.trim().split("\n").pop());
-  // Os quatro formatos, muito diferentes entre si, chegam ao mesmo resultado.
-  for (const provedor of ["s", "g", "z", "a"]) {
+  // Cinco formatos, muito diferentes entre si, chegam ao mesmo resultado —
+  // incluindo os DOIS do Garmin: a Activity API oficial e a ponte em Python.
+  for (const provedor of ["s", "g", "gb", "z", "a"]) {
     assert.equal(d[provedor].distanceMeters, 10000, `${provedor}: distância`);
     assert.equal(d[provedor].movingSeconds, 3000, `${provedor}: duração`);
     assert.ok(d[provedor].averageHeartRate > 0, `${provedor}: frequência cardíaca`);

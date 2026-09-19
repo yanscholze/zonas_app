@@ -11,7 +11,7 @@
 import vinext from "vinext";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { defineConfig } from "vite";
-import hostingConfig from "./.openai/hosting.json";
+import { hostingConfig } from "./build/hosting";
 import { sites } from "./build/sites-vite-plugin";
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
