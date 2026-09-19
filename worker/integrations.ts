@@ -208,15 +208,22 @@ export function normalizeActivity(provider: ProviderId, raw: Record<string, unkn
   }
   if (provider === "garmin") {
   /*
-   * O Garmin Bridge usa python-garminconnect, que retorna o formato
-   * interno do Garmin Connect, diferente do formato da Activity API
-   * oficial do Developer Program.
+   * Dois formatos, porque há duas APIs do Garmin com nomes diferentes para os
+   * mesmos campos.
    *
-   * Os DOIS são aceitos aqui. A ponte é o caminho de hoje, mas a Activity API
-   * oficial continua implementada e passa a valer no dia em que a consumer key
-   * existir. Ler só um formato faria o outro devolver `null` — e atividade nula
-   * é descartada em silêncio, sem erro em lugar nenhum: o aluno correria e o
-   * treino sumiria sem ninguém saber por quê.
+   * O primeiro é o da API INTERNA — `activityId`, `beginTimestamp`,
+   * `activityType.typeKey`. É o que o `python-garminconnect` devolve, e é o que
+   * o nosso próprio cliente receberá quando importar atividades: os dois falam
+   * com `connectapi.garmin.com`. (O serviço em `garmin-bridge/` está inativo e
+   * não é chamado por ninguém — ver o README de lá.)
+   *
+   * O segundo é o da Activity API OFICIAL do Developer Program —
+   * `summaryId`, `startTimeInSeconds`, `distanceInMeters` —, que passa a valer
+   * se o programa for aprovado.
+   *
+   * Os DOIS são aceitos porque ler só um faz o outro devolver `null` — e
+   * atividade nula é descartada em silêncio, sem erro em lugar nenhum: o aluno
+   * correria e o treino sumiria sem ninguém saber por quê.
    */
 
   const id = String(

@@ -4078,3 +4078,25 @@ test("o envelope declara todo campo que o handler de integrações lê", async (
   assert.ok(lidos.has("externalEmail") && lidos.has("externalPassword"),
     "o caminho por senha precisa dos dois campos");
 });
+
+test("o garmin-bridge está inativo e ninguém o chama", async () => {
+  const { readdir } = await import("node:fs/promises");
+
+  /* O bridge em Python foi o experimento que provou o wrapper funcionar, e ficou
+     guardado como saída caso o Worker seja barrado pelo Garmin. Guardado não é
+     ligado: dois clientes para o mesmo serviço divergem na primeira mudança que o
+     Garmin fizer, e religá-lo tem de ser uma decisão, não um acidente. */
+  const fontes = ["../worker/index.ts", "../worker/integrations.ts", "../worker/garmin-conexao.ts", "../app/ZonasAppClient.tsx"];
+  for (const caminho of fontes) {
+    const texto = await readFile(new URL(caminho, import.meta.url), "utf8");
+    const chamadas = texto.match(/https?:\/\/[^"'`\s]*bridge|GARMIN_BRIDGE_SECRET|garmin-bridge\/[a-z]/gi) ?? [];
+    assert.deepEqual(chamadas, [], `${caminho} não pode chamar o bridge`);
+  }
+
+  /* O README existe e diz que está inativo — sem ele, quem abrir a pasta daqui a
+     seis meses supõe que é parte do sistema. */
+  const arquivos = await readdir(new URL("../garmin-bridge", import.meta.url));
+  assert.ok(arquivos.includes("README.md"), "o bridge precisa dizer que está inativo");
+  const leiaMe = await readFile(new URL("../garmin-bridge/README.md", import.meta.url), "utf8");
+  assert.match(leiaMe, /inativo/i);
+});
