@@ -14,8 +14,12 @@ público do desenvolvedor, e sem ele o formulário não fecha.
 
 **2. Registrar o aplicativo primeiro, compilar depois.** O console atribui o
 `appId` no momento do registro, e o pacote é recusado se o `appId` de dentro dele
-não for o mesmo. Hoje o `app.json` traz `1052001`, que é **provisório**: troque
-pelo número que o console devolver e só então rode `zeus build`.
+não for o mesmo. O `app.json` traz `1126787`, que é o appId real deste aplicativo
+no console — se um dia ele mudar, troque aqui ANTES de rodar `zeus build`, porque
+o pacote carrega o número dentro de si e a Zepp recusa quando os dois divergem:
+
+    The appId in the app package's app.json (X) does not match
+    the appId of the current app in the console (Y).
 
 ```bash
 npm i -g @zeppos/zeus-cli
