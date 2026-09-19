@@ -14938,3 +14938,63 @@ p, span, b, strong, small, em, li, td, th, label {
   font-weight: var(--fw-bold);
   cursor: pointer;
 }
+
+/* --- Login do aluno num serviço externo ----------------------------------
+ *
+ * Aparece dentro do cartão do provedor, na tela de Integrações do aluno. Segue
+ * a mesma linguagem do `.apple-ingest`, que é o vizinho imediato: mesma borda
+ * dourada de "atenção aqui", mesma grade de campos.
+ *
+ * O aviso de que a senha não é guardada vem ANTES dos campos de propósito.
+ * Depois deles seria aviso que se lê após digitar.
+ */
+.login-externo {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 11px;
+  margin-top: var(--space-3);
+  padding: var(--space-4);
+  background: var(--panel);
+  border: 1px solid var(--gold);
+  border-radius: var(--radius-lg);
+}
+
+.login-externo p {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.login-externo p b { color: var(--text); }
+
+.login-externo label {
+  display: grid;
+  gap: 5px;
+}
+
+.login-externo small {
+  color: var(--muted);
+  font-size: var(--fs-overline);
+  letter-spacing: .08em;
+}
+
+.login-externo input {
+  height: var(--control-md);
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  padding: 0 var(--space-3);
+  font-size: var(--fs-base);
+}
+
+.login-externo input:focus { border-color: var(--gold); outline: none; }
+
+.login-externo>div { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+
+.login-externo em {
+  font-style: normal;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}

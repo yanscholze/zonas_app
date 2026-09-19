@@ -1,6 +1,8 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { treinoParaGarmin } from "./garmin-treino";
+import { entrar as entrarNoGarmin, renovar as renovarGarmin, subirTreino as subirTreinoNoGarmin, agendarTreino as agendarTreinoNoGarmin, type Sessao as GarminSessao } from "./garmin-conexao";
 import {
   MIN_PASSWORD_LENGTH,
   accountByEmail,
@@ -130,7 +132,11 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/equipe": new Set(["action","email","name","password","role","athleteName"]),
   "/api/convite": new Set(["action","code","days","maxUses"]),
   "/api/dev/accounts": new Set(["action","email","role"]),
-  "/api/student/integrations": new Set(["action","provider"]),
+  /* `externalEmail`/`externalPassword` só existem no caminho "senha", em que o
+     ATLETA entra com a conta dele. A senha atravessa esta porta e morre no
+     handler: o que se guarda é o token. Esquecer de declará-las aqui fez o login
+     do Garmin ser recusado na validação sem nunca sair do nosso servidor. */
+  "/api/student/integrations": new Set(["action","provider","externalEmail","externalPassword"]),
 };
 
 function boundedText(value: unknown, max: number): string {
@@ -1095,6 +1101,26 @@ async function coachAccountsApi(request: Request, env: Env): Promise<Response> {
   return Response.json({ error: "unknown_action" }, { status: 400 });
 }
 
+/**
+ * O vínculo da CONTA DE LOGIN com o atleta.
+ *
+ * `athlete_access` diz quem pode entrar; `user_accounts.athlete_name` é o que
+ * `resolveVisita` lê para decidir se a pessoa é aluno ou ainda é "pendente".
+ * São duas gravações do mesmo fato, e é por isso que esta função existe: as três
+ * rotas que ativam um acesso escreviam só a primeira, e a conta ficava presa na
+ * tela de "Solicite seu cadastro" para sempre — com o aluno já criado, já
+ * aprovado e já dono de uma planilha.
+ *
+ * Devolve o comando em vez de executá-lo porque um dos chamadores monta um lote
+ * atômico: aprovar precisa gravar tudo ou nada, e uma função que roda por conta
+ * própria deixaria o vínculo de fora quando o resto falhasse.
+ */
+function vinculaContaAoAtleta(env: Env, email: string, athleteName: string) {
+  return env.DB
+    .prepare("UPDATE user_accounts SET athlete_name = ?, updated_at = ? WHERE email = ? AND role = 'student'")
+    .bind(athleteName, Date.now(), email);
+}
+
 /** Mantém `athlete_access` em sincronia com a conta de login do aluno. */
 async function linkAthleteAccess(env: Env, athleteName: string, email: string, status: string, actorEmail: string): Promise<void> {
   await ensureAthleteAccess(env);
@@ -1109,6 +1135,7 @@ async function linkAthleteAccess(env: Env, athleteName: string, email: string, s
       activated_at = CASE WHEN excluded.status = 'Ativo' THEN excluded.updated_at ELSE athlete_access.activated_at END,
       updated_at = excluded.updated_at`)
     .bind(crypto.randomUUID(), athleteName, email, status, now, status === "Ativo" ? now : null, now).run();
+  await vinculaContaAoAtleta(env, email, athleteName).run();
   await env.DB.prepare(`INSERT INTO access_audit_log (id, athlete_name, actor_email, action, previous_status, new_status, previous_email, new_email, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(crypto.randomUUID(), athleteName, actorEmail, "Conta de acesso atualizada", existing?.status ?? null, status, existing?.email ?? null, email, now).run();
@@ -1154,6 +1181,7 @@ async function athleteAccessApi(request: Request, env: Env): Promise<Response> {
         activated_at=CASE WHEN excluded.status='Ativo' THEN excluded.updated_at ELSE athlete_access.activated_at END,
         updated_at=excluded.updated_at`)
       .bind(id, athleteName, email, status, now, activatedAt, now).run();
+    await vinculaContaAoAtleta(env, email, athleteName).run();
     const emailChanged = Boolean(existing?.email && existing.email !== email);
     const action = emailChanged ? "E-mail de acesso alterado" : status === "Bloqueado" && existing?.status === "Ativo" ? "Sessões e acesso encerrados" : status === "Bloqueado" ? "Acesso bloqueado" : status === "Ativo" && existing?.status === "Bloqueado" ? "Acesso reativado" : status === "Ativo" ? "Acesso ativado" : "Vínculo preparado";
     const actorEmail = normalizedAuthenticatedEmail(request) || "preview@zonasapp.local";
@@ -1338,6 +1366,10 @@ async function accessRequestsCoachApi(request: Request, env: Env): Promise<Respo
       env.DB.prepare("INSERT INTO athlete_access (id,athlete_name,email,status,invited_at,activated_at,last_access_at,updated_at) VALUES (?,?,?,?,?,?,NULL,?) ON CONFLICT(athlete_name) DO UPDATE SET email=excluded.email,status='Ativo',activated_at=excluded.activated_at,updated_at=excluded.updated_at").bind(crypto.randomUUID(),name,email,"Ativo",Number(row.created_at)||now,now,now),
       env.DB.prepare("INSERT INTO access_audit_log (id,athlete_name,actor_email,action,previous_status,new_status,previous_email,new_email,created_at) VALUES (?,?,?,?,NULL,?,?,?,?)").bind(crypto.randomUUID(),name,actor,"Cadastro solicitado aprovado","Ativo",null,email,now),
       env.DB.prepare("UPDATE access_requests SET status='Aprovado', reviewed_by=?, reviewed_at=?, updated_at=? WHERE id=?").bind(actor,now,now,id),
+      /* Sem esta linha o aluno era aprovado, ganhava ficha, planilha e acesso —
+         e continuava caindo na tela de "Solicite seu cadastro" a cada login,
+         porque a conta dele seguia sem atleta. */
+      vinculaContaAoAtleta(env, email, name),
     );
     await env.DB.batch(statements);
     return Response.json({id,status:"Aprovado",athleteName:name});
@@ -1725,7 +1757,7 @@ async function performanceTestsApi(request: Request, env: Env): Promise<Response
   return new Response("Method not allowed",{status:405});
 }
 
-async function trainingWeeksApi(request: Request, env: Env): Promise<Response> {
+async function trainingWeeksApi(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   await ensureTables(env, schema.trainingWeeks, schema.trainingWeekAudit);
   const url = new URL(request.url);
   const carteira = recorteDaCarteira(carteiraDe(request));
@@ -1802,6 +1834,18 @@ async function trainingWeeksApi(request: Request, env: Env): Promise<Response> {
       env.DB.prepare("INSERT INTO training_week_audit (id, athlete_name, week_start, actor_email, action, changed_fields, previous_snapshot, new_snapshot, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(crypto.randomUUID(), athleteName, weekStart, actorEmail, action, JSON.stringify(changedFields), existingWeek ? JSON.stringify(existingWeek) : null, JSON.stringify(normalizedWeek), updatedAt),
     ]);
+
+    /* Semana liberada sobe sozinha para o relógio de quem conectou.
+     *
+     * É o desenho pedido: o treinador lança a planilha e o resto acontece. Roda
+     * em `waitUntil` porque são até quinze chamadas ao Garmin — esperar por elas
+     * para responder "salvo" transformaria a integração invisível num
+     * travamento visível, e o treinador é quem pagaria por um relógio que nem é
+     * dele. */
+    if (normalizedWeek.status === "Liberada" && String(existingWeek?.status ?? "") !== "Liberada") {
+      ctx.waitUntil(enviarSemanaParaGarmin(env, request, athleteName, weekStart));
+    }
+
     return Response.json({ id, updatedAt, status: input.status ?? "Rascunho" }, { status: 201 });
   }
   return new Response("Method not allowed", { status: 405 });
@@ -2832,40 +2876,34 @@ async function issueDeviceIngestToken(env: Env, athleteName: string, provider: P
  * Autentica pelo mesmo token de ingestão que o aparelho já usa para enviar. Um
  * token, os dois sentidos.
  */
-async function deviceWorkoutApi(request: Request, env: Env): Promise<Response> {
-  if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
-  await ensureIntegrationTables(env);
-
-  const apresentado = boundedText(request.headers.get("x-zonas-ingest-token"), 100);
-  if (!/^[a-f0-9]{48}$/.test(apresentado)) return Response.json({ error: "ingest_token_required" }, { status: 401 });
-  const vinculo = await env.DB.prepare(
-    "SELECT athlete_name FROM device_ingest_tokens WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1",
-  ).bind(await sha256Text(apresentado)).first() as { athlete_name?: string } | null;
-  if (!vinculo?.athlete_name) return Response.json({ error: "invalid_ingest_token" }, { status: 401 });
-  const atleta = vinculo.athlete_name;
-
-  /* Os mesmos ajudantes que a importação de atividade usa para decidir semana e
-     dia. Uma conta só para "que dia é hoje no planejamento": duas divergiriam no
-     primeiro fuso ou virada de semana. */
-  const agora = Date.now();
-  const hoje = { key: workoutDayOf(agora), weekStart: weekStartOf(agora), iso: new Date(agora).toISOString().slice(0, 10) };
+/**
+ * O treino de um dia, com as zonas já convertidas em ritmo.
+ *
+ * É a fonte única do "treino resolvido": o relógio Amazfit consome isto pelo
+ * endpoint de ingestão, e o envio ao Garmin consome a mesma coisa antes de
+ * traduzir para o formato deles. Duas leituras da planilha divergiriam na
+ * primeira mudança de regra — e a regra aqui inclui a que mais importa, que é
+ * semana não liberada não sair.
+ */
+async function treinoResolvido(
+  env: Env,
+  atleta: string,
+  weekStart: string,
+  diaChave: string,
+): Promise<{ treino: Record<string, unknown> | null; motivo?: string; plano?: Record<string, unknown> }> {
   const semana = await env.DB.prepare(
     "SELECT sessions, status, plan, phase, week_label FROM training_weeks WHERE athlete_name = ? AND week_start = ? LIMIT 1",
-  ).bind(atleta, hoje.weekStart).first() as { sessions?: string; status?: string; plan?: string; phase?: string; week_label?: string } | null;
+  ).bind(atleta, weekStart).first() as { sessions?: string; status?: string; plan?: string; phase?: string; week_label?: string } | null;
 
-  /* Semana não liberada é semana que o aluno não deve ver — nem pelo relógio.
-     Devolver 200 com o treino seria furar a revisão do treinador pelo caminho
-     que ninguém está olhando. */
-  if (!semana || semana.status !== "Liberada") {
-    return Response.json({ athlete: atleta, day: hoje.key, workout: null, reason: "week_not_released" });
-  }
+  /* Semana não liberada é semana que o aluno não deve ver — nem pelo relógio,
+     nem pelo calendário do Garmin. Devolver o treino seria furar a revisão do
+     treinador pelo caminho que ninguém está olhando. */
+  if (!semana || semana.status !== "Liberada") return { treino: null, motivo: "week_not_released" };
 
   let sessoes: Record<string, unknown> = {};
   try { sessoes = JSON.parse(String(semana.sessions ?? "{}")) as Record<string, unknown>; } catch { sessoes = {}; }
-  const sessao = sessoes[hoje.key] as Record<string, unknown> | undefined;
-  if (!sessao || sessao.removed) {
-    return Response.json({ athlete: atleta, day: hoje.key, workout: null, reason: "rest_day" });
-  }
+  const sessao = sessoes[diaChave] as Record<string, unknown> | undefined;
+  if (!sessao || sessao.removed) return { treino: null, motivo: "rest_day" };
 
   /* As zonas do teste aprovado mais recente. Sem teste, as etapas vão sem alvo
      de ritmo: o relógio ainda consegue guiar por tempo e distância, que é melhor
@@ -2919,11 +2957,8 @@ async function deviceWorkoutApi(request: Request, env: Env): Promise<Response> {
     });
   }
 
-  return Response.json({
-    athlete: atleta,
-    day: hoje.key,
-    date: hoje.iso,
-    workout: {
+  return {
+    treino: {
       title: String(sessao.title ?? sessao.type ?? "Treino do dia"),
       description: String(sessao.description ?? ""),
       estimatedSeconds: Number.isFinite(Number(sessao.durationMinutes)) ? Math.round(Number(sessao.durationMinutes) * 60) : null,
@@ -2931,8 +2966,156 @@ async function deviceWorkoutApi(request: Request, env: Env): Promise<Response> {
       maxHeartRate: Number(teste?.fc_max) || null,
       steps: etapas,
     },
-    plan: { name: semana.plan ?? null, phase: semana.phase ?? null, week: semana.week_label ?? null },
+    plano: { name: semana.plan ?? null, phase: semana.phase ?? null, week: semana.week_label ?? null },
+  };
+}
+
+async function deviceWorkoutApi(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
+  await ensureIntegrationTables(env);
+
+  const apresentado = boundedText(request.headers.get("x-zonas-ingest-token"), 100);
+  if (!/^[a-f0-9]{48}$/.test(apresentado)) return Response.json({ error: "ingest_token_required" }, { status: 401 });
+  const vinculo = await env.DB.prepare(
+    "SELECT athlete_name FROM device_ingest_tokens WHERE token_hash = ? AND revoked_at IS NULL LIMIT 1",
+  ).bind(await sha256Text(apresentado)).first() as { athlete_name?: string } | null;
+  if (!vinculo?.athlete_name) return Response.json({ error: "invalid_ingest_token" }, { status: 401 });
+  const atleta = vinculo.athlete_name;
+
+  /* Os mesmos ajudantes que a importação de atividade usa para decidir semana e
+     dia. Uma conta só para "que dia é hoje no planejamento": duas divergiriam no
+     primeiro fuso ou virada de semana. */
+  const agora = Date.now();
+  const hoje = { key: workoutDayOf(agora), weekStart: weekStartOf(agora), iso: new Date(agora).toISOString().slice(0, 10) };
+
+  const resolvido = await treinoResolvido(env, atleta, hoje.weekStart, hoje.key);
+  if (!resolvido.treino) {
+    return Response.json({ athlete: atleta, day: hoje.key, workout: null, reason: resolvido.motivo });
+  }
+
+  return Response.json({
+    athlete: atleta,
+    day: hoje.key,
+    date: hoje.iso,
+    workout: resolvido.treino,
+    plan: resolvido.plano,
   });
+}
+
+/**
+ * A sessão do atleta no Garmin, válida agora.
+ *
+ * Lê o token guardado e, se estiver vencido, renova com o refresh e regrava. O
+ * atleta entrou uma vez; daqui em diante é o sistema que se vira.
+ *
+ * Quando nem o refresh serve — ele também venceu, ou o atleta trocou a senha no
+ * Garmin —, a conexão é marcada como "Reconectar". É o único desfecho honesto:
+ * não temos a senha para tentar de novo, e deixar como "Conectado" faria o
+ * atleta acreditar que os treinos estão chegando.
+ */
+async function sessaoGarminDoAtleta(env: Env, atleta: string): Promise<GarminSessao | null> {
+  if (!env.STRAVA_TOKEN_ENCRYPTION_KEY) return null;
+
+  const linha = await env.DB.prepare(
+    "SELECT access_token_encrypted, refresh_token_encrypted, expires_at, status FROM external_integrations WHERE athlete_name = ? AND provider = ? LIMIT 1",
+  ).bind(atleta, PROVIDERS.garmin.label).first() as
+    { access_token_encrypted?: string; refresh_token_encrypted?: string; expires_at?: number; status?: string } | null;
+
+  if (!linha?.access_token_encrypted || linha.status === "Desconectado") return null;
+
+  let sessao: GarminSessao;
+  try {
+    sessao = {
+      token: await decryptIntegrationToken(linha.access_token_encrypted, env.STRAVA_TOKEN_ENCRYPTION_KEY),
+      refresh: linha.refresh_token_encrypted
+        ? await decryptIntegrationToken(linha.refresh_token_encrypted, env.STRAVA_TOKEN_ENCRYPTION_KEY)
+        : "",
+      expiraEm: Number(linha.expires_at) || 0,
+    };
+  } catch {
+    /* Token ilegível quer dizer que a chave de cifra mudou. Tentar usar produz
+       um 401 confuso lá na frente; marcar para reconectar diz a verdade. */
+    await marcaGarminParaReconectar(env, atleta);
+    return null;
+  }
+
+  if (sessao.expiraEm > Date.now()) return sessao;
+
+  const renovada = await renovarGarmin(sessao);
+  if (!renovada.ok) {
+    if (renovada.falha === "credenciais_invalidas") await marcaGarminParaReconectar(env, atleta);
+    return null;
+  }
+
+  await env.DB.prepare(
+    "UPDATE external_integrations SET access_token_encrypted = ?, refresh_token_encrypted = ?, expires_at = ?, updated_at = ? WHERE athlete_name = ? AND provider = ?",
+  ).bind(
+    await encryptIntegrationToken(renovada.valor.token, env.STRAVA_TOKEN_ENCRYPTION_KEY),
+    await encryptIntegrationToken(renovada.valor.refresh, env.STRAVA_TOKEN_ENCRYPTION_KEY),
+    renovada.valor.expiraEm, Date.now(), atleta, PROVIDERS.garmin.label,
+  ).run();
+
+  return renovada.valor;
+}
+
+async function marcaGarminParaReconectar(env: Env, atleta: string): Promise<void> {
+  await env.DB.prepare(
+    "UPDATE external_integrations SET status = 'Reconectar', updated_at = ? WHERE athlete_name = ? AND provider = ?",
+  ).bind(Date.now(), atleta, PROVIDERS.garmin.label).run();
+}
+
+/**
+ * Sobe a semana liberada para o calendário do Garmin do atleta.
+ *
+ * Roda depois da resposta ao treinador, por `ctx.waitUntil`: são até quinze
+ * chamadas ao Garmin, e fazer o treinador esperar por elas para ver "semana
+ * salva" transformaria uma integração invisível num travamento visível.
+ *
+ * Silencioso quando o atleta não ligou o Garmin — que é o caso da maioria. Não
+ * ter conectado não é erro e não deve virar linha no monitor.
+ */
+async function enviarSemanaParaGarmin(env: Env, request: Request, atleta: string, weekStart: string): Promise<void> {
+  const sessao = await sessaoGarminDoAtleta(env, atleta);
+  if (!sessao) return;
+
+  const inicio = new Date(`${weekStart}T12:00:00Z`);
+  let enviados = 0;
+  const problemas: string[] = [];
+
+  for (let i = 0; i < DIAS_DA_SEMANA.length; i += 1) {
+    const dia = DIAS_DA_SEMANA[i];
+    const resolvido = await treinoResolvido(env, atleta, weekStart, dia);
+    /* Dia de descanso e semana não liberada não são falha — são a resposta
+       certa. Só o que quebrou entra em `problemas`. */
+    if (!resolvido.treino) continue;
+
+    const data = new Date(inicio.getTime() + i * 86400000).toISOString().slice(0, 10);
+    const traduzido = treinoParaGarmin(resolvido.treino as never, `${resolvido.treino.title} · ${dia}`);
+
+    const subida = await subirTreinoNoGarmin(sessao, traduzido);
+    if (!subida.ok) { problemas.push(`${dia}: ${subida.falha}`); continue; }
+
+    const agenda = await agendarTreinoNoGarmin(sessao, subida.valor, data);
+    if (!agenda.ok) { problemas.push(`${dia}: ${agenda.falha} ao agendar`); continue; }
+    enviados += 1;
+  }
+
+  const agora = Date.now();
+  if (enviados > 0) {
+    await env.DB.prepare(
+      "UPDATE external_integrations SET last_sync_at = ?, updated_at = ? WHERE athlete_name = ? AND provider = ?",
+    ).bind(agora, agora, atleta, PROVIDERS.garmin.label).run();
+  }
+
+  /* O treinador já foi embora da tela quando isto roda. O registro no monitor de
+     erros é o único jeito de a falha existir para alguém — sem ele, a semana
+     simplesmente não apareceria no relógio do aluno e ninguém saberia por quê. */
+  if (problemas.length) {
+    await recordApplicationError(
+      env, request, "envio ao Garmin", "garmin_week_send_failed", 502,
+      new Error(`${atleta} · semana ${weekStart}: ${problemas.join(" | ")}`),
+    );
+  }
 }
 
 async function deviceIngestApi(request: Request, env: Env): Promise<Response> {
@@ -3050,6 +3233,49 @@ async function studentIntegrationsApi(request: Request, env: Env, athleteName: s
           : "No iPhone, crie um Atalho que leia os treinos do app Saúde e envie um POST para o endereço acima com o cabeçalho x-zonas-ingest-token. O token aparece uma única vez.",
       });
     }
+    /* O atleta entra com a conta dele e guardamos só o token.
+     *
+     * A senha existe nesta função e morre nela: é usada na troca e nunca chega
+     * ao banco. O que persiste é o token e o refresh, e é o refresh que faz o
+     * atleta precisar entrar uma vez só. Guardar a senha "para renovar depois"
+     * seria desfazer a única coisa que torna este caminho aceitável. */
+    if (provider.authType === "senha") {
+      if (!env.STRAVA_TOKEN_ENCRYPTION_KEY) {
+        return Response.json({ error: "provider_setup_required", provider: provider.id }, { status: 503 });
+      }
+      const contaExterna = boundedText(input.externalEmail, 160);
+      const senhaExterna = typeof input.externalPassword === "string" ? input.externalPassword : "";
+      if (!contaExterna || !senhaExterna) {
+        return Response.json({ error: "credenciais_obrigatorias", provider: provider.id }, { status: 400 });
+      }
+
+      const sessao = await entrarNoGarmin(contaExterna, senhaExterna);
+      if (!sessao.ok) {
+        return Response.json({ error: sessao.falha, provider: provider.id, detalhe: sessao.detalhe ?? null }, { status: 400 });
+      }
+
+      const agora = Date.now();
+      await env.DB.prepare(
+        `INSERT INTO external_integrations
+           (id, athlete_name, provider, external_athlete_id, scopes, access_token_encrypted, refresh_token_encrypted,
+            expires_at, status, login_email, updated_at)
+         VALUES (?, ?, ?, ?, '', ?, ?, ?, 'Conectado', ?, ?)
+         ON CONFLICT(athlete_name, provider) DO UPDATE SET
+           status = 'Conectado', external_athlete_id = excluded.external_athlete_id,
+           access_token_encrypted = excluded.access_token_encrypted,
+           refresh_token_encrypted = excluded.refresh_token_encrypted,
+           expires_at = excluded.expires_at, login_email = excluded.login_email,
+           updated_at = excluded.updated_at`,
+      ).bind(
+        crypto.randomUUID(), athleteName, provider.label, contaExterna,
+        await encryptIntegrationToken(sessao.valor.token, env.STRAVA_TOKEN_ENCRYPTION_KEY),
+        await encryptIntegrationToken(sessao.valor.refresh, env.STRAVA_TOKEN_ENCRYPTION_KEY),
+        sessao.valor.expiraEm, contaExterna, agora,
+      ).run();
+
+      return Response.json({ provider: provider.id, authType: "senha", connected: true, conta: contaExterna });
+    }
+
     return await beginOauthFlow(request, env, provider, athleteName, email);
   }
 
@@ -3928,7 +4154,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
       catch (falha) { return await applicationFailure(env, request, "testes de desempenho", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/training-weeks") {
-      try { return await trainingWeeksApi(request, env); }
+      try { return await trainingWeeksApi(request, env, ctx); }
       catch (falha) { return await applicationFailure(env, request, "semanas de treino", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/pain-reports") {

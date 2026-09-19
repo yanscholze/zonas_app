@@ -208,6 +208,13 @@ export const externalIntegrations = sqliteTable("external_integrations", {
   externalAthleteId: text("external_athlete_id"), scopes: text("scopes").notNull(), accessTokenEncrypted: text("access_token_encrypted").notNull(),
   refreshTokenEncrypted: text("refresh_token_encrypted").notNull(), expiresAt: integer("expires_at").notNull(), status: text("status").notNull(),
   lastSyncAt: integer("last_sync_at"), updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  /* A conta do atleta no provedor, quando ele entra com login próprio (Garmin).
+     Fica legível porque identifica a conta ligada, e é isso que o atleta precisa
+     ver para saber se ligou a certa.
+     NÃO existe coluna de senha, e isso é deliberado: o atleta digita a senha uma
+     vez na área dele, ela é trocada pelo token e descartada na mesma requisição.
+     O que renova a sessão é o refresh_token, não uma senha guardada. */
+  loginEmail: text("login_email"),
 }, (table) => ({ athleteProviderIdx: uniqueIndex("external_integrations_athlete_provider_idx").on(table.athleteName, table.provider) }));
 
 /** Fluxos OAuth em andamento. Guarda o `code_verifier` exigido pelo PKCE da Garmin. */

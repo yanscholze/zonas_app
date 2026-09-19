@@ -2772,7 +2772,10 @@ test("describes the four providers honestly, including Apple's device-only path"
   void PROVIDERS; void SUPPORTED_PROVIDER_LABELS;
   // Cada provedor declara o seu tipo real de autorização.
   assert.match(source, /id: "strava"[\s\S]*?authType: "oauth2"/);
-  assert.match(source, /id: "garmin"[\s\S]*?authType: "oauth2-pkce"/);
+  /* O Garmin deixou de ser OAuth. O programa de desenvolvedores exige aprovação
+     que ainda não temos, e o caminho que funciona é o do aplicativo do celular:
+     o ATLETA entra com a conta dele e o sistema guarda só o token. */
+  assert.match(source, /id: "garmin"[\s\S]*?authType: "senha"/);
   /* O Zepp deixou de ser OAuth: a nuvem deles não publica leitura de atividades,
      e o SDK do Zepp OS resolve por outro lado — mini-app no relógio, Side
      Service no celular. Quem apresenta a credencial é um aparelho. */
@@ -2785,7 +2788,7 @@ test("describes the four providers honestly, including Apple's device-only path"
   assert.match(source, /id: "garmin"[\s\S]*?canSendWorkouts: true/);
 });
 
-test("uses PKCE for Garmin and keeps the verifier on the server", async () => {
+test("mantém a mecânica de PKCE pronta, com o verifier preso ao servidor", async () => {
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
   assert.match(worker, /code_challenge_method/);
   assert.match(worker, /"S256"/);
@@ -2878,8 +2881,12 @@ test("keeps a provider unavailable until its credentials exist", async () => {
   assert.equal(attempt.status, 503);
   const failure = await attempt.json();
   assert.equal(failure.error, "provider_setup_required");
-  // O erro diz o que falta, sem revelar valor de credencial nenhum.
-  assert.deepEqual(failure.missing, ["GARMIN_CONSUMER_KEY", "GARMIN_CONSUMER_SECRET", "STRAVA_TOKEN_ENCRYPTION_KEY"]);
+  /* O erro diz o que falta, sem revelar valor de credencial nenhum.
+     Hoje o Garmin depende de uma variável só: a chave de cifra, que protege o
+     token guardado. A consumer key e o secret serviam ao caminho OAuth do
+     programa de desenvolvedores, que não é mais o nosso — continuar exigindo-os
+     faria a tela recusar uma integração que funciona. */
+  assert.deepEqual(failure.missing, ["STRAVA_TOKEN_ENCRYPTION_KEY"]);
 });
 
 test("gives the coach a way back in, since no one can reset that password in the app", async () => {
@@ -3649,7 +3656,11 @@ test("blames the right side when a stored token cannot be read", async () => {
 test("uses PKCE only where the provider asks for it", async () => {
   const integrations = await readFile(new URL("../worker/integrations.ts", import.meta.url), "utf8");
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
-  assert.match(integrations, /id: "garmin"[\s\S]*?authType: "oauth2-pkce"/);
+  /* Nenhum provedor usa PKCE hoje — o Garmin era o único e passou a "senha".
+     A mecânica continua no worker porque ela é do TIPO de autorização, não do
+     provedor: apagá-la obrigaria a reescrevê-la quando o próximo provedor PKCE
+     aparecer. O que o teste guarda é que ela só se arma para quem pede. */
+  assert.match(integrations, /id: "garmin"[\s\S]*?authType: "senha"/);
   /* O Zepp deixou de ser OAuth. A nuvem deles não publica leitura de atividades,
      e a API interna só se alcança por engenharia reversa — usá-la quebraria os
      termos e poria a conta do atleta em risco. O SDK do Zepp OS resolve melhor:
@@ -3779,4 +3790,282 @@ test("refuses to send a Garmin workout until the program is approved", async () 
   // O resto do caminho está pronto e passa a valer no dia da aprovação.
   assert.match(worker, /const treino = toGarminWorkout\(/);
   assert.match(worker, /action === "send_workout"/);
+});
+
+/* --- Tradução de treino para o Garmin -------------------------------------
+ *
+ * O conversor é puro: entra o treino resolvido, sai o JSON do Garmin. Testá-lo
+ * sem rede é o ponto — tradução de formato erra em silêncio, e o erro só
+ * apareceria na rua, com o aluno já correndo no ritmo errado.
+ */
+
+const treinoDeIntervalo = () => ({
+  title: "Velocidade 6 × 400 m",
+  description: "Série principal na pista",
+  estimatedSeconds: 2280,
+  estimatedMeters: 6600,
+  maxHeartRate: 188,
+  steps: [
+    { type: "simple", label: "Aquecimento", seconds: 600, meters: null,
+      target: { zone: "Z1", label: "Recuperação", paceSlowSeconds: 420, paceFastSeconds: 360 } },
+    { type: "repeat", label: "Série principal", repetitions: 6,
+      effort: { seconds: null, meters: 400,
+        target: { zone: "Z5", label: "VO₂ máximo", paceSlowSeconds: 270, paceFastSeconds: 250 } },
+      recovery: { seconds: 60, meters: null,
+        target: { zone: "Z1", label: "Recuperação", paceSlowSeconds: 420, paceFastSeconds: 360 } } },
+    { type: "simple", label: "Desaquecimento", seconds: 480, meters: null, target: null },
+  ],
+});
+
+test("ritmo em segundos por km vira velocidade em metros por segundo", async () => {
+  const { ritmoParaVelocidade } = await import("../worker/garmin-treino.ts");
+  /* 5:00/km = 300 s/km = 3,333 m/s. O Garmin guarda velocidade, não ritmo:
+     mandar 300 faria o relógio pedir 300 m/s ao aluno. */
+  assert.equal(ritmoParaVelocidade(300), 3.333333);
+  assert.equal(ritmoParaVelocidade(250), 4);
+  assert.equal(ritmoParaVelocidade(0), 0, "ritmo zero não pode virar divisão por zero");
+  assert.equal(ritmoParaVelocidade(NaN), 0);
+});
+
+test("o rótulo da planilha decide o tipo do passo no Garmin", async () => {
+  const { tipoDoPasso } = await import("../worker/garmin-treino.ts");
+  assert.equal(tipoDoPasso("Aquecimento").chave, "warmup");
+  assert.equal(tipoDoPasso("aquecimento leve").chave, "warmup");
+  /* "Desaquecimento" contém "aquec": sem a exceção, o desaquecimento seria
+     classificado como aquecimento e o relógio pintaria o fim do treino como
+     começo. */
+  assert.equal(tipoDoPasso("Desaquecimento").chave, "cooldown");
+  assert.equal(tipoDoPasso("Volta à calma").chave, "cooldown");
+  assert.equal(tipoDoPasso("Recuperação").chave, "recovery");
+  assert.equal(tipoDoPasso("Pausa").chave, "recovery");
+  assert.equal(tipoDoPasso("Ritmo forte").chave, "interval");
+});
+
+test("o treino traduzido tem a forma que o Garmin aceita", async () => {
+  const { treinoParaGarmin } = await import("../worker/garmin-treino.ts");
+  const g = treinoParaGarmin(treinoDeIntervalo());
+
+  assert.equal(g.sportType.sportTypeKey, "running");
+  assert.equal(g.workoutName, "Velocidade 6 × 400 m");
+  assert.equal(g.workoutSegments.length, 1);
+
+  const passos = g.workoutSegments[0].workoutSteps;
+  assert.equal(passos.length, 3, "aquecimento, série e desaquecimento no primeiro nível");
+
+  const [aquecimento, serie, desaquecimento] = passos;
+  assert.equal(aquecimento.type, "ExecutableStepDTO");
+  assert.equal(aquecimento.stepType.stepTypeKey, "warmup");
+  assert.equal(aquecimento.endCondition.conditionTypeKey, "time");
+  assert.equal(aquecimento.endConditionValue, 600);
+
+  assert.equal(serie.type, "RepeatGroupDTO");
+  assert.equal(serie.numberOfIterations, 6);
+  assert.equal(serie.endCondition.conditionTypeKey, "iterations");
+  assert.equal(serie.workoutSteps.length, 2, "esforço e recuperação");
+
+  const [esforco, pausa] = serie.workoutSteps;
+  assert.equal(esforco.endCondition.conditionTypeKey, "distance");
+  assert.equal(esforco.endConditionValue, 400);
+  assert.equal(esforco.preferredEndConditionUnit.unitKey, "meter",
+    "distância sem unidade vira jarda em conta configurada no sistema imperial");
+  assert.equal(pausa.stepType.stepTypeKey, "recovery");
+
+  assert.equal(desaquecimento.stepType.stepTypeKey, "cooldown");
+  assert.equal(desaquecimento.targetType.workoutTargetTypeKey, "no.target",
+    "sem zona no treino, o passo vai sem alvo em vez de com alvo inventado");
+});
+
+test("o alvo de ritmo vai do mais lento para o mais rápido", async () => {
+  const { treinoParaGarmin, ritmoParaVelocidade } = await import("../worker/garmin-treino.ts");
+  const esforco = treinoParaGarmin(treinoDeIntervalo())
+    .workoutSegments[0].workoutSteps[1].workoutSteps[0];
+
+  assert.equal(esforco.targetType.workoutTargetTypeKey, "pace.zone");
+  /* Z5 vai de 270 s/km (lento) a 250 s/km (rápido). Em velocidade isso inverte:
+     3,70 m/s a 4,00 m/s. `targetValueOne` tem de ser o MENOR — trocar a ordem
+     faz o relógio avisar que o aluno está rápido demais quando está certo. */
+  assert.equal(esforco.targetValueOne, ritmoParaVelocidade(270));
+  assert.equal(esforco.targetValueTwo, ritmoParaVelocidade(250));
+  assert.ok(esforco.targetValueOne < esforco.targetValueTwo);
+});
+
+test("a ordem dos passos é contínua, inclusive dentro da série", async () => {
+  const { treinoParaGarmin } = await import("../worker/garmin-treino.ts");
+  const passos = treinoParaGarmin(treinoDeIntervalo()).workoutSegments[0].workoutSteps;
+
+  /* O Garmin monta a fila do relógio por `stepOrder`. Reiniciar a numeração
+     dentro do grupo faz os passos aparecerem fora de sequência. */
+  const ordens = [];
+  for (const p of passos) {
+    ordens.push(p.stepOrder);
+    for (const filho of p.workoutSteps ?? []) ordens.push(filho.stepOrder);
+  }
+  assert.deepEqual(ordens, [1, 2, 3, 4, 5]);
+
+  const serie = passos[1];
+  for (const filho of serie.workoutSteps) {
+    assert.equal(filho.childStepId, serie.childStepId,
+      "o passo precisa apontar para a série a que pertence");
+  }
+});
+
+test("série sem pausa declarada não ganha um passo de zero segundos", async () => {
+  const { treinoParaGarmin } = await import("../worker/garmin-treino.ts");
+  const g = treinoParaGarmin({
+    title: "Contínuo", description: "", estimatedSeconds: null, estimatedMeters: null, maxHeartRate: null,
+    steps: [{ type: "repeat", label: "Blocos", repetitions: 3,
+      effort: { seconds: 300, meters: null, target: null },
+      recovery: { seconds: null, meters: null, target: null } }],
+  });
+  const serie = g.workoutSegments[0].workoutSteps[0];
+  assert.equal(serie.workoutSteps.length, 1,
+    "passo de recuperação vazio faria o relógio apitar sem ter o que executar");
+});
+
+test("passo sem tempo e sem distância termina no botão de volta", async () => {
+  const { treinoParaGarmin } = await import("../worker/garmin-treino.ts");
+  const g = treinoParaGarmin({
+    title: "Livre", description: "", estimatedSeconds: null, estimatedMeters: null, maxHeartRate: null,
+    steps: [{ type: "simple", label: "Corrida livre", seconds: null, meters: null, target: null }],
+  });
+  const passo = g.workoutSegments[0].workoutSteps[0];
+  assert.equal(passo.endCondition.conditionTypeKey, "lap.button",
+    "inventar uma duração que o treinador não escreveu é pior que deixar o aluno decidir");
+  assert.equal(passo.endConditionValue, null);
+});
+
+/* --- A integração é do aluno, e a senha não fica ---------------------------
+ *
+ * Testes de contrato sobre o desenho, não sobre o caminho feliz. O que eles
+ * impedem é a regressão silenciosa: alguém acrescentar uma coluna de senha
+ * "para poder renovar", ou devolver o botão de enviar ao painel do treinador.
+ */
+
+test("nenhum lugar guarda a senha do serviço externo", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+
+  /* O atleta digita a senha uma vez e ela morre na troca pelo token. Uma coluna
+     para guardá-la desfaria a única coisa que torna este caminho aceitável. */
+  assert.doesNotMatch(schema, /login_password|senha_encrypted|password_encrypted/,
+    "o esquema não pode ter coluna de senha de serviço externo");
+  assert.doesNotMatch(worker, /INSERT[^;]*login_password|login_password\s*=/,
+    "nada no worker pode gravar senha de serviço externo");
+
+  /* A senha só pode aparecer como variável local do connect, indo para
+     `entrarNoGarmin`. Se aparecer perto de encryptIntegrationToken, virou
+     persistência. */
+  const trecho = worker.slice(worker.indexOf('provider.authType === "senha"'));
+  const ateOFim = trecho.slice(0, trecho.indexOf("return Response.json({ provider: provider.id, authType: \"senha\""));
+  assert.ok(ateOFim.includes("entrarNoGarmin(contaExterna, senhaExterna)"), "a senha é usada para entrar");
+  assert.doesNotMatch(ateOFim, /encryptIntegrationToken\(senhaExterna/,
+    "a senha nunca pode ser cifrada e guardada — o que se guarda é o token");
+});
+
+test("o treinador não tem botão de enviar ao Garmin", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const cliente = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+
+  /* Liberar a planilha é o gatilho. Um botão no painel do treinador seria uma
+     segunda forma de fazer a mesma coisa, e as duas divergiriam. */
+  assert.doesNotMatch(worker, /garminCoachApi/, "o envio não é ação do treinador");
+  assert.doesNotMatch(cliente, /GarminEnvio/, "o painel do treinador não tem tela de envio");
+  assert.match(worker, /ctx\.waitUntil\(enviarSemanaParaGarmin\(/,
+    "liberar a semana precisa disparar o envio");
+});
+
+test("o envio automático só dispara na transição para Liberada", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const chamada = worker.indexOf("ctx.waitUntil(enviarSemanaParaGarmin(");
+  /* Recorta a PARTIR do `if`, não 400 caracteres para trás: o comentário acima
+     da condição é longo e engolia a janela, fazendo o teste falhar por medir o
+     lugar errado. */
+  const gatilho = worker.slice(worker.lastIndexOf("if (", chamada), chamada);
+  /* Sem a comparação com o estado anterior, cada gravação de uma semana já
+     liberada reenviaria a semana inteira ao Garmin — e o atleta veria o
+     calendário dele encher de cópias. */
+  assert.match(gatilho, /normalizedWeek\.status === "Liberada"/);
+  assert.match(gatilho, /existingWeek\?\.status[\s\S]*?!== "Liberada"/);
+});
+
+test("a renovação não depende de senha guardada", async () => {
+  const conexao = await readFile(new URL("../worker/garmin-conexao.ts", import.meta.url), "utf8");
+  assert.match(conexao, /export async function renovar/);
+  /* O refresh é o que permite ao atleta entrar uma vez só. Sem ele o token
+     venceria em uma hora e a integração morreria. */
+  assert.match(conexao, /grant_type: "refresh_token"/);
+  assert.match(conexao, /refresh: dados\.refresh_token \|\| sessao\.refresh/,
+    "quando o Garmin não gira o refresh, o antigo continua valendo");
+});
+
+test("o Garmin não exige mais as credenciais do programa de desenvolvedores", async () => {
+  const integracoes = await readFile(new URL("../worker/integrations.ts", import.meta.url), "utf8");
+  const garmin = integracoes.slice(integracoes.indexOf("  garmin: {"), integracoes.indexOf("  zepp: {"));
+  assert.match(garmin, /authType: "senha"/);
+  /* Exigir a consumer key faria a tela dizer "aguardando cadastro oficial" para
+     uma integração que funciona, e o atleta não conseguiria conectar. */
+  assert.doesNotMatch(garmin, /GARMIN_CONSUMER_KEY|GARMIN_CONSUMER_SECRET/);
+  assert.match(garmin, /requiredEnv: \["STRAVA_TOKEN_ENCRYPTION_KEY"\]/);
+});
+
+test("ativar acesso grava o atleta na conta de login, não só em athlete_access", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
+
+  /* `resolveVisita` decide "aluno" ou "pendente" pela coluna athlete_name da
+     conta. Quem ativa acesso e grava só `athlete_access` deixa a pessoa presa na
+     tela de "Solicite seu cadastro" — com ficha criada, aprovada e com planilha.
+     Aconteceu em produção: a aprovação escrevia cinco tabelas e não essa. */
+  assert.match(auth, /if \(!account\.athlete_name\)[\s\S]{0,120}role: "pendente"/,
+    "a decisão continua sendo por user_accounts.athlete_name");
+
+  const sql = "INSERT INTO athlete_access";
+  let de = 0, sitios = 0;
+  while ((de = worker.indexOf(sql, de)) !== -1) {
+    sitios += 1;
+    /* A janela cobre o comando e o que vem logo depois: o vínculo da conta tem
+       de estar no mesmo trecho, seja executado ou posto no mesmo lote. */
+    const janela = worker.slice(de, de + 1400);
+    assert.match(janela, /vinculaContaAoAtleta\(/,
+      `o ${sitios}º INSERT INTO athlete_access não grava athlete_name na conta`);
+    de += sql.length;
+  }
+  assert.ok(sitios >= 3, `esperava ao menos 3 pontos de vínculo, achei ${sitios}`);
+
+  /* Um lugar só define o SQL. Três UPDATEs soltos divergiriam no primeiro
+     ajuste de coluna. */
+  assert.equal((worker.match(/UPDATE user_accounts SET athlete_name/g) || []).length, 1,
+    "o SQL do vínculo mora numa função só");
+});
+
+test("pedido já aprovado não acusa erro de preenchimento", async () => {
+  const entrada = await readFile(new URL("../app/StudentEntry.tsx", import.meta.url), "utf8");
+  /* "Confira os campos" para quem já foi aprovado manda procurar defeito em
+     dado que está certo. */
+  assert.match(entrada, /already_approved[\s\S]{0,80}reload\(\)/);
+  assert.match(entrada, /aguardando a liberação do professor/);
+});
+
+test("o envelope declara todo campo que o handler de integrações lê", async () => {
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+
+  /* A forma do corpo é declarada em DOIS lugares: o allowlist do envelope e o
+     handler que lê os campos. Acrescentei externalEmail/externalPassword só no
+     handler, e o login do Garmin passou a ser recusado na porta sem nunca sair
+     do nosso servidor — cinco tentativas do aluno viraram `unexpected_field` e
+     a tela dizia apenas que não deu certo. */
+  const linha = worker.match(/"\/api\/student\/integrations": new Set\(\[([^\]]*)\]\)/);
+  assert.ok(linha, "o allowlist precisa declarar /api/student/integrations");
+  const declarados = new Set(linha[1].split(",").map((x) => x.trim().replace(/^"|"$/g, "")));
+
+  const inicio = worker.indexOf("async function studentIntegrationsApi");
+  const corpo = worker.slice(inicio, worker.indexOf("\nasync function", inicio + 10));
+  const lidos = new Set([...corpo.matchAll(/\binput\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]));
+
+  for (const campo of lidos) {
+    assert.ok(declarados.has(campo),
+      `o handler lê "${campo}" mas o envelope não o declara — o pedido morre em unexpected_field`);
+  }
+  assert.ok(lidos.has("externalEmail") && lidos.has("externalPassword"),
+    "o caminho por senha precisa dos dois campos");
 });
