@@ -1210,22 +1210,33 @@ function InviteLink(){
      errado, o que faria um link válido parecer vencido, ou o contrário. */
   const [agora,setAgora]=useState(0);
   const [emitindo,setEmitindo]=useState(false);
-  const carregarConvites=useCallback(()=>api.get<{convites:Convite[];agora:number}>("/api/convite")
-    .then(dados=>{setConvites(dados.convites||[]);setAgora(Number(dados.agora)||0)})
-    .catch(()=>setConvites([])),[]);
+  const [padrao,setPadrao]=useState<Convite|null>(null);
+  const carregarConvites=useCallback(()=>api.get<{padrao:Convite;convites:Convite[];agora:number}>("/api/convite")
+    .then(dados=>{setPadrao(dados.padrao||null);setConvites(dados.convites||[]);setAgora(Number(dados.agora)||0)})
+    .catch(()=>{setPadrao(null);setConvites([])}),[]);
   useEffect(()=>{void carregarConvites()},[carregarConvites]);
 
   const valeAinda=(c:Convite)=>!c.revoked_at
     &&(!c.expires_at||!agora||c.expires_at>agora)
     &&(c.max_uses===null||c.uses<c.max_uses);
-  const ativo=convites.find(valeAinda);
-  const link = ativo ? `${origem}/?convite=${ativo.code}` : origem;
+  /* Um convite temporário, se houver, aparece como extra — mas o link do cartão
+     é sempre o padrão. Cair no endereço nu do site foi o defeito antigo: ele
+     abre o cadastro e não amarra o aluno a treinador nenhum. */
+  const temporario=convites.find(c=>valeAinda(c)&&c.code!==padrao?.code&&(c.expires_at||c.max_uses));
+  const link = padrao ? `${origem}/?convite=${padrao.code}` : origem;
 
   const emitir=async(usos:number|null,dias:number)=>{
     setEmitindo(true);
     try{ await api.post("/api/convite",{action:"create",days:dias,maxUses:usos}); await carregarConvites();
-      avise("ok","Link novo gerado",usos===1?"Vale para um cadastro só.":`Vale por ${dias} dias.`); }
+      avise("ok","Link temporário gerado",`Vale por ${dias} dias.`); }
     catch(erro){ avise("erro","Não foi possível gerar o link",describeError(erro)) }
+    finally{ setEmitindo(false) }
+  };
+  const trocar=async()=>{
+    if(!await pergunte({titulo:"Trocar o link de cadastro?",descricao:"O endereço atual para de funcionar na hora. Quem já tiver o link antigo não consegue mais se cadastrar, e você precisará divulgar o novo. Os alunos que já entraram não são afetados.",confirmar:"Trocar link",perigo:true}))return;
+    setEmitindo(true);
+    try{ await api.post("/api/convite",{action:"rotate"}); await carregarConvites(); avise("ok","Link trocado","Divulgue o novo endereço."); }
+    catch(erro){ avise("erro","Não foi possível trocar",describeError(erro)) }
     finally{ setEmitindo(false) }
   };
   const revogar=async(codigo:string)=>{
@@ -1276,16 +1287,21 @@ function InviteLink(){
     {/* Validade e uso do link. Sem isto, um link enviado num grupo continuava
         abrindo cadastro meses depois, na carteira de quem já nem lembrava de
         tê-lo enviado — e sem jeito de encerrá-lo. */}
+    {/* O link é permanente e serve a quantos alunos vierem. Ele não dá acesso:
+        quem entra por ele vira solicitação pendente e você ainda aprova — por
+        isso pode ficar no perfil, no grupo, onde for. Trocar é a saída se
+        vazar. */}
     <div className="invite-validade">
-      {ativo
-        ? <p><b>{ativo.max_uses===1?"Uso único":ativo.max_uses?`Até ${ativo.max_uses} cadastros`:"Sem limite de uso"}</b>
-            {ativo.expires_at&&<span> · vence {new Date(ativo.expires_at).toLocaleDateString("pt-BR")}</span>}
-            {ativo.max_uses!==null&&<span> · {ativo.uses} de {ativo.max_uses} usado{ativo.uses===1?"":"s"}</span>}
-            <button className="invite-revogar" onClick={()=>void revogar(ativo.code)}>Encerrar</button></p>
-        : <p className="invite-sem-link">Nenhum link ativo. Gere um abaixo para enviar ao aluno.</p>}
+      <p><b>Link fixo de cadastro</b>
+        <span> · sem limite de alunos</span>
+        {padrao&&padrao.uses>0&&<span> · {padrao.uses} cadastro{padrao.uses===1?"":"s"} por ele</span>}
+        <button className="invite-revogar" disabled={emitindo} onClick={()=>void trocar()}>Trocar link</button></p>
+      {temporario&&<p className="invite-sem-link">
+        Há também um link temporário ativo{temporario.expires_at?`, que vence ${new Date(temporario.expires_at).toLocaleDateString("pt-BR")}`:""}.
+        <button className="invite-revogar" onClick={()=>void revogar(temporario.code)}>Encerrar</button>
+      </p>}
       <div className="invite-emitir">
-        <button disabled={emitindo} onClick={()=>void emitir(1,7)}>Link para um aluno</button>
-        <button disabled={emitindo} onClick={()=>void emitir(null,7)}>Link da turma · 7 dias</button>
+        <button disabled={emitindo} onClick={()=>void emitir(null,7)}>Link temporário · 7 dias</button>
         <button disabled={emitindo} onClick={()=>void emitir(null,30)}>30 dias</button>
       </div>
     </div>

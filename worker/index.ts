@@ -1206,13 +1206,40 @@ async function ensureAccessRequests(env: Env) {
 const DIA_EM_MS = 86_400_000;
 
 /** Emite um convite novo para o treinador, com prazo e limite escolhidos. */
-async function emiteConvite(env: Env, carteira: string, dias: number, usos: number | null): Promise<Record<string, unknown>> {
+async function emiteConvite(env: Env, carteira: string, dias: number | null, usos: number | null): Promise<Record<string, unknown>> {
   const codigo = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
   const agora = Date.now();
-  const expira = agora + dias * DIA_EM_MS;
+  /* `dias` nulo é convite sem prazo — o link padrão do treinador. */
+  const expira = dias === null ? null : agora + dias * DIA_EM_MS;
   await env.DB.prepare("INSERT INTO coach_invites (code, coach_email, expires_at, max_uses, uses, revoked_at, created_at) VALUES (?, ?, ?, ?, 0, NULL, ?)")
     .bind(codigo, carteira, expira, usos, agora).run();
   return { code: codigo, expiresAt: expira, maxUses: usos, uses: 0 };
+}
+
+/**
+ * O link padrão do treinador — o endereço que ele divulga para novos alunos.
+ *
+ * Nasce sozinho na primeira vez que a tela é aberta. Antes, enquanto o treinador
+ * não gerasse um convite, a tela mostrava a URL nua do site: um endereço SEM
+ * código, que abre o cadastro mas não amarra ninguém a ninguém. O aluno se
+ * inscrevia órfão e caía na carteira de quem aprovasse — e o treinador não tinha
+ * como perceber, porque o link parecia certo.
+ *
+ * Sem prazo e sem limite de uso, de propósito. O link não dá acesso: quem entra
+ * por ele vira solicitação pendente, e o treinador ainda aprova. Contra
+ * vazamento existe a rotação, logo abaixo.
+ */
+async function convitePadrao(env: Env, carteira: string): Promise<Record<string, unknown>> {
+  const existente = await env.DB.prepare(
+    `SELECT code, expires_at, max_uses, uses FROM coach_invites
+      WHERE coach_email = ? AND revoked_at IS NULL AND expires_at IS NULL AND max_uses IS NULL
+      ORDER BY created_at DESC LIMIT 1`,
+  ).bind(carteira).first() as { code?: string; expires_at?: number | null; max_uses?: number | null; uses?: number } | null;
+
+  if (existente?.code) {
+    return { code: existente.code, expiresAt: null, maxUses: null, uses: Number(existente.uses ?? 0) };
+  }
+  return await emiteConvite(env, carteira, null, null);
 }
 
 /**
@@ -1228,10 +1255,13 @@ async function conviteApi(request: Request, env: Env): Promise<Response> {
   const agora = Date.now();
 
   if (request.method === "GET") {
+    /* O padrão vem primeiro e sempre existe: a tela nunca mais cai no endereço
+       sem código. */
+    const padrao = await convitePadrao(env, carteira);
     const linhas = await env.DB.prepare(
       "SELECT code, expires_at, max_uses, uses, revoked_at, created_at FROM coach_invites WHERE coach_email = ? ORDER BY created_at DESC LIMIT 20",
     ).bind(carteira).all();
-    return Response.json({ convites: linhas.results, agora });
+    return Response.json({ padrao, convites: linhas.results, agora });
   }
 
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
@@ -1247,13 +1277,28 @@ async function conviteApi(request: Request, env: Env): Promise<Response> {
     return Response.json({ revoked: true, code: codigo });
   }
 
-  /* Prazo obrigatório e curto por padrão. `usos` nulo é sem limite; 1 é o link
-     de uma pessoa só, que é o caso mais comum de cadastro individual. */
-  const dias = Number(input.days ?? 7);
-  if (!Number.isInteger(dias) || dias < 1 || dias > 90) return Response.json({ error: "invalid_expiry" }, { status: 400 });
+  /* Troca o link padrão por um novo, encerrando o antigo no mesmo ato.
+     É a resposta a vazamento: quem tiver o endereço velho para de conseguir se
+     cadastrar, e o treinador divulga o novo. Deixar os dois valendo seria não
+     ter encerrado nada. */
+  if (acao === "rotate") {
+    await env.DB.prepare(
+      "UPDATE coach_invites SET revoked_at = ? WHERE coach_email = ? AND revoked_at IS NULL AND expires_at IS NULL AND max_uses IS NULL",
+    ).bind(agora, carteira).run();
+    return Response.json(await emiteConvite(env, carteira, null, null), { status: 201 });
+  }
+
+  /* Convite temporário, para quando o treinador quiser um link com prazo além do
+     padrão. `dias` nulo cria outro sem prazo; `usos` nulo é sem limite. */
+  const diasBrutos = input.days;
+  const dias = diasBrutos === null || diasBrutos === undefined ? null : Number(diasBrutos);
+  if (dias !== null && (!Number.isInteger(dias) || dias < 1 || dias > 90)) return Response.json({ error: "invalid_expiry" }, { status: 400 });
   const usosBrutos = input.maxUses;
   const usos = usosBrutos === null || usosBrutos === undefined ? null : Number(usosBrutos);
-  if (usos !== null && (!Number.isInteger(usos) || usos < 1 || usos > 500)) return Response.json({ error: "invalid_max_uses" }, { status: 400 });
+  /* O mínimo é 2. Link de uso único foi retirado: o treinador mandava um por
+     aluno e tinha de gerar outro a cada cadastro, e o link padrão cobre o caso
+     comum sem esse trabalho. */
+  if (usos !== null && (!Number.isInteger(usos) || usos < 2 || usos > 500)) return Response.json({ error: "invalid_max_uses" }, { status: 400 });
 
   return Response.json(await emiteConvite(env, carteira, dias, usos), { status: 201 });
 }

@@ -480,13 +480,15 @@ export const trainingWeekAudit = sqliteTable("training_week_audit", {
 export const coachInvites = sqliteTable("coach_invites", {
   code: text("code").primaryKey(),
   coachEmail: text("coach_email").notNull(),
-  /* Prazo e limite de uso são coisas diferentes e ambas fazem falta.
-     O link de uso único vai para uma pessoa: o treinador cadastra o aluno que
-     acabou de fechar. O link com prazo vai para um grupo: uma turma que começa,
-     um post que fica no ar por uma semana. Um só dos dois obriga a contornar o
-     outro — mandar dez links iguais, ou deixar um link eterno circulando.
-     Nulo em `usosMaximos` significa sem limite de uso; o prazo é sempre
-     obrigatório, porque link sem validade é link que vaza depois. */
+  /* Nulo nos dois campos é o LINK PADRÃO do treinador: sem prazo e sem limite de
+     uso, o endereço que ele divulga para quem quiser se cadastrar.
+     Ele pode ser permanente porque não dá acesso a nada: quem entra por ele cria
+     uma solicitação PENDENTE, e o treinador ainda precisa aprovar. O pior caso
+     de um link vazado é solicitação indesejada na fila, não aluno dentro do
+     sistema. Contra vazamento existe a rotação, que encerra o antigo e emite
+     outro — mais direto que um prazo, que obrigaria a reenviar o link a todo
+     mundo a cada vencimento.
+     Com prazo e/ou limite preenchidos, é um convite temporário. */
   expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
   maxUses: integer("max_uses"),
   uses: integer("uses").notNull().default(0),

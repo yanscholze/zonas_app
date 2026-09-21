@@ -268,15 +268,32 @@ test("ties the student to the coach whose link they used", async () => {
      carteira de outro por ordem de clique. */
   assert.match(schema, /export const coachInvites = sqliteTable\("coach_invites"/);
   assert.match(schema, /coachEmail: text\("coach_email"\),\n  reviewedBy/);
-  assert.match(worker, /async function emiteConvite\(env: Env, carteira: string, dias: number, usos: number \| null\)/);
-  assert.match(client, /const link = ativo \? `\$\{origem\}\/\?convite=\$\{ativo\.code\}` : origem/);
+  assert.match(worker, /async function emiteConvite\(env: Env, carteira: string, dias: number \| null, usos: number \| null\)/);
 
-  /* Link sem validade é link que vaza depois: fica num grupo, num print, num
-     e-mail encaminhado, e continua abrindo cadastro meses adiante na carteira de
-     quem já nem lembra de tê-lo enviado. Prazo é obrigatório; limite de uso é
-     opcional, porque as duas situações são diferentes — o link de uma pessoa
-     (aluno que acabou de fechar) e o da turma que começa. */
-  assert.match(worker, /if \(!Number\.isInteger\(dias\) \|\| dias < 1 \|\| dias > 90\)/);
+  /* Cada treinador tem um link PADRÃO, permanente e sem limite de alunos, criado
+     sozinho na primeira vez que a tela abre.
+     Antes, enquanto ele não gerasse um convite, o cartão mostrava a URL nua do
+     site — um endereço sem código, que abre o cadastro e não amarra ninguém. O
+     aluno entrava órfão e caía na carteira de quem aprovasse primeiro, e o
+     treinador não tinha como perceber porque o link parecia certo. */
+  assert.match(worker, /async function convitePadrao\(env: Env, carteira: string\)/);
+  assert.match(worker, /expires_at IS NULL AND max_uses IS NULL/);
+  assert.match(client, /const link = padrao \? `\$\{origem\}\/\?convite=\$\{padrao\.code\}` : origem/);
+
+  /* O link padrão pode ser permanente porque NÃO dá acesso: quem entra por ele
+     vira solicitação pendente e o treinador ainda aprova. O pior caso de um link
+     vazado é fila suja, não aluno dentro do sistema. Contra vazamento existe a
+     rotação, que encerra o antigo no mesmo ato — deixar os dois valendo seria
+     não ter encerrado nada. */
+  assert.match(worker, /if \(acao === "rotate"\)/);
+  assert.match(worker, /UPDATE coach_invites SET revoked_at = \? WHERE coach_email = \? AND revoked_at IS NULL AND expires_at IS NULL AND max_uses IS NULL/);
+
+  /* Convite temporário continua existindo, com prazo entre 1 e 90 dias. O que
+     saiu foi o link de uso único: o treinador gerava um por aluno e tinha de
+     fazer outro a cada cadastro. */
+  assert.match(worker, /if \(dias !== null && \(!Number\.isInteger\(dias\) \|\| dias < 1 \|\| dias > 90\)\)/);
+  assert.match(worker, /usos < 2 \|\| usos > 500/);
+  assert.doesNotMatch(client, /Link para um aluno/);
   assert.match(worker, /async function donoDoConvite\(env: Env, codigo: string\): Promise<string \| null>/);
   assert.match(worker, /if \(linha\.revoked_at\) return null/);
   assert.match(worker, /if \(linha\.expires_at && Number\(linha\.expires_at\) <= Date\.now\(\)\) return null/);
@@ -4099,4 +4116,43 @@ test("o garmin-bridge está inativo e ninguém o chama", async () => {
   assert.ok(arquivos.includes("README.md"), "o bridge precisa dizer que está inativo");
   const leiaMe = await readFile(new URL("../garmin-bridge/README.md", import.meta.url), "utf8");
   assert.match(leiaMe, /inativo/i);
+});
+
+test("o treinador sempre tem um link de cadastro, criado sozinho", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("convite-padrao", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+
+  const gravados = [];
+  const prepare = (sql) => {
+    if (sql.includes("FROM athlete_access")) return statement(() => ({ athlete_name: "Everton", status: "Ativo" }));
+    /* Treinador sem nenhum convite ainda: é o primeiro acesso à tela. */
+    if (sql.includes("FROM coach_invites") && sql.includes("expires_at IS NULL AND max_uses IS NULL")) {
+      return statement(() => null);
+    }
+    if (sql.includes("INSERT INTO coach_invites")) {
+      return statement(() => null, (valores) => gravados.push(valores));
+    }
+    return statement(() => null, undefined, () => []);
+  };
+  const env = {
+    ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
+    DB: { prepare: withSession(prepare), async batch(itens) { for (const i of itens) await i.run(); return []; } },
+  };
+  const ctx = { waitUntil() {}, passThroughOnException() {} };
+
+  const resposta = await worker.fetch(
+    new Request("https://zonasapp.example/api/convite", { headers: { ...coachCookie } }), env, ctx);
+  assert.equal(resposta.status, 200);
+  const corpo = await resposta.json();
+
+  /* O link nasce na primeira visita, em vez de a tela cair no endereço nu do
+     site — que abre o cadastro mas não amarra o aluno a treinador nenhum. */
+  assert.ok(corpo.padrao?.code, "o link padrão precisa existir sempre");
+  assert.equal(corpo.padrao.expiresAt, null, "o link padrão não vence");
+  assert.equal(corpo.padrao.maxUses, null, "o link padrão não limita alunos");
+
+  const [, , expira, usos] = gravados.at(-1) ?? [];
+  assert.equal(expira, null, "gravado sem prazo");
+  assert.equal(usos, null, "gravado sem limite de uso");
 });
