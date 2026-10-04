@@ -159,6 +159,31 @@ test("opens the first reviewable workout from the calendar counter", async () =>
   assert.match(source, /scrollIntoView/);
 });
 
+test("launching a week routes it through the student's selected integration", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
+  const integrations = await readFile(new URL("../worker/integrations.ts", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  const routeStart = worker.indexOf("async function trainingWeeksApi(");
+  const routeEnd = worker.indexOf("/** Histórico de cada movimento", routeStart);
+  const route = worker.slice(routeStart, routeEnd);
+
+  assert.match(client, /Salve como rascunho ou lance a semana/);
+  assert.match(client, /Lançar semana/);
+  assert.doesNotMatch(client, /Enviar para o relógio/);
+  assert.match(client, /calendarWeekLabel=outsidePlan\?/);
+  assert.match(route, /normalizedWeek\.status === "Liberada"/);
+  assert.match(route, /publicarSemanaParaIntegracaoEscolhida/);
+  assert.match(route, /foraDaCarteira\(env, request, athleteName\)/);
+  assert.match(route, /week_start_must_be_monday/);
+  assert.match(worker, /profile\.integration/);
+  assert.match(worker, /selected === "Garmin"/);
+  assert.match(worker, /selected === "Amazfit"/);
+  assert.match(route, /status=CASE WHEN training_week_publications\.status IN \('published','sent','partial'\) THEN 'stale'/);
+  assert.match(schema, /training_week_publications_athlete_week_provider_idx/);
+  assert.match(integrations, /America\/Sao_Paulo/);
+});
+
 test("continues from approved zones directly to the selected athlete calendar", async () => {
   const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   assert.match(source, /Montar treino de \{athleteName\.split\(" "\)\[0\]\}/);
@@ -1164,8 +1189,9 @@ test("shows a different base-plan template when the coach navigates between week
   const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   assert.match(source, /calendarPlanWeek/);
   assert.match(source, /await sessionsForSavedPlanWeek\(current\.plan,calendarPlanWeek,current\.days\)/);
-  assert.match(source, /weekLabel:`\$\{calendarPlanWeek\} de \$\{currentPlanningTotal\}`/);
-  assert.match(source, /setCalendarPlanWeek\(value=>Math\.min\(currentPlanningTotal,value\+1\)\)/);
+  assert.match(source, /weekLabel:calendarWeekLabel/);
+  assert.match(source, /calendarWeekLabel=outsidePlan\?/);
+  assert.match(source, /setCalendarPlanWeek\(value=>value\+1\)/);
   assert.match(source, /Usar semana \$\{calendarPlanWeek\} da planilha-base/);
   assert.match(source, /replaceWithBasePlanWeek/);
   assert.match(source, /sessions:expected,status:"Rascunho"/);
@@ -1188,10 +1214,15 @@ test("uses permanent library edits when loading or advancing an athlete week", a
 test("links the structured workout to an athlete and shows the released steps to the student", async () => {
   const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   assert.match(source, /TREINO DE \{athleteName\.toUpperCase\(\)\} · \{day\}/);
-  assert.match(source, /steps:\[\.\.\.\(warmup\.minutes\?\[\{kind:"simple",label:"Aquecimento"/);
+  assert.match(source, /steps:\[\.\.\.\(warmupEnabled&&warmup\.minutes\?\[\{kind:"simple",label:"Aquecimento"/);
+  assert.match(source, /cooldownEnabled&&cooldown\.minutes\?\[\{kind:"simple",label:"Desaquecimento"/);
+  assert.match(source, /aria-label="Remover aquecimento"/);
+  assert.match(source, /aria-label="Remover desaquecimento"/);
+  assert.match(source, /warmupEnabled\?kmFor\(warmup\.minutes/);
+  assert.match(source, /cooldownEnabled\?kmFor\(cooldown\.minutes/);
   assert.match(source, /Após cada repetição:/);
   assert.match(source, /Este é o mesmo treino montado e liberado pelo treinador/);
-  assert.match(source, /todaySession\?\.steps\?\.length\?<StructuredWorkoutCard/);
+  assert.match(source, /todaySession&&\(todaySession\.steps\?\.length\?<StructuredWorkoutCard/);
   assert.match(source, /initialRepeats\.map/);
   assert.match(source, /Editar treino por etapas/);
   assert.match(source, /Atualizar treino completo de/);
@@ -1227,9 +1258,10 @@ test("allows a continuous workout without mandatory repeats or fixed blocks", as
   assert.match(source, /setRepeatSteps\(current=>current\.filter\(step=>step\.id!==series\.id\)\)/);
   assert.match(source, /Remover série/);
   assert.match(source, /Treino contínuo/);
-  assert.match(source, /Tempo \(0 remove\)/);
-  assert.match(source, /warmup\.minutes\?\[\{kind:"simple",label:"Aquecimento"/);
-  assert.match(source, /cooldown\.minutes\?\[\{kind:"simple",label:"Desaquecimento"/);
+  assert.match(source, /Remover aquecimento/);
+  assert.match(source, /Remover desaquecimento/);
+  assert.match(source, /warmupEnabled&&warmup\.minutes\?\[\{kind:"simple",label:"Aquecimento"/);
+  assert.match(source, /cooldownEnabled&&cooldown\.minutes\?\[\{kind:"simple",label:"Desaquecimento"/);
 });
 
 test("selects and persists the real calendar week instead of a fixed date", async () => {
@@ -3988,30 +4020,24 @@ test("nenhum lugar guarda a senha do serviço externo", async () => {
     "a senha nunca pode ser cifrada e guardada — o que se guarda é o token");
 });
 
-test("o treinador não tem botão de enviar ao Garmin", async () => {
+test("lançar a semana chama somente a integração escolhida pelo aluno", async () => {
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
   const cliente = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
 
-  /* Liberar a planilha é o gatilho. Um botão no painel do treinador seria uma
-     segunda forma de fazer a mesma coisa, e as duas divergiriam. */
-  assert.doesNotMatch(worker, /garminCoachApi/, "o envio não é ação do treinador");
-  assert.doesNotMatch(cliente, /GarminEnvio/, "o painel do treinador não tem tela de envio");
-  assert.match(worker, /ctx\.waitUntil\(enviarSemanaParaGarmin\(/,
-    "liberar a semana precisa disparar o envio");
+  assert.match(worker, /normalizedWeek\.status === "Liberada"/);
+  assert.match(worker, /publicarSemanaParaIntegracaoEscolhida\(env, request, athleteName, weekStart/);
+  assert.match(worker, /foraDaCarteira\(env, request, athleteName\)/);
+  assert.match(cliente, /status==="Liberada"\?"publishing":"idle"/);
+  assert.doesNotMatch(cliente, /Enviar para o relógio/);
+  assert.match(worker, /profile\.integration/);
+  assert.match(worker, /publicarSemanaGarmin\(env, request, atleta, weekStart, dias\)/);
 });
 
-test("o envio automático só dispara na transição para Liberada", async () => {
+test("o reenvio Garmin reaproveita o treino remoto já criado para o mesmo conteúdo", async () => {
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
-  const chamada = worker.indexOf("ctx.waitUntil(enviarSemanaParaGarmin(");
-  /* Recorta a PARTIR do `if`, não 400 caracteres para trás: o comentário acima
-     da condição é longo e engolia a janela, fazendo o teste falhar por medir o
-     lugar errado. */
-  const gatilho = worker.slice(worker.lastIndexOf("if (", chamada), chamada);
-  /* Sem a comparação com o estado anterior, cada gravação de uma semana já
-     liberada reenviaria a semana inteira ao Garmin — e o atleta veria o
-     calendário dele encher de cópias. */
-  assert.match(gatilho, /normalizedWeek\.status === "Liberada"/);
-  assert.match(gatilho, /existingWeek\?\.status[\s\S]*?!== "Liberada"/);
+  assert.match(worker, /anterior\?\.fingerprint === fingerprint/);
+  assert.match(worker, /agendarTreinoNoGarmin\(sessao, workoutId, data\)/);
+  assert.match(worker, /status=CASE WHEN training_week_publications\.status IN \('published','sent','partial'\) THEN 'stale'/);
 });
 
 test("a renovação não depende de senha guardada", async () => {

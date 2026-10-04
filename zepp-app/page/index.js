@@ -61,8 +61,8 @@ Page(
          minutos. Quem abriu a tela está de tênis no pé. */
       this.request({ method: "BUSCAR_TREINO" })
         .then((dados) => {
-          if (!dados || !dados.treino) return;
-          this.treino = dados.treino;
+          if (!dados) return;
+          this.treino = dados.treino || null;
           guardar(CHAVE_TREINO, this.treino);
           this.desenhar();
         })
@@ -83,7 +83,7 @@ Page(
      */
     onCall(dados) {
       if (!dados || dados.method !== "TREINO") return;
-      this.treino = { dia: dados.dia, treino: dados.treino, plano: dados.plano };
+      this.treino = dados.treino ? { dia: dados.dia, treino: dados.treino, plano: dados.plano } : null;
       guardar(CHAVE_TREINO, this.treino);
       this.desenhar();
     },
@@ -111,7 +111,7 @@ Page(
       if (!pacote) {
         this.widgets.push(createWidget(widget.TEXT, {
           x: 20, y: 100, w: LARGURA - 40, h: 120,
-          text: "Quando o treinador liberar a semana, o treino aparece aqui sozinho.",
+          text: "Quando o treinador publicar a semana, o celular consulta o treino do dia.",
           text_size: 18, color: 0x999999, align_h: align.CENTER_H, text_style: prop.MULTIPLE_LINE,
         }));
         return;

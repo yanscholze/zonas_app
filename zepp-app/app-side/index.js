@@ -130,10 +130,16 @@ AppSideService(
       }).then((resposta) => {
         if (resposta.status !== 200) return null;
         const corpo = typeof resposta.body === "string" ? JSON.parse(resposta.body) : resposta.body;
-        if (!corpo || !corpo.workout) return null;
+        if (!corpo || !corpo.workout) {
+          if (this.ultimoTreino) {
+            this.ultimoTreino = "";
+            try { this.call({ method: "TREINO", treino: null, motivo: corpo && corpo.reason }); } catch { /* relógio fora de alcance */ }
+          }
+          return null;
+        }
 
         const pacote = { dia: corpo.day, treino: corpo.workout, plano: corpo.plan };
-        const assinatura = JSON.stringify(corpo.workout);
+        const assinatura = JSON.stringify({ date: corpo.date, day: corpo.day, workout: corpo.workout });
         if (!forcar && assinatura === this.ultimoTreino) return null;
         this.ultimoTreino = assinatura;
 

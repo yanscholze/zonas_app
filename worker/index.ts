@@ -34,6 +34,7 @@ import {
   toGarminWorkout,
   SUPPORTED_PROVIDER_LABELS,
   averagePaceSeconds,
+  dateInSaoPaulo,
   normalizeActivity,
   providerById,
   weekStartOf,
@@ -106,7 +107,7 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/athlete-profile": new Set(["athleteName","phone","birthDate","objective","integration","trainingDays","noTargetRace"]),
   "/api/athlete-planning": new Set(["athleteName","plan","phase","weekNumber","totalWeeks"]),
   "/api/performance-tests": new Set(["athleteName","testDate","distanceKm","minutes","seconds","age","id","action","zones","tempoRuns"]),
-  "/api/training-weeks": new Set(["athleteName","weekStart","plan","phase","weekLabel","trainingDays","sessions","status","auditDifferences","expectedUpdatedAt"]),
+  "/api/training-weeks": new Set(["action","athleteName","weekStart","plan","phase","weekLabel","trainingDays","sessions","status","auditDifferences","expectedUpdatedAt"]),
   "/api/pain-reports": new Set(["athleteName","bodyArea","intensity","trainingImpact","note","action","id","weekStart","status","conduct"]),
   "/api/races-records": new Set(["kind","athleteName","name","raceDate","distance","city","goal","priority","resultTime","eventName","action","id","status"]),
   "/api/athlete-access": new Set(["athleteName","email","status"]),
@@ -163,7 +164,9 @@ function diasDeTreino(valor: unknown): string[] {
 }
 
 function isIsoDate(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(`${value}T00:00:00Z`));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
 /**
@@ -1802,19 +1805,68 @@ async function performanceTestsApi(request: Request, env: Env): Promise<Response
   return new Response("Method not allowed",{status:405});
 }
 
-async function trainingWeeksApi(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  await ensureTables(env, schema.trainingWeeks, schema.trainingWeekAudit);
+async function publicarSemanaParaIntegracaoEscolhida(
+  env: Env, request: Request, atleta: string, weekStart: string, dias: string[],
+): Promise<Record<string, unknown>> {
+  const preference = await env.DB.prepare(`SELECT COALESCE(NULLIF(profile.integration,''),NULLIF(athlete.integration,''),'Sem integração') AS integration
+    FROM athletes athlete LEFT JOIN athlete_profiles profile ON profile.athlete_name = athlete.name
+    WHERE athlete.name = ? LIMIT 1`).bind(atleta).first() as { integration?: string } | null;
+  const selected = String(preference?.integration ?? "Sem integração");
+
+  if (selected === "Garmin") {
+    const connection = await env.DB.prepare("SELECT status FROM external_integrations WHERE athlete_name = ? AND provider = ? LIMIT 1")
+      .bind(atleta, PROVIDERS.garmin.label).first() as { status?: string } | null;
+    if (connection?.status !== "Conectado") {
+      const status = connection?.status === "Reconectar" ? "reconnect_required" : "not_connected";
+      const message = status === "reconnect_required" ? "Reconecte a conta Garmin do aluno." : "O aluno escolheu Garmin, mas ainda não conectou a conta.";
+      await gravarPublicacao(env, atleta, weekStart, PROVIDERS.garmin.id, status, message, "{}");
+      return { provider: PROVIDERS.garmin.id, status, message };
+    }
+    return publicarSemanaGarmin(env, request, atleta, weekStart, dias);
+  }
+
+  if (selected === "Amazfit" || selected === "Amazfit / Zepp" || selected === "Zepp") {
+    const [connection, token] = await Promise.all([
+      env.DB.prepare("SELECT status FROM external_integrations WHERE athlete_name = ? AND provider = ? LIMIT 1")
+        .bind(atleta, PROVIDERS.zepp.label).first() as Promise<{ status?: string } | null>,
+      env.DB.prepare("SELECT token_hash FROM device_ingest_tokens WHERE athlete_name = ? AND provider = ? AND revoked_at IS NULL LIMIT 1")
+        .bind(atleta, PROVIDERS.zepp.id).first(),
+    ]);
+    if (!token || connection?.status !== "Conectado") {
+      const status = connection?.status === "Reconectar" ? "reconnect_required" : "not_connected";
+      const message = status === "reconnect_required" ? "Reconecte o mini-app Amazfit / Zepp do aluno." : "O aluno escolheu Amazfit / Zepp, mas o celular ainda não está conectado.";
+      await gravarPublicacao(env, atleta, weekStart, PROVIDERS.zepp.id, status, message, "{}");
+      return { provider: PROVIDERS.zepp.id, status, message };
+    }
+    const now = Date.now();
+    await env.DB.prepare(`INSERT INTO training_week_publications (id,athlete_name,week_start,provider,status,last_attempt_at,last_success_at,message,remote_workouts)
+      VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(athlete_name,week_start,provider) DO UPDATE SET
+      status='published',last_attempt_at=excluded.last_attempt_at,message=excluded.message`)
+      .bind(crypto.randomUUID(), atleta, weekStart, PROVIDERS.zepp.id, "published", now, null,
+        "Liberada para consulta do mini-app Zepp; o celular precisa estar online para buscar o treino do dia.", "{}").run();
+    return { provider: PROVIDERS.zepp.id, status: "published", message: "Semana liberada ao mini-app Zepp; o celular buscará os treinos nas datas programadas." };
+  }
+
+  const message = selected === "Sem integração"
+    ? "O aluno ainda não escolheu uma integração para receber treinos."
+    : `${selected} não recebe treinos estruturados pela integração atual da Zonas-App.`;
+  return { provider: selected, status: "not_supported", message };
+}
+
+async function trainingWeeksApi(request: Request, env: Env): Promise<Response> {
+  await ensureTables(env, schema.trainingWeeks, schema.trainingWeekAudit, schema.trainingWeekPublications);
   const url = new URL(request.url);
   const carteira = recorteDaCarteira(carteiraDe(request));
   if (request.method === "GET") {
     const athlete = url.searchParams.get("athlete");
     const weekStart = url.searchParams.get("weekStart");
     if (athlete && weekStart) {
-      const [row, history] = await Promise.all([
+      const [row, history, publications] = await Promise.all([
         env.DB.prepare(`SELECT * FROM training_weeks WHERE athlete_name = ? AND week_start = ? AND ${carteira.clausula} LIMIT 1`).bind(athlete, weekStart, ...carteira.valores).first(),
         env.DB.prepare(`SELECT id, actor_email, action, changed_fields, created_at FROM training_week_audit WHERE athlete_name = ? AND week_start = ? AND ${carteira.clausula} ORDER BY created_at DESC LIMIT 20`).bind(athlete, weekStart, ...carteira.valores).all(),
+        env.DB.prepare(`SELECT provider,status,last_attempt_at,last_success_at,message FROM training_week_publications WHERE athlete_name = ? AND week_start = ? AND ${carteira.clausula}`).bind(athlete, weekStart, ...carteira.valores).all(),
       ]);
-      return Response.json({ week: row ?? null, history: history.results });
+      return Response.json({ week: row ?? null, history: history.results, publications: publications.results });
     }
     if (weekStart) {
       if (!isIsoDate(weekStart)) return Response.json({ error: "invalid_week_start" }, { status: 400 });
@@ -1841,6 +1893,25 @@ async function trainingWeeksApi(request: Request, env: Env, ctx: ExecutionContex
        precisa estar, senão o recorte só valeria de olhar e não de agir. */
     const fora = await foraDaCarteira(env, request, athleteName);
     if (fora) return fora;
+
+    if (input.action === "publish") {
+      if (new Date(`${weekStart}T00:00:00Z`).getUTCDay() !== 1) return Response.json({ error: "week_start_must_be_monday" }, { status: 400 });
+      const week = await env.DB.prepare("SELECT sessions,training_days,plan,phase,week_label FROM training_weeks WHERE athlete_name = ? AND week_start = ? LIMIT 1")
+        .bind(athleteName, weekStart).first() as { sessions?: string; training_days?: string; plan?: string; phase?: string; week_label?: string } | null;
+      if (!week) return Response.json({ error: "week_not_saved" }, { status: 404 });
+      let sessions: Record<string, unknown> = {};
+      try { sessions = JSON.parse(String(week.sessions ?? "{}")) as Record<string, unknown>; } catch { return Response.json({ error: "invalid_saved_sessions" }, { status: 422 }); }
+      const days = diasDeTreino(JSON.parse(String(week.training_days ?? "[]")));
+      const workoutDays = days.filter(day => {
+        const session = sessions[day] as Record<string, unknown> | undefined;
+        return Boolean(session && !session.removed && Array.isArray(session.steps) && session.steps.length);
+      });
+      if (!workoutDays.length) return Response.json({ error: "no_workouts", providers: [] }, { status: 422 });
+
+      const publication = await publicarSemanaParaIntegracaoEscolhida(env, request, athleteName, weekStart, workoutDays);
+      return Response.json({ athleteName, weekStart, providers: [publication] });
+    }
+
     const expectedUpdatedAt = Number(input.expectedUpdatedAt ?? 0);
     if (expectedUpdatedAt) {
       const stored = await env.DB.prepare("SELECT updated_at FROM training_weeks WHERE athlete_name = ? AND week_start = ? LIMIT 1").bind(athleteName, weekStart).first() as { updated_at?: number } | null;
@@ -1849,6 +1920,7 @@ async function trainingWeeksApi(request: Request, env: Env, ctx: ExecutionContex
     const trainingDays = diasDeTreino(input.trainingDays);
     if (!input.sessions || Array.isArray(input.sessions) || typeof input.sessions !== "object") return Response.json({ error: "invalid_sessions" }, { status: 400 });
     if (boundedText(input.status ?? "Rascunho", 30) === "Liberada") {
+      if (new Date(`${weekStart}T00:00:00Z`).getUTCDay() !== 1) return Response.json({ error: "week_start_must_be_monday" }, { status: 400 });
       const sessions = input.sessions as Record<string, unknown>;
       const incompleteDays = trainingDays.filter(day => {
         const session = sessions[day];
@@ -1880,18 +1952,29 @@ async function trainingWeeksApi(request: Request, env: Env, ctx: ExecutionContex
         .bind(crypto.randomUUID(), athleteName, weekStart, actorEmail, action, JSON.stringify(changedFields), existingWeek ? JSON.stringify(existingWeek) : null, JSON.stringify(normalizedWeek), updatedAt),
     ]);
 
-    /* Semana liberada sobe sozinha para o relógio de quem conectou.
-     *
-     * É o desenho pedido: o treinador lança a planilha e o resto acontece. Roda
-     * em `waitUntil` porque são até quinze chamadas ao Garmin — esperar por elas
-     * para responder "salvo" transformaria a integração invisível num
-     * travamento visível, e o treinador é quem pagaria por um relógio que nem é
-     * dele. */
-    if (normalizedWeek.status === "Liberada" && String(existingWeek?.status ?? "") !== "Liberada") {
-      ctx.waitUntil(enviarSemanaParaGarmin(env, request, athleteName, weekStart));
+    /* Salvar um rascunho não publica. Lançar a semana libera para o aluno e
+       inicia a integração que ele escolheu, no mesmo fluxo do treinador. */
+    const changedSchedule = !existingWeek || changedFields.some(field => field === "sessions" || field === "training_days" || field === "plan" || field === "phase" || field.startsWith("base:"));
+    if (changedSchedule) {
+      const estadoBase = existingWeek ? "stale" : "not_published";
+      const mensagemBase = existingWeek
+        ? "A semana mudou depois da última publicação; envie novamente para atualizar o relógio."
+        : "Semana salva. A publicação para o relógio continua pendente.";
+      await env.DB.batch([PROVIDERS.garmin.id, PROVIDERS.zepp.id].map(provider => env.DB.prepare(`INSERT INTO training_week_publications
+        (id,athlete_name,week_start,provider,status,last_attempt_at,last_success_at,message,remote_workouts)
+        VALUES (?,?,?,?,?,NULL,NULL,?,'{}') ON CONFLICT(athlete_name,week_start,provider) DO UPDATE SET
+        status=CASE WHEN training_week_publications.status IN ('published','sent','partial') THEN 'stale' ELSE 'not_published' END,
+        message=excluded.message`)
+        .bind(crypto.randomUUID(), athleteName, weekStart, provider, estadoBase, mensagemBase)));
     }
 
-    return Response.json({ id, updatedAt, status: input.status ?? "Rascunho" }, { status: 201 });
+    const providers = normalizedWeek.status === "Liberada"
+      ? [await publicarSemanaParaIntegracaoEscolhida(env, request, athleteName, weekStart, trainingDays.filter(day => {
+        const session = (input.sessions as Record<string, unknown>)[day] as Record<string, unknown> | undefined;
+        return Boolean(session && !session.removed && Array.isArray(session.steps) && session.steps.length);
+      }))]
+      : [];
+    return Response.json({ id, updatedAt, status: input.status ?? "Rascunho", providers }, { status: 201 });
   }
   return new Response("Method not allowed", { status: 405 });
 }
@@ -2935,6 +3018,7 @@ async function treinoResolvido(
   atleta: string,
   weekStart: string,
   diaChave: string,
+  exigirLiberacao = true,
 ): Promise<{ treino: Record<string, unknown> | null; motivo?: string; plano?: Record<string, unknown> }> {
   const semana = await env.DB.prepare(
     "SELECT sessions, status, plan, phase, week_label FROM training_weeks WHERE athlete_name = ? AND week_start = ? LIMIT 1",
@@ -2943,7 +3027,7 @@ async function treinoResolvido(
   /* Semana não liberada é semana que o aluno não deve ver — nem pelo relógio,
      nem pelo calendário do Garmin. Devolver o treino seria furar a revisão do
      treinador pelo caminho que ninguém está olhando. */
-  if (!semana || semana.status !== "Liberada") return { treino: null, motivo: "week_not_released" };
+  if (!semana || (exigirLiberacao && semana.status !== "Liberada")) return { treino: null, motivo: exigirLiberacao ? "week_not_released" : "week_not_found" };
 
   let sessoes: Record<string, unknown> = {};
   try { sessoes = JSON.parse(String(semana.sessions ?? "{}")) as Record<string, unknown>; } catch { sessoes = {}; }
@@ -3018,6 +3102,7 @@ async function treinoResolvido(
 async function deviceWorkoutApi(request: Request, env: Env): Promise<Response> {
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
   await ensureIntegrationTables(env);
+  await ensureTables(env, schema.trainingWeeks, schema.performanceTests, schema.trainingWeekPublications);
 
   const apresentado = boundedText(request.headers.get("x-zonas-ingest-token"), 100);
   if (!/^[a-f0-9]{48}$/.test(apresentado)) return Response.json({ error: "ingest_token_required" }, { status: 401 });
@@ -3031,12 +3116,20 @@ async function deviceWorkoutApi(request: Request, env: Env): Promise<Response> {
      dia. Uma conta só para "que dia é hoje no planejamento": duas divergiriam no
      primeiro fuso ou virada de semana. */
   const agora = Date.now();
-  const hoje = { key: workoutDayOf(agora), weekStart: weekStartOf(agora), iso: new Date(agora).toISOString().slice(0, 10) };
+  const hoje = { key: workoutDayOf(agora), weekStart: weekStartOf(agora), iso: dateInSaoPaulo(agora) };
 
-  const resolvido = await treinoResolvido(env, atleta, hoje.weekStart, hoje.key);
+  const publication = await env.DB.prepare("SELECT status FROM training_week_publications WHERE athlete_name = ? AND week_start = ? AND provider = ? LIMIT 1")
+    .bind(atleta, hoje.weekStart, PROVIDERS.zepp.id).first() as { status?: string } | null;
+  const resolvido = await treinoResolvido(env, atleta, hoje.weekStart, hoje.key, !publication);
+  if (publication && publication.status !== "published") {
+    return Response.json({ athlete: atleta, day: hoje.key, workout: null, reason: "week_not_published" });
+  }
   if (!resolvido.treino) {
     return Response.json({ athlete: atleta, day: hoje.key, workout: null, reason: resolvido.motivo });
   }
+
+  await env.DB.prepare("UPDATE training_week_publications SET last_success_at = ?, message = ? WHERE athlete_name = ? AND week_start = ? AND provider = ? AND status = 'published'")
+    .bind(Date.now(), "Mini-app Zepp consultou o treino do dia; o servidor não confirma a entrega Bluetooth ao relógio.", atleta, hoje.weekStart, PROVIDERS.zepp.id).run();
 
   return Response.json({
     athlete: atleta,
@@ -3119,38 +3212,54 @@ async function marcaGarminParaReconectar(env: Env, atleta: string): Promise<void
  * Silencioso quando o atleta não ligou o Garmin — que é o caso da maioria. Não
  * ter conectado não é erro e não deve virar linha no monitor.
  */
-async function enviarSemanaParaGarmin(env: Env, request: Request, atleta: string, weekStart: string): Promise<void> {
+async function publicarSemanaGarmin(env: Env, request: Request, atleta: string, weekStart: string, dias: string[]): Promise<Record<string, unknown>> {
   const sessao = await sessaoGarminDoAtleta(env, atleta);
-  if (!sessao) return;
+  if (!sessao) {
+    const status = "reconnect_required";
+    await gravarPublicacao(env, atleta, weekStart, PROVIDERS.garmin.id, status, "A sessão Garmin expirou ou não pôde ser renovada.", "{}");
+    return { provider: PROVIDERS.garmin.id, status, message: "A sessão Garmin expirou ou não pôde ser renovada. Reconecte e tente novamente." };
+  }
 
   const inicio = new Date(`${weekStart}T12:00:00Z`);
   let enviados = 0;
   const problemas: string[] = [];
+  const existente = await env.DB.prepare("SELECT remote_workouts FROM training_week_publications WHERE athlete_name = ? AND week_start = ? AND provider = ? LIMIT 1")
+    .bind(atleta, weekStart, PROVIDERS.garmin.id).first() as { remote_workouts?: string } | null;
+  let remoto: Record<string, { workoutId: number; fingerprint: string }> = {};
+  try { remoto = JSON.parse(String(existente?.remote_workouts ?? "{}")) as typeof remoto; } catch { remoto = {}; }
 
-  for (let i = 0; i < DIAS_DA_SEMANA.length; i += 1) {
-    const dia = DIAS_DA_SEMANA[i];
-    const resolvido = await treinoResolvido(env, atleta, weekStart, dia);
-    /* Dia de descanso e semana não liberada não são falha — são a resposta
-       certa. Só o que quebrou entra em `problemas`. */
-    if (!resolvido.treino) continue;
+  for (const dia of dias) {
+    const indice = DIAS_DA_SEMANA.indexOf(dia);
+    const resolvido = await treinoResolvido(env, atleta, weekStart, dia, false);
+    if (!resolvido.treino) { problemas.push(`${dia}: treino não encontrado na semana salva`); continue; }
 
-    const data = new Date(inicio.getTime() + i * 86400000).toISOString().slice(0, 10);
+    const data = new Date(inicio.getTime() + indice * 86400000).toISOString().slice(0, 10);
     const traduzido = treinoParaGarmin(resolvido.treino as never, `${resolvido.treino.title} · ${dia}`);
+    const fingerprint = JSON.stringify(traduzido);
+    const anterior = remoto[dia];
+    let workoutId = anterior?.fingerprint === fingerprint ? anterior.workoutId : 0;
+    if (!workoutId) {
+      const subida = await subirTreinoNoGarmin(sessao, traduzido);
+      if (!subida.ok) { problemas.push(`${dia}: ${subida.falha}`); continue; }
+      workoutId = subida.valor;
+      remoto[dia] = { workoutId, fingerprint };
+      await gravarPublicacao(env, atleta, weekStart, PROVIDERS.garmin.id, "sending", null, JSON.stringify(remoto));
+    }
 
-    const subida = await subirTreinoNoGarmin(sessao, traduzido);
-    if (!subida.ok) { problemas.push(`${dia}: ${subida.falha}`); continue; }
-
-    const agenda = await agendarTreinoNoGarmin(sessao, subida.valor, data);
+    const agenda = await agendarTreinoNoGarmin(sessao, workoutId, data);
     if (!agenda.ok) { problemas.push(`${dia}: ${agenda.falha} ao agendar`); continue; }
+    remoto[dia] = { workoutId, fingerprint };
     enviados += 1;
+    await gravarPublicacao(env, atleta, weekStart, PROVIDERS.garmin.id, "sending", null, JSON.stringify(remoto));
   }
 
   const agora = Date.now();
-  if (enviados > 0) {
-    await env.DB.prepare(
-      "UPDATE external_integrations SET last_sync_at = ?, updated_at = ? WHERE athlete_name = ? AND provider = ?",
-    ).bind(agora, agora, atleta, PROVIDERS.garmin.label).run();
-  }
+  const status = problemas.length ? (enviados ? "partial" : "failed") : "sent";
+  const detalhe = problemas.length ? problemas.join(" | ") : null;
+  await gravarPublicacao(env, atleta, weekStart, PROVIDERS.garmin.id, status, detalhe, JSON.stringify(remoto), enviados ? agora : null);
+  if (enviados > 0) await env.DB.prepare(
+    "UPDATE external_integrations SET last_sync_at = ?, updated_at = ? WHERE athlete_name = ? AND provider = ?",
+  ).bind(agora, agora, atleta, PROVIDERS.garmin.label).run();
 
   /* O treinador já foi embora da tela quando isto roda. O registro no monitor de
      erros é o único jeito de a falha existir para alguém — sem ele, a semana
@@ -3161,6 +3270,21 @@ async function enviarSemanaParaGarmin(env: Env, request: Request, atleta: string
       new Error(`${atleta} · semana ${weekStart}: ${problemas.join(" | ")}`),
     );
   }
+  return { provider: PROVIDERS.garmin.id, status, sent: enviados, failed: problemas.length, message: detalhe ?? `${enviados} treino(s) enviado(s) ao Garmin.` };
+}
+
+async function gravarPublicacao(
+  env: Env, atleta: string, weekStart: string, provider: string, status: string, message: string | null,
+  remoteWorkouts: string, successAt: number | null = null,
+): Promise<void> {
+  const now = Date.now();
+  await env.DB.prepare(`INSERT INTO training_week_publications
+    (id,athlete_name,week_start,provider,status,last_attempt_at,last_success_at,message,remote_workouts)
+    VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(athlete_name,week_start,provider) DO UPDATE SET
+    status=excluded.status,last_attempt_at=excluded.last_attempt_at,
+    last_success_at=COALESCE(excluded.last_success_at,training_week_publications.last_success_at),
+    message=excluded.message,remote_workouts=excluded.remote_workouts`)
+    .bind(crypto.randomUUID(), atleta, weekStart, provider, status, now, successAt, message, remoteWorkouts).run();
 }
 
 async function deviceIngestApi(request: Request, env: Env): Promise<Response> {
@@ -4199,7 +4323,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
       catch (falha) { return await applicationFailure(env, request, "testes de desempenho", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/training-weeks") {
-      try { return await trainingWeeksApi(request, env, ctx); }
+      try { return await trainingWeeksApi(request, env); }
       catch (falha) { return await applicationFailure(env, request, "semanas de treino", "database_unavailable", falha); }
     }
     if (url.pathname === "/api/pain-reports") {

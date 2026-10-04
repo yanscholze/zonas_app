@@ -125,6 +125,21 @@ export const trainingWeeks = sqliteTable("training_weeks", {
   athleteStartIdx: uniqueIndex("training_weeks_athlete_start_idx").on(table.athleteName, table.weekStart),
 }));
 
+/** Publicação manual de uma semana para cada integração do relógio. */
+export const trainingWeekPublications = sqliteTable("training_week_publications", {
+  id: text("id").primaryKey(),
+  athleteName: text("athlete_name").notNull(),
+  weekStart: text("week_start").notNull(),
+  provider: text("provider").notNull(),
+  status: text("status").notNull(),
+  lastAttemptAt: integer("last_attempt_at", { mode: "timestamp_ms" }),
+  lastSuccessAt: integer("last_success_at", { mode: "timestamp_ms" }),
+  message: text("message"),
+  remoteWorkouts: text("remote_workouts").notNull(),
+}, (table) => ({
+  athleteWeekProviderIdx: uniqueIndex("training_week_publications_athlete_week_provider_idx").on(table.athleteName, table.weekStart, table.provider),
+}));
+
 export const painReports = sqliteTable("pain_reports", {
   id: text("id").primaryKey(),
   athleteName: text("athlete_name").notNull(),

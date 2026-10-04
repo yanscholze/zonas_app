@@ -346,9 +346,18 @@ export function averagePaceSeconds(activity: NormalizedActivity): number | null 
   return Math.round(activity.movingSeconds / kilometers);
 }
 
-/** A segunda-feira da semana da atividade, no mesmo formato de `training_weeks`. */
+/** Data civil do atleta no fuso usado pelo calendário da Zonas-App. */
+export function dateInSaoPaulo(timestamp: number): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(new Date(timestamp));
+  const value = (type: string) => parts.find(part => part.type === type)?.value ?? "00";
+  return `${value("year")}-${value("month")}-${value("day")}`;
+}
+
+/** A segunda-feira da semana local da atividade, no formato de `training_weeks`. */
 export function weekStartOf(timestamp: number): string {
-  const date = new Date(timestamp);
+  const date = new Date(`${dateInSaoPaulo(timestamp)}T12:00:00Z`);
   const day = date.getUTCDay() || 7;
   date.setUTCDate(date.getUTCDate() - day + 1);
   return date.toISOString().slice(0, 10);
@@ -357,7 +366,7 @@ export function weekStartOf(timestamp: number): string {
 const WEEKDAY_KEYS = ["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SÁB"];
 
 export function workoutDayOf(timestamp: number): string {
-  return WEEKDAY_KEYS[new Date(timestamp).getUTCDay()];
+  return WEEKDAY_KEYS[new Date(`${dateInSaoPaulo(timestamp)}T12:00:00Z`).getUTCDay()];
 }
 
 /* -------------------------------------------------------------------------- */

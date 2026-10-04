@@ -4050,6 +4050,17 @@ p, span, b, strong, small, em, li, td, th, label {
   font-size:var(--fs-xs);
 }
 
+.restore-fixed-step {
+  justify-self: start;
+  padding: 8px 11px;
+  border: 1px dashed #69542b;
+  border-radius: var(--radius-sm);
+  background: #282218;
+  color: var(--gold2);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+}
+
 .student-builder-preview {
   display: grid;
   gap: 7px;
@@ -4533,6 +4544,21 @@ p, span, b, strong, small, em, li, td, th, label {
   background: #442622;
   color: #ff9e89;
 }
+
+.week-publish-state {
+  margin: 0 15px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+
+.week-publish-state.publishing { color: var(--gold2); }
+.week-publish-state.done { border-color: #28563c; background: #193426; color: #9de0b7; }
+.week-publish-state.error { border-color: #6a3932; background: #442622; color: #ffb4a2; }
+.week-actions button:disabled { opacity: .55; cursor: not-allowed; }
 
 @media(max-width:760px) {
   .week-actions {
@@ -10662,10 +10688,10 @@ p, span, b, strong, small, em, li, td, th, label {
   .mobile-compact>.summary {
     display: none;
   }
-  .mobile-compact .series-fields,
-  .mobile-compact .editable-block>label,
-  .mobile-compact .editable-block>.remove-step,
-  .mobile-compact .series-title>.remove-step {
+.mobile-compact .series-fields,
+.mobile-compact .editable-block>label,
+.mobile-compact .editable-block:not(.optional-step)>.remove-step,
+.mobile-compact .series-title>.remove-step {
     display: none;
   }
   .mobile-compact>.workout-builder {
