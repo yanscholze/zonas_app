@@ -516,6 +516,12 @@ export const schemaState = sqliteTable("schema_state", {
   signature: text("signature").notNull(),
 });
 
+/** Migrações idempotentes de dados executadas pelo Worker. */
+export const dataMigrations = sqliteTable("data_migrations", {
+  id: text("id").primaryKey(),
+  appliedAt: integer("applied_at", { mode: "timestamp_ms" }).notNull(),
+});
+
 export const applicationErrors = sqliteTable("application_errors", {
   id: text("id").primaryKey(),
   area: text("area").notNull(),

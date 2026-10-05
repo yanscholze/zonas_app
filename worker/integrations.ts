@@ -355,11 +355,11 @@ export function dateInSaoPaulo(timestamp: number): string {
   return `${value("year")}-${value("month")}-${value("day")}`;
 }
 
-/** A segunda-feira da semana local da atividade, no formato de `training_weeks`. */
+/** O domingo da semana local da atividade, no formato de `training_weeks`. */
 export function weekStartOf(timestamp: number): string {
   const date = new Date(`${dateInSaoPaulo(timestamp)}T12:00:00Z`);
-  const day = date.getUTCDay() || 7;
-  date.setUTCDate(date.getUTCDate() - day + 1);
+  const day = date.getUTCDay();
+  date.setUTCDate(date.getUTCDate() - day);
   return date.toISOString().slice(0, 10);
 }
 
@@ -446,7 +446,7 @@ export function toGarminWorkout(
       rotulo: String(etapa.label ?? "Etapa"),
       zona: String(etapa.zone ?? "Z2"),
       minutos: Number(etapa.minutes) || undefined,
-      metros: Number(etapa.distanceMeters) || undefined,
+      metros: Number(etapa.meters ?? etapa.distanceMeters) || undefined,
     });
   }
 

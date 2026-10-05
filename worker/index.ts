@@ -153,7 +153,7 @@ function boundedText(value: unknown, max: number): string {
  * maiúsculas. Guardar "Seg" onde o resto guarda "SEG" faz o dia nunca casar, e
  * o aluno acaba sem nenhum dia disponível.
  */
-const DIAS_DA_SEMANA = ["SEG","TER","QUA","QUI","SEX","SÁB","DOM"];
+const DIAS_DA_SEMANA = ["DOM","SEG","TER","QUA","QUI","SEX","SÁB"];
 
 function diasDeTreino(valor: unknown): string[] {
   if (!Array.isArray(valor)) return [];
@@ -572,14 +572,42 @@ async function garanteEsquema(env: Env): Promise<void> {
        handlers virarem no-op — sem isto eles refazem o PRAGMA de cada tabela
        que tocam, e a economia se perde no primeiro handler que roda. */
     for (const tabela of TODAS_AS_TABELAS) tabelasConferidas.add(nomeDaTabela(tabela));
+    await migrarInicioDaSemanaParaDomingo(env);
     esquemaConferidoNestaInstancia = true;
     return;
   }
 
   await ensureTables(env, ...TODAS_AS_TABELAS);
+  await migrarInicioDaSemanaParaDomingo(env);
   await env.DB.prepare("INSERT INTO schema_state (id, signature) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET signature = excluded.signature")
     .bind(assinatura).run();
   esquemaConferidoNestaInstancia = true;
+}
+
+/**
+ * Converte as chaves semanais antigas (segunda-feira) para domingo e mantém
+ * históricos, auditorias e integrações alinhados com a mesma semana.
+ * A migração roda uma vez por banco e permanece segura entre instâncias do Worker.
+ */
+async function migrarInicioDaSemanaParaDomingo(env: Env): Promise<void> {
+  await ensureTables(env, schema.dataMigrations);
+  const id = "training-week-start-sunday-v1";
+  const aplicada = await env.DB.prepare("SELECT id FROM data_migrations WHERE id = ? LIMIT 1").bind(id).first();
+  if (aplicada) return;
+  const agora = Date.now();
+  const deslocar = (tabela: string, coluna: string) => env.DB.prepare(
+    `UPDATE OR IGNORE ${tabela} SET ${coluna} = date(${coluna}, '-1 day') WHERE strftime('%w', ${coluna}) = '1'`,
+  );
+  await env.DB.batch([
+    deslocar("training_weeks", "week_start"),
+    deslocar("training_week_audit", "week_start"),
+    deslocar("training_week_publications", "week_start"),
+    deslocar("workout_executions", "week_start"),
+    deslocar("training_feedbacks", "week_start"),
+    deslocar("external_activities", "matched_week_start"),
+    deslocar("pain_reports", "linked_week_start"),
+    env.DB.prepare("INSERT OR IGNORE INTO data_migrations (id, applied_at) VALUES (?, ?)").bind(id, agora),
+  ]);
 }
 
 async function ensureTables(env: Env, ...tabelas: Array<Parameters<typeof tableSql>[0]>): Promise<void> {
@@ -1429,8 +1457,8 @@ async function studentDashboardApi(request: Request, env: Env, athleteName: stri
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
   await ensureTables(env, schema.trainingWeeks, schema.athleteProfiles, schema.athleteRaces, schema.personalRecords);
   const brazilNow = new Date(Date.now() - 3 * 60 * 60 * 1000);
-  const brazilDay = brazilNow.getUTCDay() || 7;
-  brazilNow.setUTCDate(brazilNow.getUTCDate() - brazilDay + 1);
+  const brazilDay = brazilNow.getUTCDay();
+  brazilNow.setUTCDate(brazilNow.getUTCDate() - brazilDay);
   const currentWeekStart = brazilNow.toISOString().slice(0, 10);
   const [week, profile, races, records] = await Promise.all([
     env.DB.prepare("SELECT * FROM training_weeks WHERE athlete_name = ? AND week_start = ? AND status = 'Liberada' LIMIT 1").bind(athleteName, currentWeekStart).first(),
@@ -1895,7 +1923,7 @@ async function trainingWeeksApi(request: Request, env: Env): Promise<Response> {
     if (fora) return fora;
 
     if (input.action === "publish") {
-      if (new Date(`${weekStart}T00:00:00Z`).getUTCDay() !== 1) return Response.json({ error: "week_start_must_be_monday" }, { status: 400 });
+      if (new Date(`${weekStart}T00:00:00Z`).getUTCDay() !== 0) return Response.json({ error: "week_start_must_be_sunday" }, { status: 400 });
       const week = await env.DB.prepare("SELECT sessions,training_days,plan,phase,week_label FROM training_weeks WHERE athlete_name = ? AND week_start = ? LIMIT 1")
         .bind(athleteName, weekStart).first() as { sessions?: string; training_days?: string; plan?: string; phase?: string; week_label?: string } | null;
       if (!week) return Response.json({ error: "week_not_saved" }, { status: 404 });
@@ -1920,7 +1948,7 @@ async function trainingWeeksApi(request: Request, env: Env): Promise<Response> {
     const trainingDays = diasDeTreino(input.trainingDays);
     if (!input.sessions || Array.isArray(input.sessions) || typeof input.sessions !== "object") return Response.json({ error: "invalid_sessions" }, { status: 400 });
     if (boundedText(input.status ?? "Rascunho", 30) === "Liberada") {
-      if (new Date(`${weekStart}T00:00:00Z`).getUTCDay() !== 1) return Response.json({ error: "week_start_must_be_monday" }, { status: 400 });
+      if (new Date(`${weekStart}T00:00:00Z`).getUTCDay() !== 0) return Response.json({ error: "week_start_must_be_sunday" }, { status: 400 });
       const sessions = input.sessions as Record<string, unknown>;
       const incompleteDays = trainingDays.filter(day => {
         const session = sessions[day];
@@ -3081,7 +3109,7 @@ async function treinoResolvido(
       type: "simple",
       label: String(bruta?.label ?? "Etapa"),
       seconds: Number.isFinite(Number(bruta?.minutes)) ? Math.round(Number(bruta?.minutes) * 60) : null,
-      meters: Number.isFinite(Number(bruta?.meters)) ? Number(bruta?.meters) : null,
+      meters: Number.isFinite(Number(bruta?.meters ?? bruta?.distanceMeters)) ? Number(bruta?.meters ?? bruta?.distanceMeters) : null,
       target: alvo(bruta?.zone),
     });
   }

@@ -175,7 +175,7 @@ test("launching a week routes it through the student's selected integration", as
   assert.match(route, /normalizedWeek\.status === "Liberada"/);
   assert.match(route, /publicarSemanaParaIntegracaoEscolhida/);
   assert.match(route, /foraDaCarteira\(env, request, athleteName\)/);
-  assert.match(route, /week_start_must_be_monday/);
+  assert.match(route, /week_start_must_be_sunday/);
   assert.match(worker, /profile\.integration/);
   assert.match(worker, /selected === "Garmin"/);
   assert.match(worker, /selected === "Amazfit"/);
@@ -1214,12 +1214,14 @@ test("uses permanent library edits when loading or advancing an athlete week", a
 test("links the structured workout to an athlete and shows the released steps to the student", async () => {
   const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   assert.match(source, /TREINO DE \{athleteName\.toUpperCase\(\)\} · \{day\}/);
-  assert.match(source, /steps:\[\.\.\.\(warmupEnabled&&warmup\.minutes\?\[\{kind:"simple",label:"Aquecimento"/);
-  assert.match(source, /cooldownEnabled&&cooldown\.minutes\?\[\{kind:"simple",label:"Desaquecimento"/);
+  assert.match(source, /steps:\[\.\.\.\(warmupEnabled&&warmup\.amount>0\?\[payloadForFixedStep\(warmup\)\]/);
+  assert.match(source, /cooldownEnabled&&cooldown\.amount>0\?\[payloadForFixedStep\(cooldown\)\]/);
+  assert.match(source, /value="km">Distância \(km\)<\/option>/);
+  assert.match(source, /meters:Math\.round\(step\.amount\*1000\)/);
   assert.match(source, /aria-label="Remover aquecimento"/);
   assert.match(source, /aria-label="Remover desaquecimento"/);
-  assert.match(source, /warmupEnabled\?kmFor\(warmup\.minutes/);
-  assert.match(source, /cooldownEnabled\?kmFor\(cooldown\.minutes/);
+  assert.match(source, /warmupEnabled\?kmFor\(warmup\.amount/);
+  assert.match(source, /cooldownEnabled\?kmFor\(cooldown\.amount/);
   assert.match(source, /Após cada repetição:/);
   assert.match(source, /Este é o mesmo treino montado e liberado pelo treinador/);
   assert.match(source, /todaySession&&\(todaySession\.steps\?\.length\?<StructuredWorkoutCard/);
@@ -1248,7 +1250,7 @@ test("builds workout steps by minutes or meters without separating the recovery"
   assert.match(source, /<option value="min">Minutos<\/option><option value="m">Metros<\/option>/);
   assert.match(source, /effortUnit:"s",effortZone:"Z5",recovery:40,recoveryUnit:"s",recoveryZone:"Z1"/);
   assert.match(source, /effortMeters:step\.effort/);
-  assert.match(source, /distanceMeters:step\.amount/);
+  assert.match(source, /meters:Math\.round\(step\.amount\*1000\)/);
   assert.match(source, /A recuperação acontece após cada repetição, inclusive a última/);
   assert.match(source, /step\.effortMeters\?`\$\{step\.effortMeters\} m`/);
 });
@@ -1260,13 +1262,13 @@ test("allows a continuous workout without mandatory repeats or fixed blocks", as
   assert.match(source, /Treino contínuo/);
   assert.match(source, /Remover aquecimento/);
   assert.match(source, /Remover desaquecimento/);
-  assert.match(source, /warmupEnabled&&warmup\.minutes\?\[\{kind:"simple",label:"Aquecimento"/);
-  assert.match(source, /cooldownEnabled&&cooldown\.minutes\?\[\{kind:"simple",label:"Desaquecimento"/);
+  assert.match(source, /warmupEnabled&&warmup\.amount>0\?\[payloadForFixedStep\(warmup\)\]/);
+  assert.match(source, /cooldownEnabled&&cooldown\.amount>0\?\[payloadForFixedStep\(cooldown\)\]/);
 });
 
 test("selects and persists the real calendar week instead of a fixed date", async () => {
   const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
-  assert.match(source, /mondayOf\(new Date\(\)\.toISOString\(\)\.slice\(0,10\)\)/);
+  assert.match(source, /sundayOf\(todayInSaoPaulo\(\)\)/);
   assert.match(source, /Semana anterior/);
   assert.match(source, /Próxima semana/);
   assert.match(source, /weekStart=\$\{weekStart\}/);
@@ -1784,12 +1786,12 @@ test("records who changed a training week and preserves both snapshots", async (
   const prepare = (sql) => ({
     values: [],
     bind(...values) { this.values = values; return this; },
-    async first() { return sql.includes("SELECT * FROM training_weeks") ? { athlete_name: "Everton Barbosa", week_start: "2026-08-10", plan: "10 km Lion", phase: "Base", week_label: "3 de 16", training_days: "[]", sessions: "{}", status: "Rascunho", updated_at: 100 } : null; },
+    async first() { return sql.includes("SELECT * FROM training_weeks") ? { athlete_name: "Everton Barbosa", week_start: "2026-08-09", plan: "10 km Lion", phase: "Base", week_label: "3 de 16", training_days: "[]", sessions: "{}", status: "Rascunho", updated_at: 100 } : null; },
     async run() { writes.push({ sql, values: this.values }); return { success: true }; },
   });
   const env = { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) }, DB: { prepare: withSession(prepare), async batch(items) { for (const item of items) await item.run(); return []; } } };
   const structured = { description: "Treino completo", steps: [{ type: "Parte principal", duration: 30, unit: "min", intensity: "Z3" }] };
-  const response = await worker.fetch(new Request("https://zonasapp.example/api/training-weeks", { method: "POST", headers: { "content-type": "application/json", ...coachCookie }, body: JSON.stringify({ athleteName: "Everton Barbosa", weekStart: "2026-08-10", plan: "10 km Lion", phase: "Específica", weekLabel: "4 de 16", trainingDays: ["TER","QUI","SÁB"], sessions: { TER: structured, QUI: structured, SÁB: structured }, status: "Liberada" }) }), env, { waitUntil() {}, passThroughOnException() {} });
+  const response = await worker.fetch(new Request("https://zonasapp.example/api/training-weeks", { method: "POST", headers: { "content-type": "application/json", ...coachCookie }, body: JSON.stringify({ athleteName: "Everton Barbosa", weekStart: "2026-08-09", plan: "10 km Lion", phase: "Específica", weekLabel: "4 de 16", trainingDays: ["TER","QUI","SÁB"], sessions: { TER: structured, QUI: structured, SÁB: structured }, status: "Liberada" }) }), env, { waitUntil() {}, passThroughOnException() {} });
   assert.equal(response.status, 201);
   const audit = writes.find(({ sql }) => sql.includes("INSERT INTO training_week_audit"));
   assert.ok(audit);
@@ -1986,9 +1988,9 @@ test("shows only the real released workout for the current Brazilian day", async
 
 test("uses the current calendar week when the coach previews the student area", async () => {
   const source = await readFile("app/ZonasAppClient.tsx", "utf8");
-  assert.match(source, /const currentWeekStart=mondayOf\(new Date\(\)\.toISOString\(\)\.slice\(0,10\)\)/);
+  assert.match(source, /const currentWeekStart=sundayOf\(todayInSaoPaulo\(\)\)/);
   assert.match(source, /weekStart=\$\{currentWeekStart\}/);
-  assert.doesNotMatch(source, /weekStart=2026-08-10/);
+  assert.doesNotMatch(source, /weekStart=2026-08-09/);
 });
 
 test("opens the student's real profile and only coach-approved training zones", async () => {
@@ -2359,7 +2361,7 @@ test("keeps one vocabulary for the training days", async () => {
   assert.match(worker, /function diasDeTreino\(valor: unknown\): string\[\]/);
   assert.equal((worker.match(/const trainingDays = diasDeTreino\(input\.trainingDays\);/g) ?? []).length, 4);
   assert.doesNotMatch(worker, /input\.trainingDays\.map\(day => boundedText\(day, 12\)\)/);
-  assert.match(client, /const weekDays = \["SEG", "TER", "QUA", "QUI", "SEX", "SÁB", "DOM"\]/);
+  assert.match(client, /const weekDays = \["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SÁB"\]/);
   // E o cadastro pelo treinador passou a gravar o perfil, como a aprovação de
   // pedido de acesso já fazia: é de lá que saem os dias disponíveis.
   assert.match(worker, /INSERT INTO athlete_profiles \(athlete_name, phone, birth_date, objective, integration, training_days, updated_at\)/);
@@ -3678,7 +3680,7 @@ test("normalizes a real activity from each provider", async () => {
   }
   // 10 km em 50 min são 5:00/km, e a atividade cai na semana e no dia certos.
   assert.equal(d.pace, 300);
-  assert.equal(d.semana, "2026-08-24");
+  assert.equal(d.semana, "2026-08-23");
   assert.equal(d.dia, "SEG");
 });
 
