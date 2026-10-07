@@ -66,6 +66,7 @@ export type AlvoDeRitmo = {
 export type TrechoSimples = {
   type: "simple";
   label: string;
+  activity?: "run" | "walk";
   seconds: number | null;
   meters: number | null;
   target: AlvoDeRitmo | null;
@@ -75,8 +76,8 @@ export type TrechoRepetido = {
   type: "repeat";
   label: string;
   repetitions: number;
-  effort: { seconds: number | null; meters: number | null; target: AlvoDeRitmo | null };
-  recovery: { seconds: number | null; meters: number | null; target: AlvoDeRitmo | null };
+  effort: { activity?: "run" | "walk"; seconds: number | null; meters: number | null; target: AlvoDeRitmo | null };
+  recovery: { activity?: "run" | "walk"; seconds: number | null; meters: number | null; target: AlvoDeRitmo | null };
 };
 
 export type Trecho = TrechoSimples | TrechoRepetido;
@@ -215,7 +216,7 @@ export function treinoParaGarmin(treino: TreinoResolvido, nome?: string): Record
       };
 
       (grupo.workoutSteps as PassoGarmin[]).push(
-        passoExecutavel(ordem++, PASSO.INTERVALO, trecho.effort, trecho.effort.target, trecho.label, idDoGrupo),
+        passoExecutavel(ordem++, PASSO.INTERVALO, trecho.effort, trecho.effort.target, `${trecho.effort.activity === "walk" ? "Caminhar · " : ""}${trecho.label}`, idDoGrupo),
       );
 
       /* A recuperação só entra se tiver duração. Série sem pausa declarada é
@@ -226,7 +227,7 @@ export function treinoParaGarmin(treino: TreinoResolvido, nome?: string): Record
         (Number.isFinite(trecho.recovery.meters) && (trecho.recovery.meters as number) > 0);
       if (temPausa) {
         (grupo.workoutSteps as PassoGarmin[]).push(
-          passoExecutavel(ordem++, PASSO.RECUPERACAO, trecho.recovery, trecho.recovery.target, "Recuperação", idDoGrupo),
+          passoExecutavel(ordem++, PASSO.RECUPERACAO, trecho.recovery, trecho.recovery.target, `${trecho.recovery.activity === "walk" ? "Caminhar · " : ""}Recuperação`, idDoGrupo),
         );
       }
 
@@ -234,7 +235,7 @@ export function treinoParaGarmin(treino: TreinoResolvido, nome?: string): Record
       continue;
     }
 
-    passos.push(passoExecutavel(ordem++, tipoDoPasso(trecho.label), trecho, trecho.target, trecho.label, null));
+    passos.push(passoExecutavel(ordem++, tipoDoPasso(trecho.label), trecho, trecho.target, `${trecho.activity === "walk" ? "Caminhar · " : ""}${trecho.label}`, null));
   }
 
   return {

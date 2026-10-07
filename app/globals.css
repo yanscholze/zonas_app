@@ -1051,6 +1051,41 @@ p, span, b, strong, small, em, li, td, th, label {
   margin: 14px 0;
 }
 
+.test-type-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 16px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.test-type-picker legend {
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+}
+
+.test-type-picker button {
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  background: #202021;
+}
+
+.test-type-picker button.selected {
+  color: #161616;
+  background: var(--gold);
+  border-color: var(--gold);
+}
+
+.test-type-picker button:disabled {
+  opacity: .75;
+}
+
 .test-form input,
 .drawer input {
   display: block;

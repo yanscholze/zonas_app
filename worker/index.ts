@@ -106,7 +106,7 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/plans": new Set(["action","planId","name","distance","weeks","frequency","level","goal","phases","plans"]),
   "/api/athlete-profile": new Set(["athleteName","phone","birthDate","objective","integration","trainingDays","noTargetRace"]),
   "/api/athlete-planning": new Set(["athleteName","plan","phase","weekNumber","totalWeeks"]),
-  "/api/performance-tests": new Set(["athleteName","testDate","distanceKm","minutes","seconds","age","id","action","zones","tempoRuns"]),
+  "/api/performance-tests": new Set(["athleteName","testDate","testType","distanceKm","minutes","seconds","age","id","action","zones","tempoRuns"]),
   "/api/training-weeks": new Set(["action","athleteName","weekStart","plan","phase","weekLabel","trainingDays","sessions","status","auditDifferences","expectedUpdatedAt"]),
   "/api/pain-reports": new Set(["athleteName","bodyArea","intensity","trainingImpact","note","action","id","weekStart","status","conduct"]),
   "/api/races-records": new Set(["kind","athleteName","name","raceDate","distance","city","goal","priority","resultTime","eventName","action","id","status"]),
@@ -118,7 +118,7 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/student/feedbacks": new Set(["feeling","note","weekStart","workoutDay"]),
   "/api/student/workout-executions": new Set(["weekStart","workoutDay","actualMinutes","actualKm","action","note"]),
   "/api/student/integration-preference": new Set(["integration"]),
-  "/api/student/performance-tests": new Set(["id","minutes","seconds","effort","note","sourceFormat","sourceKm"]),
+  "/api/student/performance-tests": new Set(["id","minutes","seconds","distanceKm","resultDistanceMeters","effort","note","sourceFormat","sourceKm"]),
   "/api/financial": new Set(["action","pixKey","pixName","defaultAmount","dueDay","athleteName","referenceMonth","amount","status","dueDate","classId","name","scope","className","athletes","image","note"]),
   "/api/feedbacks": new Set(["id","status"]),
   "/api/student/races-records": new Set(["kind","name","raceDate","distance","city","goal","priority","resultTime","eventName"]),
@@ -1499,27 +1499,37 @@ async function studentPerformanceTestsApi(request: Request, env: Env, athleteNam
     const sourceFormat = boundedText(input.sourceFormat, 10);
     const sourceKm = Number(input.sourceKm);
     if (!id) return Response.json({ error: "test_required" }, { status: 400 });
-    if (!Number.isFinite(minutes) || minutes < 0 || minutes > 120 || !Number.isFinite(seconds) || seconds < 0 || seconds > 59) {
-      return Response.json({ error: "invalid_test_time" }, { status: 400 });
+    const resultado = await env.DB.prepare("SELECT id,test_type,distance_km FROM performance_tests WHERE id = ? AND athlete_name = ? AND status = 'Solicitado' LIMIT 1").bind(id, athleteName).first() as {id?:string;test_type?:string;distance_km?:number}|null;
+    if (!resultado) return Response.json({ error: "test_not_found" }, { status: 404 });
+    const durationMinutes = resultado.test_type === "5min" ? 5 : resultado.test_type === "cooper12" ? 12 : null;
+    let total:number;
+    let distanceKm=Number(resultado.distance_km)||0;
+    let resultDistanceMeters:number|null=null;
+    if(durationMinutes){
+      const meters=Number(input.resultDistanceMeters??(Number(input.distanceKm)*1000));
+      if(!Number.isInteger(meters)||meters<1||meters>100_000)return Response.json({error:"invalid_test_distance_result",motivo:"Informe a distância percorrida durante o teste.",saida:"Use metros inteiros, por exemplo 2450."},{status:400});
+      total=durationMinutes*60;
+      resultDistanceMeters=meters;
+      distanceKm=meters/1000;
+    }else{
+      if (!Number.isFinite(minutes) || minutes < 0 || minutes > 120 || !Number.isFinite(seconds) || seconds < 0 || seconds > 59) return Response.json({ error: "invalid_test_time" }, { status: 400 });
+      total=Math.round(minutes*60+seconds);
+      if (total < 240) return Response.json({ error: "test_time_too_short", motivo: "O tempo informado é curto demais para um teste.", saida: "Confira os minutos e os segundos." }, { status: 400 });
     }
-    const total = Math.round(minutes * 60 + seconds);
-    if (total < 240) return Response.json({ error: "test_time_too_short", motivo: "O tempo informado é curto demais para um teste.", saida: "Confira os minutos e os segundos." }, { status: 400 });
-    const alvo = await env.DB.prepare("SELECT id FROM performance_tests WHERE id = ? AND athlete_name = ? AND status = 'Solicitado' LIMIT 1").bind(id, athleteName).first();
-    if (!alvo) return Response.json({ error: "test_not_found" }, { status: 404 });
     /* O arquivo não sobe: é lido no navegador e só o que ele mede segue, como já
        acontece no registro de treino. O que fica gravado é a origem do número. */
-    await ensureColumns(env, "performance_tests", { effort: "TEXT", athlete_note: "TEXT", source_format: "TEXT", source_km: "TEXT" });
+    await ensureColumns(env, "performance_tests", { test_type: "TEXT NOT NULL DEFAULT 'distance'", result_distance_meters: "INTEGER", effort: "TEXT", athlete_note: "TEXT", source_format: "TEXT", source_km: "TEXT" });
     await env.DB.prepare(`UPDATE performance_tests
-      SET total_seconds = ?, effort = ?, athlete_note = ?, source_format = ?, source_km = ?, status = 'Aguardando revisão'
+      SET total_seconds = ?, distance_km = ?, result_distance_meters = ?, effort = ?, athlete_note = ?, source_format = ?, source_km = ?, status = 'Aguardando revisão'
       WHERE id = ?`)
-      .bind(total, effort || null, athleteNote || null, sourceFormat || null,
+      .bind(total, distanceKm, resultDistanceMeters, effort || null, athleteNote || null, sourceFormat || null,
         Number.isFinite(sourceKm) && sourceKm > 0 ? String(sourceKm) : null, id).run();
-    return Response.json({ sent: true, totalSeconds: total });
+    return Response.json({ sent: true, totalSeconds: total, distanceKm, resultDistanceMeters });
   }
 
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
   await ensureTables(env, schema.performanceTests);
-  const tests = await env.DB.prepare("SELECT id,test_date,distance_km,total_seconds,vam,vo2,fc_max,pace_seconds,zones,tempo_runs,status,effort,athlete_note,source_format,source_km FROM performance_tests WHERE athlete_name = ? ORDER BY test_date DESC,created_at DESC").bind(athleteName).all();
+  const tests = await env.DB.prepare("SELECT id,test_type,test_date,distance_km,result_distance_meters,total_seconds,vam,vo2,fc_max,pace_seconds,zones,tempo_runs,status,effort,athlete_note,source_format,source_km FROM performance_tests WHERE athlete_name = ? ORDER BY test_date DESC,created_at DESC").bind(athleteName).all();
   return Response.json({ tests: tests.results });
 }
 
@@ -1761,7 +1771,7 @@ async function performanceTestsApi(request: Request, env: Env): Promise<Response
   if (request.method === "GET") {
     const athleteName = boundedText(url.searchParams.get("athlete"), 120);
     if (!athleteName) {
-      const result = await env.DB.prepare(`SELECT id, athlete_name, test_date, distance_km, total_seconds, status, created_at FROM performance_tests WHERE status != 'Aprovado' AND ${carteira.clausula} ORDER BY created_at DESC LIMIT 100`).bind(...carteira.valores).all();
+      const result = await env.DB.prepare(`SELECT id, athlete_name, test_type, test_date, distance_km, result_distance_meters, total_seconds, status, created_at FROM performance_tests WHERE status != 'Aprovado' AND ${carteira.clausula} ORDER BY created_at DESC LIMIT 100`).bind(...carteira.valores).all();
       return Response.json({ tests:result.results });
     }
     const result = await env.DB.prepare(`SELECT * FROM performance_tests WHERE athlete_name = ? AND ${carteira.clausula} ORDER BY test_date DESC, created_at DESC LIMIT 20`).bind(athleteName, ...carteira.valores).all();
@@ -1777,19 +1787,22 @@ async function performanceTestsApi(request: Request, env: Env): Promise<Response
        aluno saber que precisava correr um teste. */
     if (action === "request") {
       const athleteName = boundedText(input.athleteName,120);
+      const testType = boundedText(input.testType,20) || (Number(input.distanceKm) === 5 ? "5km" : "3km");
       const distanceKm = Number(input.distanceKm);
       const testDate = boundedText(input.testDate,10);
       if (!athleteName) return Response.json({error:"athlete_required"},{status:400});
-      if (![3,5].includes(distanceKm)) return Response.json({error:"invalid_test_distance"},{status:400});
+      if (!["3km","5km","5min","cooper12"].includes(testType) || (["3km","5km"].includes(testType) && distanceKm !== (testType === "3km" ? 3 : 5))) return Response.json({error:"invalid_test_type"},{status:400});
       if (testDate && !isIsoDate(testDate)) return Response.json({error:"invalid_test_date"},{status:400});
       const pendente = await env.DB.prepare("SELECT id FROM performance_tests WHERE athlete_name = ? AND status IN ('Solicitado','Aguardando revisão') LIMIT 1").bind(athleteName).first();
       if (pendente) return Response.json({error:"test_already_pending", motivo:"Já existe um teste em aberto para este aluno.", saida:"Revise ou cancele o atual antes de pedir outro."},{status:409});
       const id = crypto.randomUUID();
+      await ensureColumns(env, "performance_tests", { test_type: "TEXT NOT NULL DEFAULT 'distance'", result_distance_meters: "INTEGER" });
+      const durationSeconds=testType==="5min"?300:testType==="cooper12"?720:0;
       await env.DB.prepare(`INSERT INTO performance_tests
-        (id,athlete_name,test_date,distance_km,total_seconds,age,vam,vo2,fc_max,pace_seconds,zones,tempo_runs,status,created_at)
-        VALUES (?,?,?,?,0,0,'0','0',0,'0','[]','[]','Solicitado',?)`)
-        .bind(id, athleteName, testDate || new Date().toISOString().slice(0,10), distanceKm, Date.now()).run();
-      return Response.json({requested:true,id,athleteName,distanceKm},{status:201});
+        (id,athlete_name,test_type,test_date,distance_km,result_distance_meters,total_seconds,age,vam,vo2,fc_max,pace_seconds,zones,tempo_runs,status,created_at)
+        VALUES (?,?,?,?,?,NULL,?,0,'0','0',0,'0','[]','[]','Solicitado',?)`)
+        .bind(id, athleteName, testType, testDate || new Date().toISOString().slice(0,10), ["3km","5km"].includes(testType)?distanceKm:0, durationSeconds, Date.now()).run();
+      return Response.json({requested:true,id,athleteName,testType,distanceKm},{status:201});
     }
 
     if (action === "cancel_request") {
@@ -1813,22 +1826,38 @@ async function performanceTestsApi(request: Request, env: Env): Promise<Response
     }
     const athleteName = boundedText(input.athleteName,120);
     const testDate = boundedText(input.testDate,10);
+    const testType = boundedText(input.testType,20) || (Number(input.distanceKm) === 5 ? "5km" : "3km");
     const distanceKm = Number(input.distanceKm);
     const minutes = Number(input.minutes);
     const seconds = Number(input.seconds);
     const age = Number(input.age);
     if (!athleteName || !isIsoDate(testDate)) return Response.json({error:"athlete_and_date_required"},{status:400});
-    if (![3,5].includes(distanceKm) || !Number.isInteger(minutes) || minutes < 5 || minutes > 90 || !Number.isInteger(seconds) || seconds < 0 || seconds > 59 || !Number.isInteger(age) || age < 10 || age > 90) return Response.json({error:"invalid_test_result"},{status:400});
-    const totalSeconds = minutes*60+seconds;
+    const fixedMinutes=testType==="5min"?5:testType==="cooper12"?12:null;
+    const targetKm=testType==="3km"?3:testType==="5km"?5:null;
+    if (!(["3km","5km","5min","cooper12"].includes(testType)) || (fixedMinutes?(!Number.isFinite(distanceKm)||distanceKm<0.001||distanceKm>100||minutes!==fixedMinutes||seconds!==0):(!targetKm||distanceKm!==targetKm||!Number.isInteger(minutes)||minutes<5||minutes>90||!Number.isInteger(seconds)||seconds<0||seconds>59)) || !Number.isInteger(age) || age<10 || age>90) return Response.json({error:"invalid_test_result"},{status:400});
+    const totalSeconds = fixedMinutes?fixedMinutes*60:minutes*60+seconds;
     const vam = distanceKm/(totalSeconds/3600);
     const vo2 = vam*3.5;
     const paceSeconds = totalSeconds/distanceKm;
     const fcMax = 220-age;
     const zones = [["Z1","Recuperação",.60,.70],["Z2","Aeróbio",.70,.80],["Z3","Tempo Run",.80,.90],["Z4","Limiar",.90,1],["Z5","VO₂ máximo",1,1.10]].map(([z,label,low,high])=>({z,label,slow:paceSeconds/Number(low),fast:paceSeconds/Number(high)}));
     const tempoRuns = [["5 km",5],["10 km",10],["Meia maratona",21.0975],["Maratona",42.195]].map(([label,km])=>{const targetKm=Number(km);const projectedTotal=totalSeconds*Math.pow(targetKm/distanceKm,1.06);return{label,projectedTotal,targetPace:projectedTotal/targetKm}});
-    const id=crypto.randomUUID(); const createdAt=Date.now();
-    await env.DB.prepare("INSERT INTO performance_tests (id,athlete_name,test_date,distance_km,total_seconds,age,vam,vo2,fc_max,pace_seconds,zones,tempo_runs,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(id,athleteName,testDate,distanceKm,totalSeconds,age,String(vam),String(vo2),fcMax,String(paceSeconds),JSON.stringify(zones),JSON.stringify(tempoRuns),"Aguardando revisão",createdAt).run();
-    return Response.json({id,createdAt,status:"Aguardando revisão",vam,vo2,fcMax,paceSeconds,zones,tempoRuns},{status:201});
+    const requestedId=boundedText(input.id,80);
+    let id=requestedId;
+    let createdAt=Date.now();
+    const resultDistanceMeters=fixedMinutes?Math.round(distanceKm*1000):null;
+    if(requestedId){
+      const existing=await env.DB.prepare("SELECT id,created_at FROM performance_tests WHERE id=? AND athlete_name=? AND status='Aguardando revisão' LIMIT 1").bind(requestedId,athleteName).first() as {id?:string;created_at?:number}|null;
+      if(!existing)return Response.json({error:"test_not_found"},{status:404});
+      createdAt=Number(existing.created_at)||createdAt;
+      await ensureColumns(env,"performance_tests",{test_type:"TEXT NOT NULL DEFAULT 'distance'",result_distance_meters:"INTEGER"});
+      await env.DB.prepare("UPDATE performance_tests SET test_type=?,distance_km=?,result_distance_meters=?,total_seconds=?,age=?,vam=?,vo2=?,fc_max=?,pace_seconds=?,zones=?,tempo_runs=?,status='Aguardando revisão' WHERE id=? AND athlete_name=?").bind(testType,distanceKm,resultDistanceMeters,totalSeconds,age,String(vam),String(vo2),fcMax,String(paceSeconds),JSON.stringify(zones),JSON.stringify(tempoRuns),requestedId,athleteName).run();
+    }else{
+      id=crypto.randomUUID();
+      await ensureColumns(env,"performance_tests",{test_type:"TEXT NOT NULL DEFAULT 'distance'",result_distance_meters:"INTEGER"});
+      await env.DB.prepare("INSERT INTO performance_tests (id,athlete_name,test_type,test_date,distance_km,result_distance_meters,total_seconds,age,vam,vo2,fc_max,pace_seconds,zones,tempo_runs,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").bind(id,athleteName,testType,testDate,distanceKm,resultDistanceMeters,totalSeconds,age,String(vam),String(vo2),fcMax,String(paceSeconds),JSON.stringify(zones),JSON.stringify(tempoRuns),"Aguardando revisão",createdAt).run();
+    }
+    return Response.json({id,createdAt,status:"Aguardando revisão",testType,distanceKm,resultDistanceMeters,vam,vo2,fcMax,paceSeconds,zones,tempoRuns},{status:requestedId?200:201});
   }
   return new Response("Method not allowed",{status:405});
 }
@@ -3093,13 +3122,15 @@ async function treinoResolvido(
         label: String(bruta.label ?? "Série principal"),
         repetitions: Number(bruta.repetitions) || 1,
         effort: {
-          seconds: Number.isFinite(Number(bruta.effortMinutes)) ? Math.round(Number(bruta.effortMinutes) * 60) : null,
+          seconds: Number.isFinite(Number(bruta.effortSeconds)) ? Number(bruta.effortSeconds) : Number.isFinite(Number(bruta.effortMinutes)) ? Math.round(Number(bruta.effortMinutes) * 60) : null,
           meters: Number.isFinite(Number(bruta.effortMeters)) ? Number(bruta.effortMeters) : null,
+          activity: bruta.effortActivity === "walk" ? "walk" : "run",
           target: alvo(bruta.effortZone),
         },
         recovery: {
-          seconds: Number.isFinite(Number(bruta.recoveryMinutes)) ? Math.round(Number(bruta.recoveryMinutes) * 60) : null,
+          seconds: Number.isFinite(Number(bruta.recoverySeconds)) ? Number(bruta.recoverySeconds) : Number.isFinite(Number(bruta.recoveryMinutes)) ? Math.round(Number(bruta.recoveryMinutes) * 60) : null,
           meters: Number.isFinite(Number(bruta.recoveryMeters)) ? Number(bruta.recoveryMeters) : null,
+          activity: bruta.recoveryActivity === "walk" ? "walk" : "run",
           target: alvo(bruta.recoveryZone),
         },
       });
@@ -3108,8 +3139,9 @@ async function treinoResolvido(
     etapas.push({
       type: "simple",
       label: String(bruta?.label ?? "Etapa"),
-      seconds: Number.isFinite(Number(bruta?.minutes)) ? Math.round(Number(bruta?.minutes) * 60) : null,
+      seconds: Number.isFinite(Number(bruta?.seconds)) ? Number(bruta?.seconds) : Number.isFinite(Number(bruta?.minutes)) ? Math.round(Number(bruta?.minutes) * 60) : null,
       meters: Number.isFinite(Number(bruta?.meters ?? bruta?.distanceMeters)) ? Number(bruta?.meters ?? bruta?.distanceMeters) : null,
+      activity: bruta?.activity === "walk" ? "walk" : "run",
       target: alvo(bruta?.zone),
     });
   }

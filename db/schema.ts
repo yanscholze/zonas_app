@@ -74,8 +74,10 @@ export const athletePlanning = sqliteTable("athlete_planning", {
 export const performanceTests = sqliteTable("performance_tests", {
   id: text("id").primaryKey(),
   athleteName: text("athlete_name").notNull(),
+  testType: text("test_type").notNull().default("distance"),
   testDate: text("test_date").notNull(),
   distanceKm: integer("distance_km").notNull(),
+  resultDistanceMeters: integer("result_distance_meters"),
   totalSeconds: integer("total_seconds").notNull(),
   age: integer("age").notNull(),
   vam: text("vam").notNull(),
