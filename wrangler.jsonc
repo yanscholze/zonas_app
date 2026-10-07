@@ -18,7 +18,7 @@
 	// Domingo às 00:00 e 01:00 em Brasília (03:00 e 04:00 UTC): a segunda
 	// execução permite repetir publicações que falharam ou ficaram pendentes.
 	"triggers": {
-		"crons": ["0 3 * * 0", "0 4 * * 0"]
+		"crons": ["0 3 * * 1", "0 4 * * 1"]
 	},
 	// Os arquivos estáticos que o build gera. O worker os alcança por `env.ASSETS`
 	// e responde tudo o que não for rota de API.
