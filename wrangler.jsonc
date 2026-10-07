@@ -15,6 +15,11 @@
 	"compatibility_flags": [
 		"nodejs_compat"
 	],
+	// Domingo às 00:00 e 01:00 em Brasília (03:00 e 04:00 UTC): a segunda
+	// execução permite repetir publicações que falharam ou ficaram pendentes.
+	"triggers": {
+		"crons": ["0 3 * * 0", "0 4 * * 0"]
+	},
 	// Os arquivos estáticos que o build gera. O worker os alcança por `env.ASSETS`
 	// e responde tudo o que não for rota de API.
 	"assets": {
@@ -74,6 +79,9 @@
 	"env": {
 		"ensaio": {
 			"name": "zonasapp-ensaio",
+			"triggers": {
+				"crons": []
+			},
 			"d1_databases": [
 				{
 					"binding": "DB",

@@ -79,6 +79,11 @@ interface ExecutionContext {
   passThroughOnException(): void;
 }
 
+interface ScheduledController {
+  cron: string;
+  scheduledTime: number;
+}
+
 /**
  * E-mail da conta do treinador, vindo de `COACH_EMAIL`. Não há endereço padrão:
  * um e-mail fixo no código, somado a uma senha inicial também fixa, seria uma
@@ -2034,6 +2039,85 @@ async function trainingWeeksApi(request: Request, env: Env): Promise<Response> {
     return Response.json({ id, updatedAt, status: input.status ?? "Rascunho", providers }, { status: 201 });
   }
   return new Response("Method not allowed", { status: 405 });
+}
+
+/** Libera e publica somente os treinos completos da semana vigente no domingo. */
+async function liberarSemanaVigenteAutomaticamente(env: Env, scheduledTime: number): Promise<void> {
+  await garanteEsquema(env);
+  await ensureTables(env, schema.trainingWeeks, schema.trainingWeekAudit, schema.trainingWeekPublications);
+
+  const weekStart = weekStartOf(scheduledTime);
+  const semanas = await env.DB.prepare(`SELECT athlete_name,week_start,plan,phase,week_label,training_days,sessions,status,updated_at
+    FROM training_weeks WHERE week_start = ? AND status IN ('Rascunho','Liberada') ORDER BY athlete_name`).bind(weekStart).all();
+  const request = new Request("https://zonasapp.cloudfapp.workers.dev/api/training-weeks");
+  const resumo = { weekStart, found: semanas.results.length, released: 0, attempted: 0, sent: 0, skipped: 0, errors: 0 };
+
+  for (const bruto of semanas.results as Array<Record<string, unknown>>) {
+    const athleteName = boundedText(bruto.athlete_name, 120);
+    if (!athleteName) { resumo.skipped += 1; continue; }
+    try {
+      let sessions: Record<string, unknown>;
+      let trainingDays: string[];
+      try {
+        sessions = JSON.parse(String(bruto.sessions ?? "{}")) as Record<string, unknown>;
+        trainingDays = diasDeTreino(JSON.parse(String(bruto.training_days ?? "[]")));
+      } catch {
+        resumo.skipped += 1;
+        continue;
+      }
+      const workoutDays = trainingDays.filter(day => {
+        const session = sessions[day] as Record<string, unknown> | undefined;
+        return Boolean(session && !session.removed && Array.isArray(session.steps) && session.steps.length);
+      });
+      // O lançamento automático aplica a mesma exigência da liberação manual.
+      if (!trainingDays.length || workoutDays.length !== trainingDays.length) {
+        resumo.skipped += 1;
+        continue;
+      }
+
+      if (bruto.status === "Rascunho") {
+        const now = Date.now();
+        const previousSnapshot = JSON.stringify(bruto);
+        const nextSnapshot = JSON.stringify({ ...bruto, status: "Liberada", updated_at: now });
+        const update = await env.DB.prepare("UPDATE training_weeks SET status='Liberada',updated_at=? WHERE athlete_name=? AND week_start=? AND status='Rascunho'")
+          .bind(now, athleteName, weekStart).run();
+        if (!update.meta.changes) { resumo.skipped += 1; continue; }
+        await env.DB.prepare(`INSERT INTO training_week_audit
+          (id,athlete_name,week_start,actor_email,action,changed_fields,previous_snapshot,new_snapshot,created_at)
+          VALUES (?,?,?,?,?,?,?,?,?)`)
+          .bind(crypto.randomUUID(), athleteName, weekStart, "sistema@zonasapp.local", "Semana liberada automaticamente no domingo", JSON.stringify(["status"]), previousSnapshot, nextSnapshot, now).run();
+        resumo.released += 1;
+      }
+
+      const preference = await env.DB.prepare(`SELECT COALESCE(NULLIF(profile.integration,''),NULLIF(athlete.integration,''),'Sem integração') AS integration
+        FROM athletes athlete LEFT JOIN athlete_profiles profile ON profile.athlete_name=athlete.name
+        WHERE athlete.name=? LIMIT 1`).bind(athleteName).first() as { integration?: string } | null;
+      const selected = String(preference?.integration ?? "Sem integração");
+      const provider = selected === "Garmin" ? PROVIDERS.garmin.id
+        : ["Amazfit", "Amazfit / Zepp", "Zepp"].includes(selected) ? PROVIDERS.zepp.id : null;
+      if (!provider) { resumo.skipped += 1; continue; }
+
+      const publication = await env.DB.prepare("SELECT status,last_attempt_at FROM training_week_publications WHERE athlete_name=? AND week_start=? AND provider=? LIMIT 1")
+        .bind(athleteName, weekStart, provider).first() as { status?: string; last_attempt_at?: number | null } | null;
+      if (publication?.status === "sent" || publication?.status === "published") { resumo.skipped += 1; continue; }
+      if (publication?.status === "sending" && Date.now() - Number(publication.last_attempt_at || 0) < 30 * 60 * 1000) {
+        resumo.skipped += 1;
+        continue;
+      }
+
+      resumo.attempted += 1;
+      const result = await publicarSemanaParaIntegracaoEscolhida(env, request, athleteName, weekStart, workoutDays);
+      if (result.status === "sent" || result.status === "published") resumo.sent += 1;
+    } catch (error) {
+      resumo.errors += 1;
+      try {
+        await recordApplicationError(env, request, "liberação semanal automática", "weekly_auto_release_failed", 500,
+          error instanceof Error ? error : new Error(String(error)));
+      } catch { /* a próxima execução de domingo poderá tentar novamente */ }
+    }
+  }
+
+  console.log("weekly_auto_release", JSON.stringify(resumo));
 }
 
 /** Histórico de cada movimento de um relato de dor. */
@@ -4450,6 +4534,9 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
 }
 
 const worker = {
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(liberarSemanaVigenteAutomaticamente(env, controller.scheduledTime));
+  },
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     /* Falhar aqui não pode derrubar a resposta: se o banco estiver fora, quem
        reporta isso é o handler, com a área e o código dele — não uma exceção
