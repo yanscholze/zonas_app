@@ -6,10 +6,9 @@
  * autorização, e é essa diferença que este módulo torna explícita:
  *
  *   Strava  OAuth2 clássico. Funciona hoje, basta cadastrar o aplicativo.
- *   Garmin  OAuth2 com PKCE. O fluxo está implementado, mas o Garmin Connect
- *           Developer Program precisa aprovar a conta e liberar as APIs antes
- *           de as chamadas responderem.
- *   Zepp    OAuth2. Depende de quais recursos a conta tem liberados no portal.
+ *   Garmin  Sessão móvel Connect: login do aluno, token cifrado e renovação.
+ *           O mesmo cliente envia treinos e lê atividades, voltas e detalhes.
+ *   Zepp    Ingestão por token, através do mini-app no relógio.
  *   Apple   NÃO tem API de servidor. O HealthKit só existe dentro do iPhone,
  *           então a importação acontece pelo aparelho do atleta, com um token
  *           de ingestão que ele cola em um Atalho do iOS. É por isso que a

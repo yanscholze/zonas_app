@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildActivityResult, expandStages, readMetrics } from '../shared/activity-results.ts';
+import { buildActivityResult, expandStages, readMetrics, stepsFromGarminWorkout } from '../shared/activity-results.ts';
+import { treinoParaGarmin } from '../worker/garmin-treino.ts';
 import { listarAtividades, lerAtividade } from '../worker/garmin-conexao.ts';
 
 const session={token:'synthetic-token',refresh:'',expiraEm:Date.now()+3600000};
@@ -43,6 +44,44 @@ test('incomplete workout keeps unmeasured planned stages instead of inventing co
  raw:{step_metrics:[{stepIndex:0,durationSeconds:300,distanceMeters:600,averageHeartRate:128}]}});
  assert.equal(r.stages[0].metrics.averageHeartRate,128);assert.equal(r.stages[1].metrics,null);
  assert.equal(r.laps[0].association,'explicit');
+});
+
+test('Garmin step indexes join auto laps in warmup and identify an interrupted repetition',()=>{
+ const data=[{step:0,seconds:200,meters:400,type:'WARMUP'}, {step:0,seconds:100,meters:200,type:'WARMUP'},
+  {step:1,seconds:60,meters:200,type:'ACTIVE'}, {step:2,seconds:60,meters:100,type:'RECOVERY'},
+  {step:1,seconds:10,meters:20,type:'ACTIVE'}];
+ const raw={splits:{lapDTOs:data.map((d,i)=>({lapIndex:i+1,wktStepIndex:d.step,wktIndex:0,intensityType:d.type,duration:d.seconds,distance:d.meters,averageHR:140}))},
+  typedSplits:{splits:[{type:'INTERVAL_WARMUP',lapIndexes:[1,2],duration:300,distance:600,averageHR:139},
+   {type:'INTERVAL_ACTIVE',lapIndexes:[3],duration:60,distance:200}, {type:'INTERVAL_RECOVERY',lapIndexes:[4],duration:60,distance:100},
+   {type:'INTERVAL_ACTIVE',lapIndexes:[5],duration:10,distance:20}]}};
+ const input={provider:'Garmin',activityId:'123',startedAt:Date.now(),plannedSteps:steps,workoutMatch:'workout-id',raw};
+ const result=buildActivityResult(input);
+ assert.deepEqual(result.stages[0].lapIndexes,[0,1]);assert.equal(result.stages[0].metrics.durationSeconds,300);
+ assert.equal(result.stages[0].metrics.averageHeartRate,139);assert.equal(result.stages[3].metrics.durationSeconds,10);
+ assert.equal(result.stages[4].metrics,null);assert.equal(result.stages[5].metrics,null);
+ assert.equal(result.laps[4].association,'explicit');
+ assert.ok(buildActivityResult({...input,workoutMatch:'date'}).stages.every(s=>s.metrics===null));
+ assert.ok(buildActivityResult({...input,allowGarminStepIndexes:false}).stages.every(s=>s.metrics===null));
+});
+
+test('Garmin complete intervals retain cooldown and leave the extra recording lap apart',()=>{
+ const data=[{step:0,sec:300,type:'WARMUP'}, {step:1,sec:60,type:'ACTIVE'}, {step:2,sec:60,type:'RECOVERY'},
+  {step:1,sec:60,type:'ACTIVE'}, {step:2,sec:60,type:'RECOVERY'}, {step:4,sec:180,type:'COOLDOWN'}, {sec:2,type:'ACTIVE'}];
+ const raw={splits:{lapDTOs:data.map((d,i)=>({lapIndex:i+1,wktStepIndex:d.step,wktIndex:0,intensityType:d.type,duration:d.sec,distance:100}))},
+  typedSplits:{splits:data.map((d,i)=>({type:`INTERVAL_${d.type}`,lapIndexes:[i+1],duration:d.sec,distance:100}))}};
+ const result=buildActivityResult({provider:'Garmin',activityId:'123',startedAt:Date.now(),plannedSteps:steps,workoutMatch:'workout-id',raw});
+ assert.equal(result.stages.filter(s=>s.metrics).length,6);assert.equal(result.stages[5].metrics.durationSeconds,180);
+ assert.equal(result.laps[6].stageIndex,null);
+});
+
+test('old publication fingerprints restore the sent workout instead of an edited plan',()=>{
+ const original=[{type:'simple',label:'Aquecimento',seconds:300,meters:null,target:null},
+  {type:'repeat',label:'Tiro',repetitions:2,effort:{seconds:60,meters:null,activity:'walk',target:null},recovery:{seconds:60,meters:null,target:null}},
+  {type:'simple',label:'Desaquecimento',seconds:null,meters:500,target:null}];
+ const restored=stepsFromGarminWorkout(treinoParaGarmin({title:'Treino',description:'',estimatedSeconds:720,estimatedMeters:null,maxHeartRate:null,steps:original}));
+ assert.deepEqual(expandStages(restored).map(s=>[s.intensity,s.seconds,s.meters,s.activity]),expandStages(original).map(s=>[s.intensity,s.seconds,s.meters,s.activity]));
+ assert.equal(stepsFromGarminWorkout({workoutSegments:[]}),null);
+ assert.equal(readMetrics({paceSeconds:310}).paceSeconds,310);
 });
 
 test('reads Connect activity list and all detail endpoints using mobile bearer headers',async()=>{

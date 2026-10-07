@@ -11,7 +11,7 @@ export type ResultLap = {
 export type ActivityResult = {
   version: 1; activityId: string; provider: string; title: string; startedAt: number; importedAt: number;
   workoutId: string | null; workoutMatch: "workout-id" | "date" | "unmatched";
-  complete: boolean; summary: Metrics; laps: ResultLap[];
+  complete: boolean; mappingVersion?: number; summary: Metrics; laps: ResultLap[];
   stages: Array<PlannedStage & { metrics: Metrics | null; lapIndexes: number[] }>;
 };
 
@@ -50,6 +50,7 @@ const FIELD_NAMES: Record<string, string[]> = {
   distanceMeters: ["distanceMeters", "distance", "dis", "totalDistance"],
   averageHeartRate: ["averageHeartRate", "averageHR", "avgHeartRate", "avg_heart_rate"],
   maxHeartRate: ["maxHeartRate", "maxHR", "max_heart_rate"], minHeartRate: ["minHeartRate", "minHR"],
+  paceSeconds: ["paceSeconds", "averagePaceSeconds"],
   averageCadence: ["averageCadence", "averageRunCadence", "averageRunningCadenceInStepsPerMinute"],
   maxCadence: ["maxCadence", "maxRunCadence", "maxRunningCadenceInStepsPerMinute"],
   averagePower: ["averagePower", "avgPower"], maxPower: ["maxPower"], normalizedPower: ["normalizedPower"],
@@ -79,10 +80,10 @@ export function readMetrics(raw: Record<string, unknown>): Metrics {
 
 function positive(value: unknown): number | null { const n = numeric(value); return n !== null && n > 0 ? n : null; }
 function intensityOf(label: string): string {
-  const text = label.toLowerCase();
-  if (text.includes("desaquec")) return "cooldown";
-  if (text.includes("aquec")) return "warmup";
-  if (text.includes("recuper") || text.includes("pausa")) return "recovery";
+  const text = label.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  if (/desaquec|volta a calma|cool/.test(text)) return "cooldown";
+  if (/aquec|warm/.test(text)) return "warmup";
+  if (/recup|pausa|descans|trote|rest/.test(text)) return "recovery";
   return "active";
 }
 
@@ -123,7 +124,7 @@ function rows(value: unknown): Record<string, unknown>[] {
 }
 
 function normalizeIntensity(value: unknown): string | null {
-  const key = String(value ?? "").toLowerCase().replace(/[_\s-]/g, "");
+  const key = String(value ?? "").replace(/^INTERVAL_/i, "").toLowerCase().replace(/[_\s-]/g, "");
   if (key.includes("cooldown")) return "cooldown";
   if (key.includes("warmup")) return "warmup";
   if (["rest", "recovery", "recover"].includes(key)) return "recovery";
@@ -146,6 +147,55 @@ export function remoteWorkoutId(raw: Record<string, unknown>): string | null {
   return value !== null && value !== undefined && /^\d+$/.test(String(value)) && Number(value) > 0 ? String(value) : null;
 }
 
+/** Recupera as condições originais dos envios anteriores ao snapshot de etapas. */
+export function stepsFromGarminWorkout(value: unknown): unknown[] | null {
+  const raw = object(value);
+  const segments = Array.isArray(raw.workoutSegments) ? raw.workoutSegments : [];
+  if (segments.length !== 1) return null;
+  const steps = object(segments[0]).workoutSteps;
+  if (!Array.isArray(steps) || !steps.length) return null;
+  const executable = (value: unknown) => {
+    const step = object(value); const condition = object(step.endCondition).conditionTypeKey;
+    const slowSpeed = positive(step.targetValueOne); const fastSpeed = positive(step.targetValueTwo);
+    const label = String(step.description ?? object(step.stepType).stepTypeKey ?? "Etapa");
+    return { type: "simple", label, activity: /^Caminhar\s*·/i.test(label) ? "walk" : "run",
+      seconds: condition === "time" ? positive(step.endConditionValue) : null,
+      meters: condition === "distance" ? positive(step.endConditionValue) : null,
+      target: object(step.targetType).workoutTargetTypeKey === "pace.zone" && slowSpeed && fastSpeed
+        ? { paceSlowSeconds: 1000 / slowSpeed, paceFastSeconds: 1000 / fastSpeed } : null };
+  };
+  const resolved: unknown[] = [];
+  for (const value of steps) {
+    const step = object(value);
+    if (step.type === "ExecutableStepDTO") { resolved.push(executable(step)); continue; }
+    if (step.type !== "RepeatGroupDTO" || !Array.isArray(step.workoutSteps) || step.workoutSteps.length < 1 || step.workoutSteps.length > 2) return null;
+    resolved.push({ type: "repeat", label: String(object(step.workoutSteps[0]).description ?? "Tiro"),
+      repetitions: positive(step.numberOfIterations) ?? 1, effort: executable(step.workoutSteps[0]),
+      recovery: step.workoutSteps[1] ? executable(step.workoutSteps[1]) : {} });
+  }
+  return resolved;
+}
+
+/** FIT numera os passos executáveis antes da instrução que repete o grupo. */
+function garminStepIndexes(steps: unknown): Map<number, number[]> {
+  const indexes = new Map<number, number[]>(); let fitIndex = 0; let stageIndex = 0;
+  for (const value of Array.isArray(steps) ? steps.slice(0, 100) : []) {
+    const raw = object(value);
+    if (raw.kind !== "repeat" && raw.type !== "repeat") { indexes.set(fitIndex++, [stageIndex++]); continue; }
+    const recovery = raw.recovery ? object(raw.recovery) : { seconds: raw.recoverySeconds, minutes: raw.recoveryMinutes, meters: raw.recoveryMeters };
+    const hasRecovery = Boolean(positive(recovery.seconds) || positive(recovery.minutes) || positive(recovery.meters));
+    const effortIndex = fitIndex++; const recoveryIndex = hasRecovery ? fitIndex++ : null;
+    const efforts: number[] = []; const recoveries: number[] = [];
+    const repetitions = Math.min(100, Math.max(1, Math.floor(Number(raw.repetitions) || 1)));
+    for (let repeat = 0; repeat < repetitions && stageIndex < 500; repeat++) {
+      efforts.push(stageIndex++); if (hasRecovery && stageIndex < 500) recoveries.push(stageIndex++);
+    }
+    indexes.set(effortIndex, efforts); if (recoveryIndex !== null) indexes.set(recoveryIndex, recoveries);
+    fitIndex++; // repeat_until_steps_cmplt no arquivo FIT, sem etapa executada.
+  }
+  return indexes;
+}
+
 function closeToPlan(lap: ResultLap, stage: PlannedStage): boolean {
   // Alguns dispositivos chamam de ACTIVE qualquer trecho correndo, inclusive
   // aquecimento. Uma marca específica de recuperação/aquecimento deve conferir.
@@ -157,7 +207,7 @@ function closeToPlan(lap: ResultLap, stage: PlannedStage): boolean {
 
 export function buildActivityResult(input: {
   provider: string; activityId: string; startedAt: number; raw: Record<string, unknown>;
-  plannedSteps?: unknown; workoutMatch?: ActivityResult["workoutMatch"]; complete?: boolean;
+  plannedSteps?: unknown; workoutMatch?: ActivityResult["workoutMatch"]; complete?: boolean; allowGarminStepIndexes?: boolean;
 }): ActivityResult {
   const { raw } = input;
   const summaryRaw = { ...raw, ...object(raw.summaryDTO) };
@@ -175,6 +225,28 @@ export function buildActivityResult(input: {
       metrics: readMetrics({ ...lap, ...object(lap.metrics) }),
       stageIndex: validIndex ? rawIndex : null, association: validIndex ? "explicit" : "unmatched" };
   });
+  const stageMetrics = new Map<number, Metrics>();
+  if (input.provider === "Garmin" && input.workoutMatch === "workout-id" && input.allowGarminStepIndexes !== false && !explicit.length && splitRows.length) {
+    const indexes = garminStepIndexes(input.plannedSteps); const occurrences = new Map<number, number>();
+    const intervalGroups = typedRows.filter(group => /^INTERVAL_(WARMUP|ACTIVE|RECOVERY|REST|COOLDOWN)$/i.test(String(group.type ?? "")) && Array.isArray(group.lapIndexes))
+      .sort((a, b) => Number((a.lapIndexes as number[])[0]) - Number((b.lapIndexes as number[])[0]));
+    for (const group of intervalGroups) {
+      const lapIds = [...new Set(group.lapIndexes as unknown[])];
+      const members = lapIds.map(id => splitRows.findIndex(lap => lap.lapIndex === id));
+      if (!members.length || members.some(index => index < 0 || index >= laps.length || laps[index].stageIndex !== null)) continue;
+      const stepIds = members.map(index => numeric(splitRows[index].wktStepIndex));
+      const stepIndex = stepIds[0];
+      if (stepIndex === null || !Number.isInteger(stepIndex) || stepIds.some(id => id !== stepIndex)) continue;
+      // Várias sessões dentro da atividade não compartilham o mesmo índice.
+      if (members.some(index => numeric(splitRows[index].wktIndex) !== 0)) continue;
+      const occurrence = occurrences.get(stepIndex) ?? 0;
+      const stageIndex = indexes.get(stepIndex)?.[occurrence];
+      occurrences.set(stepIndex, occurrence + 1);
+      if (stageIndex === undefined || !planned[stageIndex] || normalizeIntensity(group.type) !== planned[stageIndex].intensity) continue;
+      for (const index of members) { laps[index].stageIndex = stageIndex; laps[index].association = "explicit"; }
+      stageMetrics.set(stageIndex, readMetrics(group));
+    }
+  }
   // Auto Lap não é uma etapa do treino. Só relacionamos a sequência quando os
   // limites medidos conferem e há workoutId ou marcações de intensidade.
   const hasMarkers = laps.some(lap => lap.intensity && lap.intensity !== "active");
@@ -184,11 +256,12 @@ export function buildActivityResult(input: {
   return {
     version: 1, provider: input.provider, activityId: input.activityId, startedAt: input.startedAt, importedAt: Date.now(),
     title: String(raw.activityName ?? raw.title ?? "Atividade concluída").slice(0, 160),
-    workoutId: remoteWorkoutId(raw), workoutMatch: input.workoutMatch ?? "unmatched", complete: input.complete ?? true,
+    workoutId: remoteWorkoutId(raw), workoutMatch: input.workoutMatch ?? "unmatched", complete: input.complete ?? true, mappingVersion: 2,
     summary: readMetrics(summaryRaw), laps,
     stages: planned.map(stage => {
       const stageLaps = laps.filter(lap => lap.stageIndex === stage.index);
-      return { ...stage, lapIndexes: stageLaps.map(lap => lap.index), metrics: stageLaps.length === 1 ? stageLaps[0].metrics : stageLaps.length > 1 ? combineMetrics(stageLaps.map(lap => lap.metrics)) : null };
+      const measured = stageLaps.length === 1 ? stageLaps[0].metrics : stageLaps.length > 1 ? combineMetrics(stageLaps.map(lap => lap.metrics)) : null;
+      return { ...stage, lapIndexes: stageLaps.map(lap => lap.index), metrics: measured ? { ...measured, ...stageMetrics.get(stage.index) } : null };
     }),
   };
 }

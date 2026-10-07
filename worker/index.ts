@@ -3,7 +3,7 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } fr
 import handler from "vinext/server/app-router-entry";
 import { treinoParaGarmin } from "./garmin-treino";
 import { entrar as entrarNoGarmin, renovar as renovarGarmin, subirTreino as subirTreinoNoGarmin, agendarTreino as agendarTreinoNoGarmin, listarAtividades as listarAtividadesGarmin, lerAtividade as lerAtividadeGarmin, type Sessao as GarminSessao } from "./garmin-conexao";
-import { buildActivityResult, parseActivityResult, remoteWorkoutId, object, type ActivityResult } from "../shared/activity-results";
+import { buildActivityResult, parseActivityResult, remoteWorkoutId, stepsFromGarminWorkout, object, type ActivityResult } from "../shared/activity-results";
 import {
   MIN_PASSWORD_LENGTH,
   accountByEmail,
@@ -2872,7 +2872,7 @@ async function integrationCallbackApi(request: Request, url: URL, env: Env, prov
 
 /* --- Ingestão de atividades ----------------------------------------------- */
 
-type MatchedWorkout = { weekStart: string; day: string; session: Record<string, unknown>; steps: unknown; match: ActivityResult["workoutMatch"] };
+type MatchedWorkout = { weekStart: string; day: string; session: Record<string, unknown>; steps: unknown; hasSentSnapshot: boolean; match: ActivityResult["workoutMatch"] };
 
 function runningSport(sport: string): boolean {
   return /run|walk|hiking|caminh|corrida/i.test(sport);
@@ -2895,6 +2895,9 @@ async function matchImportedWorkout(env: Env, athleteName: string, provider: Pro
         const reference = object(value);
         if (String(reference.workoutId) !== workoutId) continue;
         weekStart = String(publication.week_start); day = key; snapshot = reference.steps;
+        if (!snapshot && typeof reference.fingerprint === "string") {
+          try { snapshot = stepsFromGarminWorkout(JSON.parse(reference.fingerprint)); } catch { /* envio antigo sem snapshot válido */ }
+        }
         match = "workout-id"; found = true; break;
       }
       if (found) break;
@@ -2908,7 +2911,7 @@ async function matchImportedWorkout(env: Env, athleteName: string, provider: Pro
   let session: Record<string, unknown>;
   try { session = object(object(JSON.parse(week.sessions))[day]); } catch { return null; }
   if (!Object.keys(session).length || session.removed) return null;
-  return { weekStart, day, session, steps: snapshot ?? session.steps, match };
+  return { weekStart, day, session, steps: snapshot ?? session.steps, hasSentSnapshot: Array.isArray(snapshot), match };
 }
 
 async function recordImportedExecution(env: Env, athleteName: string, provider: ProviderId, activity: NonNullable<ReturnType<typeof normalizeActivity>>, matched: MatchedWorkout, details: ActivityResult): Promise<void> {
@@ -2947,7 +2950,7 @@ async function storeActivity(env: Env, athleteName: string, provider: ProviderId
   const matched = await matchImportedWorkout(env, athleteName, provider, raw, activity.startedAt, activity.sport);
   const details = buildActivityResult({ provider: PROVIDERS[provider].label, activityId: activity.externalId,
     startedAt: activity.startedAt, raw, plannedSteps: matched?.steps, workoutMatch: matched?.match,
-    complete: raw.detailsComplete !== false });
+    complete: raw.detailsComplete !== false, allowGarminStepIndexes: matched?.hasSentSnapshot ?? false });
   let payload = JSON.stringify(raw);
   if (payload.length > 800_000) payload = JSON.stringify({ ...raw, charts: undefined, details: undefined });
   if (payload.length > 800_000) payload = JSON.stringify({ activityId: activity.externalId, summary: details.summary });
@@ -3115,7 +3118,8 @@ async function importarAtividadesGarmin(env: Env, athleteName: string, dias = 30
     const activity = normalizeActivity("garmin", raw);
     if (!activity || !runningSport(activity.sport)) return false;
     const prior = known.get(activity.externalId);
-    return !parseActivityResult(prior?.activity_result)?.complete || Boolean(prior?.matched_week_start && !prior.execution_id);
+    const result = parseActivityResult(prior?.activity_result);
+    return !result?.complete || result.mappingVersion !== 2 || Boolean(prior?.matched_week_start && !prior.execution_id);
   });
   let imported = 0; let updated = 0; let error: string | undefined;
   for (const activity of candidates.slice(0, limit)) {
