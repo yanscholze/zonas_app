@@ -89,10 +89,9 @@ export const PROVIDERS: Record<ProviderId, ProviderDefinition> = {
     canImportActivities: true,
     canSendWorkouts: true,
     notes: "O atleta entra com a conta do Garmin Connect. A Zonas-App guarda apenas o token de acesso.",
-    // Endpoint público da Health/Activity API. A janela é obrigatória e o
-    // próprio Garmin limita o intervalo por chamada.
-    activitiesUrl: "https://apis.garmin.com/wellness-api/rest/activities",
-    activitiesRange: "epoch-seconds",
+    // A sessão móvel só autoriza o Connect; a Activity API oficial tem outro OAuth.
+    activitiesUrl: "https://connectapi.garmin.com/activitylist-service/activities/search/activities",
+    activitiesRange: "iso",
     activitiesPath: "",
   },
   zepp: {

@@ -17,8 +17,9 @@
 	],
 	// Domingo às 00:00 e 01:00 em Brasília (03:00 e 04:00 UTC): a segunda
 	// execução permite repetir publicações que falharam ou ficaram pendentes.
+	// A consulta de resultados concluídos roda separadamente a cada dez minutos.
 	"triggers": {
-		"crons": ["0 3 * * 1", "0 4 * * 1"]
+		"crons": ["0 3 * * 1", "0 4 * * 1", "*/10 * * * *"]
 	},
 	// Os arquivos estáticos que o build gera. O worker os alcança por `env.ASSETS`
 	// e responde tudo o que não for rota de API.
@@ -50,9 +51,8 @@
 		"binding": "IMAGES"
 	},
 	// Configuração, não segredo: ligam ou desligam comportamento e não têm valor
-	// sigiloso, então ficam à vista e versionadas. As integrações começam
-	// desligadas porque dependem de cadastro oficial junto a cada fabricante — a
-	// tela já explica isso ao treinador.
+	// sigiloso, então ficam à vista e versionadas. Estas flags controlam apenas
+	// a API oficial Garmin; a integração móvel Connect não depende delas.
 	//
 	// Nenhum segredo aqui. Tudo o que é segredo entra por `wrangler secret put`,
 	// que grava na conta e nunca no repositório — que é público.

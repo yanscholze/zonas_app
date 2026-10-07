@@ -2,7 +2,8 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 import { treinoParaGarmin } from "./garmin-treino";
-import { entrar as entrarNoGarmin, renovar as renovarGarmin, subirTreino as subirTreinoNoGarmin, agendarTreino as agendarTreinoNoGarmin, type Sessao as GarminSessao } from "./garmin-conexao";
+import { entrar as entrarNoGarmin, renovar as renovarGarmin, subirTreino as subirTreinoNoGarmin, agendarTreino as agendarTreinoNoGarmin, listarAtividades as listarAtividadesGarmin, lerAtividade as lerAtividadeGarmin, type Sessao as GarminSessao } from "./garmin-conexao";
+import { buildActivityResult, parseActivityResult, remoteWorkoutId, object, type ActivityResult } from "../shared/activity-results";
 import {
   MIN_PASSWORD_LENGTH,
   accountByEmail,
@@ -2358,6 +2359,11 @@ async function ensureWorkoutExecutions(env: Env) {
   await ensureTables(env, schema.workoutExecutions);
 }
 
+function executionWithResult(row: unknown) {
+  const execution = object(row);
+  return { ...execution, activity_result: parseActivityResult(execution.activity_result) };
+}
+
 function workoutAccuracy(plannedMinutes: number | null, plannedKm: number | null, actualMinutes: number | null, actualKm: number | null) {
   const scores: number[] = [];
   if (plannedMinutes && actualMinutes !== null) scores.push(Math.max(0, 100 - Math.abs(actualMinutes - plannedMinutes) / plannedMinutes * 100));
@@ -2375,7 +2381,7 @@ async function studentWorkoutExecutionsApi(request: Request, env: Env, athleteNa
     const result = await env.DB.prepare(
       "SELECT * FROM workout_executions WHERE athlete_name = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 30",
     ).bind(athleteName, desde).all();
-    return Response.json({ executions: result.results, days: dias });
+    return Response.json({ executions: result.results.map(executionWithResult), days: dias });
   }
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
   const input = await request.json() as Record<string, unknown>;
@@ -2418,13 +2424,13 @@ async function studentWorkoutExecutionsApi(request: Request, env: Env, athleteNa
   // formulário manual não tem como capturar.
   await ensureIntegrationTables(env);
   const importada = await env.DB.prepare(
-    `SELECT external_activity_id, provider, distance_meters, moving_seconds, average_heart_rate, average_pace_seconds
+    `SELECT external_activity_id, provider, distance_meters, moving_seconds, average_heart_rate, average_pace_seconds, activity_result
        FROM external_activities
       WHERE athlete_name = ? AND matched_week_start = ? AND matched_workout_day = ?
       ORDER BY started_at DESC LIMIT 1`,
   ).bind(athleteName, weekStart, workoutDay).first() as {
     external_activity_id?: string; provider?: string; distance_meters?: number;
-    moving_seconds?: number; average_heart_rate?: number; average_pace_seconds?: number;
+    moving_seconds?: number; average_heart_rate?: number; average_pace_seconds?: number; activity_result?: string;
   } | null;
 
   if (importada) {
@@ -2438,6 +2444,16 @@ async function studentWorkoutExecutionsApi(request: Request, env: Env, athleteNa
     if (!Number.isFinite(actualKm) || actualKm <= 0) {
       actualKm = Number(importada.distance_meters ?? 0) / 1000;
     }
+  }
+
+  const prior = externalId ? await env.DB.prepare("SELECT * FROM workout_executions WHERE athlete_name=? AND source=? AND external_activity_id=? LIMIT 1")
+    .bind(athleteName, source, externalId).first() as { id?: string } | null : null;
+  if (prior && !Number(input.actualMinutes) && !Number(input.actualKm) && !note) {
+    const saved = object(prior);
+    return Response.json({ ...saved, ...executionWithResult(prior), status: "Concluído", correct: saved.correct_percentage, wrong: saved.wrong_percentage,
+      measured: saved.classification !== "Concluído sem medição", fromIntegration: true,
+      actualMinutes: saved.actual_minutes, actualKm: saved.actual_km, averageHeartRate: saved.average_heart_rate,
+      averagePaceSeconds: saved.average_pace_seconds, createdAt: saved.created_at });
   }
 
   const safeActualMinutes = Number.isFinite(actualMinutes) && actualMinutes > 0 && actualMinutes <= 1440 ? Math.round(actualMinutes) : null;
@@ -2454,20 +2470,23 @@ async function studentWorkoutExecutionsApi(request: Request, env: Env, athleteNa
     paceSeconds = Math.round((safeActualMinutes * 60) / safeActualKm);
   }
 
-  const id = crypto.randomUUID();
+  const id = prior?.id ?? crypto.randomUUID();
   await env.DB.prepare(`INSERT INTO workout_executions
-    (id,athlete_name,week_start,workout_day,planned_minutes,planned_km,actual_minutes,actual_km,correct_percentage,wrong_percentage,classification,source,created_at,status,note,average_heart_rate,average_pace_seconds,external_activity_id)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'Concluído',?,?,?,?)`)
+    (id,athlete_name,week_start,workout_day,planned_minutes,planned_km,actual_minutes,actual_km,correct_percentage,wrong_percentage,classification,source,created_at,status,note,average_heart_rate,average_pace_seconds,external_activity_id,activity_result)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'Concluído',?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+    actual_minutes=excluded.actual_minutes,actual_km=excluded.actual_km,correct_percentage=excluded.correct_percentage,
+    wrong_percentage=excluded.wrong_percentage,classification=excluded.classification,note=excluded.note,activity_result=excluded.activity_result`)
     .bind(id, athleteName, weekStart, workoutDay, plannedMinutes, plannedKm === null ? null : String(plannedKm),
           safeActualMinutes, safeActualKm === null ? null : String(safeActualKm),
           analysis.correct, analysis.wrong, analysis.classification, source, now,
-          note || null, heartRate, paceSeconds, externalId).run();
+          note || null, heartRate, paceSeconds, externalId, importada?.activity_result ?? null).run();
 
   return Response.json({
     id, status: "Concluído", ...analysis, measured: Boolean(temMedida),
     plannedMinutes, plannedKm, actualMinutes: safeActualMinutes, actualKm: safeActualKm,
     averageHeartRate: heartRate, averagePaceSeconds: paceSeconds,
     source, fromIntegration: Boolean(importada), note: note || null, createdAt: now,
+    activity_result: parseActivityResult(importada?.activity_result),
   }, { status: 201 });
 }
 
@@ -2476,7 +2495,7 @@ async function workoutExecutionsApi(request: Request, env: Env): Promise<Respons
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
   await ensureWorkoutExecutions(env);
   const result = await env.DB.prepare(`SELECT * FROM workout_executions WHERE ${carteira.clausula} ORDER BY created_at DESC LIMIT 100`).bind(...carteira.valores).all();
-  return Response.json({ executions: result.results });
+  return Response.json({ executions: result.results.map(executionWithResult) });
 }
 
 async function integrationOverviewApi(request: Request, env: Env): Promise<Response> {
@@ -2499,10 +2518,10 @@ async function integrationOverviewApi(request: Request, env: Env): Promise<Respo
 
 async function integrationReadinessApi(request:Request,env:Env):Promise<Response>{
   if(request.method!=="GET")return new Response("Method not allowed",{status:405});
-  const garminCredentials=Boolean(env.GARMIN_CONSUMER_KEY&&env.GARMIN_CONSUMER_SECRET);
+  const garminCredentials=Boolean(env.STRAVA_TOKEN_ENCRYPTION_KEY);
   const zeppCredentials=Boolean(env.ZEPP_APP_ID&&env.ZEPP_APP_SECRET&&env.ZEPP_WEBHOOK_SECRET);
   return Response.json({providers:[
-    {id:"garmin",name:"Garmin",credentialsConfigured:garminCredentials,receiveActivities:garminCredentials&&env.GARMIN_ACTIVITY_API_ENABLED==="true",sendStructuredWorkouts:garminCredentials&&env.GARMIN_TRAINING_API_ENABLED==="true",status:!garminCredentials?"Cadastro oficial necessário":env.GARMIN_ACTIVITY_API_ENABLED==="true"&&env.GARMIN_TRAINING_API_ENABLED==="true"?"Pronta para testes":"Aguardando liberação das APIs"},
+    {id:"garmin",name:"Garmin",credentialsConfigured:garminCredentials,receiveActivities:garminCredentials,sendStructuredWorkouts:garminCredentials,automaticReturn:garminCredentials,pollIntervalMinutes:10,status:garminCredentials?"Disponível pelo Garmin Connect":"Credenciais não configuradas"},
     {id:"amazfit",name:"Amazfit / Zepp",credentialsConfigured:zeppCredentials,receiveActivities:false,sendStructuredWorkouts:false,status:!zeppCredentials?"Cadastro oficial necessário":"Aplicativo Zepp em preparação"}
   ]});
 }
@@ -2709,10 +2728,7 @@ function providerIsReady(env: Env, provider: ProviderDefinition): boolean {
 function providerStatusLabel(env: Env, provider: ProviderDefinition): string {
   if (!providerIsReady(env, provider)) return "Credenciais não configuradas";
   if (provider.id === "garmin") {
-    const activity = env.GARMIN_ACTIVITY_API_ENABLED === "true";
-    const training = env.GARMIN_TRAINING_API_ENABLED === "true";
-    if (!activity && !training) return "Aguardando liberação das APIs";
-    return activity && training ? "Pronta para testes" : "Liberação parcial das APIs";
+    return "Envio e retorno pelo Garmin Connect";
   }
   if (provider.id === "apple") return "Pronta — envio pelo iPhone";
   return "Pronta para conectar";
@@ -2856,10 +2872,85 @@ async function integrationCallbackApi(request: Request, url: URL, env: Env, prov
 
 /* --- Ingestão de atividades ----------------------------------------------- */
 
-/** Grava uma atividade normalizada, ignorando o que já foi importado antes. */
+type MatchedWorkout = { weekStart: string; day: string; session: Record<string, unknown>; steps: unknown; match: ActivityResult["workoutMatch"] };
+
+function runningSport(sport: string): boolean {
+  return /run|walk|hiking|caminh|corrida/i.test(sport);
+}
+
+async function matchImportedWorkout(env: Env, athleteName: string, provider: ProviderId, raw: Record<string, unknown>, startedAt: number, sport: string): Promise<MatchedWorkout | null> {
+  if (!runningSport(sport)) return null;
+  await ensureTables(env, schema.trainingWeeks, schema.trainingWeekPublications);
+  let weekStart = weekStartOf(startedAt); let day = workoutDayOf(startedAt);
+  let snapshot: unknown = null;
+  let match: ActivityResult["workoutMatch"] = "date";
+  const workoutId = provider === "garmin" ? remoteWorkoutId(raw) : null;
+  if (workoutId) {
+    const publications = await env.DB.prepare("SELECT week_start,remote_workouts FROM training_week_publications WHERE athlete_name=? AND provider='garmin' ORDER BY week_start DESC LIMIT 104").bind(athleteName).all();
+    let found = false;
+    for (const publication of publications.results as Array<Record<string, unknown>>) {
+      let remote: Record<string, unknown>;
+      try { remote = object(JSON.parse(String(publication.remote_workouts ?? "{}"))); } catch { continue; }
+      for (const [key, value] of Object.entries(remote)) {
+        const reference = object(value);
+        if (String(reference.workoutId) !== workoutId) continue;
+        weekStart = String(publication.week_start); day = key; snapshot = reference.steps;
+        match = "workout-id"; found = true; break;
+      }
+      if (found) break;
+    }
+    // Um treino de outra plataforma não deve concluir o treino do Zonas só por
+    // ter sido executado na mesma data.
+    if (!found) return null;
+  }
+  const week = await env.DB.prepare("SELECT sessions FROM training_weeks WHERE athlete_name=? AND week_start=? AND status='Liberada' LIMIT 1").bind(athleteName, weekStart).first() as { sessions?: string } | null;
+  if (!week?.sessions) return null;
+  let session: Record<string, unknown>;
+  try { session = object(object(JSON.parse(week.sessions))[day]); } catch { return null; }
+  if (!Object.keys(session).length || session.removed) return null;
+  return { weekStart, day, session, steps: snapshot ?? session.steps, match };
+}
+
+async function recordImportedExecution(env: Env, athleteName: string, provider: ProviderId, activity: NonNullable<ReturnType<typeof normalizeActivity>>, matched: MatchedWorkout, details: ActivityResult): Promise<void> {
+  await ensureWorkoutExecutions(env);
+  const plannedMinutes = Number(matched.session.durationMinutes) > 0 ? Number(matched.session.durationMinutes) : null;
+  const plannedKm = Number(matched.session.estimatedKm) > 0 ? Number(matched.session.estimatedKm) : null;
+  const minutes = activity.movingSeconds !== null && activity.movingSeconds > 0 ? Math.round(activity.movingSeconds / 60 * 100) / 100 : null;
+  const km = activity.distanceMeters !== null && activity.distanceMeters > 0 ? Math.round(activity.distanceMeters / 10) / 100 : null;
+  const measured = Boolean((plannedMinutes && minutes !== null) || (plannedKm && km !== null));
+  const analysis = measured ? workoutAccuracy(plannedMinutes, plannedKm, minutes, km) : { correct: 0, wrong: 0, classification: "Concluído sem medição" };
+  const label = PROVIDERS[provider].label;
+  // Enriquece também a conclusão manual que chegou antes do relógio.
+  const prior = await env.DB.prepare(`SELECT id FROM workout_executions WHERE athlete_name=? AND week_start=? AND workout_day=?
+    AND ((source=? AND external_activity_id=?) OR (source='Manual' AND external_activity_id IS NULL)) ORDER BY created_at DESC LIMIT 1`)
+    .bind(athleteName, matched.weekStart, matched.day, label, activity.externalId).first() as { id?: string } | null;
+  const id = prior?.id ?? `activity-${await sha256Text(`${athleteName}\n${provider}\n${activity.externalId}`)}`;
+  await env.DB.prepare(`INSERT INTO workout_executions
+    (id,athlete_name,week_start,workout_day,planned_minutes,planned_km,actual_minutes,actual_km,correct_percentage,wrong_percentage,classification,source,created_at,status,average_heart_rate,average_pace_seconds,external_activity_id,activity_result)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'Concluído',?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+    actual_minutes=excluded.actual_minutes,actual_km=excluded.actual_km,correct_percentage=excluded.correct_percentage,
+    wrong_percentage=excluded.wrong_percentage,classification=excluded.classification,source=excluded.source,status=excluded.status,
+    average_heart_rate=excluded.average_heart_rate,average_pace_seconds=excluded.average_pace_seconds,
+    external_activity_id=excluded.external_activity_id,activity_result=excluded.activity_result`)
+    .bind(id, athleteName, matched.weekStart, matched.day, plannedMinutes, plannedKm === null ? null : String(plannedKm),
+      minutes, km === null ? null : String(km), analysis.correct, analysis.wrong, analysis.classification, label, activity.startedAt,
+      activity.averageHeartRate, averagePaceSeconds(activity), activity.externalId, JSON.stringify(details)).run();
+}
+
+/** Guarda o resultado e conclui o treino liberado; reenvio apenas enriquece o mesmo registro. */
 async function storeActivity(env: Env, athleteName: string, provider: ProviderId, raw: Record<string, unknown>): Promise<boolean> {
   const activity = normalizeActivity(provider, raw);
   if (!activity) return false;
+  const owner = await env.DB.prepare("SELECT athlete_name FROM external_activities WHERE provider=? AND external_activity_id=? LIMIT 1")
+    .bind(PROVIDERS[provider].label, activity.externalId).first() as { athlete_name?: string } | null;
+  if (owner?.athlete_name && owner.athlete_name !== athleteName) return false;
+  const matched = await matchImportedWorkout(env, athleteName, provider, raw, activity.startedAt, activity.sport);
+  const details = buildActivityResult({ provider: PROVIDERS[provider].label, activityId: activity.externalId,
+    startedAt: activity.startedAt, raw, plannedSteps: matched?.steps, workoutMatch: matched?.match,
+    complete: raw.detailsComplete !== false });
+  let payload = JSON.stringify(raw);
+  if (payload.length > 800_000) payload = JSON.stringify({ ...raw, charts: undefined, details: undefined });
+  if (payload.length > 800_000) payload = JSON.stringify({ activityId: activity.externalId, summary: details.summary });
   const result = await env.DB.prepare(`INSERT OR IGNORE INTO external_activities
     (id, athlete_name, provider, external_activity_id, started_at, sport, distance_meters, moving_seconds, elapsed_seconds, average_heart_rate, average_pace_seconds, raw_payload, matched_week_start, matched_workout_day, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -2867,9 +2958,14 @@ async function storeActivity(env: Env, athleteName: string, provider: ProviderId
       crypto.randomUUID(), athleteName, PROVIDERS[provider].label, activity.externalId,
       activity.startedAt, activity.sport, activity.distanceMeters, activity.movingSeconds,
       activity.elapsedSeconds, activity.averageHeartRate, averagePaceSeconds(activity),
-      JSON.stringify(raw).slice(0, 12_000),
-      weekStartOf(activity.startedAt), workoutDayOf(activity.startedAt), Date.now(),
+      payload,
+      matched?.weekStart ?? null, matched?.day ?? null, Date.now(),
     ).run() as { meta?: { changes?: number } };
+  await env.DB.prepare(`UPDATE external_activities SET distance_meters=?,moving_seconds=?,elapsed_seconds=?,average_heart_rate=?,average_pace_seconds=?,
+    raw_payload=?,matched_week_start=?,matched_workout_day=?,activity_result=? WHERE athlete_name=? AND provider=? AND external_activity_id=?`)
+    .bind(activity.distanceMeters, activity.movingSeconds, activity.elapsedSeconds, activity.averageHeartRate, averagePaceSeconds(activity),
+      payload, matched?.weekStart ?? null, matched?.day ?? null, JSON.stringify(details), athleteName, PROVIDERS[provider].label, activity.externalId).run();
+  if (matched) await recordImportedExecution(env, athleteName, provider, activity, matched, details);
   return Number(result?.meta?.changes ?? 1) > 0;
 }
 
@@ -2953,6 +3049,7 @@ function periodoDaConsulta(provider: ProviderDefinition, desde: number, ate: num
 async function importarAtividades(
   env: Env, provider: ProviderDefinition, athleteName: string, dias = 30,
 ): Promise<{ imported: number; scanned: number; error?: string }> {
+  if (provider.id === "garmin") return importarAtividadesGarmin(env, athleteName, dias);
   if (!provider.activitiesUrl) {
     return { imported: 0, scanned: 0, error: "import_not_available" };
   }
@@ -2986,6 +3083,87 @@ async function importarAtividades(
   await env.DB.prepare("UPDATE external_integrations SET last_sync_at = ?, updated_at = ? WHERE athlete_name = ? AND provider = ?")
     .bind(agora, agora, athleteName, provider.label).run();
   return { imported, scanned: lista.length };
+}
+
+async function importarAtividadesGarmin(env: Env, athleteName: string, dias = 30, limit = 10): Promise<{ imported: number; scanned: number; updated?: number; remaining?: number; error?: string }> {
+  await ensureIntegrationTables(env);
+  await ensureWorkoutExecutions(env);
+  const now = Date.now();
+  // Uma reivindicação atômica evita duas telas ou dois crons importando juntos.
+  const claim = await env.DB.prepare(`UPDATE external_integrations SET last_import_attempt_at=? WHERE athlete_name=? AND provider='Garmin'
+    AND status='Conectado' AND (last_import_attempt_at IS NULL OR last_import_attempt_at<?)`)
+    .bind(now, athleteName, now - 120_000).run();
+  if (!claim.meta.changes) return { imported: 0, scanned: 0, error: "sync_in_progress_or_not_connected" };
+  const failure = async (error: string) => {
+    await env.DB.prepare("UPDATE external_integrations SET last_import_error=? WHERE athlete_name=? AND provider='Garmin'").bind(error, athleteName).run();
+    return { imported: 0, scanned: 0, error };
+  };
+  const session = await sessaoGarminDoAtleta(env, athleteName);
+  if (!session) return failure("reconnect_required");
+  const list = await listarAtividadesGarmin(session, dateInSaoPaulo(now - Math.min(90, Math.max(1, dias)) * 86_400_000), dateInSaoPaulo(now));
+  if (!list.ok) {
+    if (list.falha === "autorizacao_expirada") await marcaGarminParaReconectar(env, athleteName);
+    return failure(list.falha);
+  }
+  const existing = await env.DB.prepare(`SELECT activity.external_activity_id,activity.activity_result,activity.matched_week_start,
+    (SELECT id FROM workout_executions execution WHERE execution.athlete_name=activity.athlete_name AND execution.source=activity.provider
+     AND execution.external_activity_id=activity.external_activity_id LIMIT 1) AS execution_id
+    FROM external_activities activity WHERE activity.athlete_name=? AND activity.provider='Garmin'`)
+    .bind(athleteName).all();
+  const known = new Map((existing.results as Array<Record<string, unknown>>).map(row => [String(row.external_activity_id), row]));
+  const candidates = list.valor.filter(raw => {
+    const activity = normalizeActivity("garmin", raw);
+    if (!activity || !runningSport(activity.sport)) return false;
+    const prior = known.get(activity.externalId);
+    return !parseActivityResult(prior?.activity_result)?.complete || Boolean(prior?.matched_week_start && !prior.execution_id);
+  });
+  let imported = 0; let updated = 0; let error: string | undefined;
+  for (const activity of candidates.slice(0, limit)) {
+    const id = String(activity.activityId ?? "");
+    const detail = await lerAtividadeGarmin(session, id);
+    if (!detail.ok) {
+      error = detail.falha;
+      if (detail.falha === "autorizacao_expirada") await marcaGarminParaReconectar(env, athleteName);
+      // Quota, autorização ou bloqueio: não insistir na próxima atividade.
+      if (["autorizacao_expirada", "bloqueado_na_porta", "limite_de_tentativas"].includes(detail.falha)) break;
+      continue;
+    }
+    const raw = { ...activity, ...detail.valor.summary, ...object(detail.valor.summary.summaryDTO),
+      splits: detail.valor.splits, typedSplits: detail.valor.typedSplits, charts: detail.valor.charts,
+      detailsComplete: detail.valor.complete };
+    if (await storeActivity(env, athleteName, "garmin", raw)) imported += 1;
+    updated += 1;
+    if (!detail.valor.complete) error = "activity_details_incomplete";
+  }
+  await env.DB.prepare("UPDATE external_integrations SET last_sync_at=?,updated_at=?,last_import_error=? WHERE athlete_name=? AND provider='Garmin'")
+    .bind(now, now, error ?? null, athleteName).run();
+  return { imported, scanned: list.valor.length, updated, remaining: Math.max(0, candidates.length - updated), ...(error ? { error } : {}) };
+}
+
+/** O Connect não fornece webhook por este caminho. O cron consulta em lotes. */
+async function receberResultadosGarminAutomaticamente(env: Env): Promise<void> {
+  await ensureIntegrationTables(env);
+  await ensureTables(env, schema.athletes, schema.athleteProfiles);
+  const connections = await env.DB.prepare(`SELECT integration.athlete_name FROM external_integrations integration
+    JOIN athletes athlete ON athlete.name=integration.athlete_name
+    LEFT JOIN athlete_profiles profile ON profile.athlete_name=athlete.name
+    WHERE integration.provider='Garmin' AND integration.status='Conectado' AND athlete.archived_at IS NULL
+    AND COALESCE(NULLIF(profile.integration,''),NULLIF(athlete.integration,''),'Sem integração')='Garmin'
+    AND (integration.last_import_attempt_at IS NULL OR integration.last_import_attempt_at<?)
+    ORDER BY COALESCE(integration.last_import_attempt_at,0),integration.athlete_name LIMIT 5`)
+    .bind(Date.now() - 9 * 60_000).all();
+  const request = new Request("https://zonasapp.cloudfapp.workers.dev/api/integrations");
+  for (const row of connections.results as Array<{ athlete_name: string }>) {
+    try {
+      // Até 45 chamadas externas por execução (5 contas × 2 atividades × 4
+      // detalhes + 5 listas). Novas contas são atendidas nos lotes seguintes.
+      const result = await importarAtividadesGarmin(env, row.athlete_name, 30, 2);
+      if (result.error) await recordApplicationError(env, request, "retorno Garmin", result.error, 502);
+    } catch {
+      await env.DB.prepare("UPDATE external_integrations SET last_import_error='activity_import_failed' WHERE athlete_name=? AND provider='Garmin'").bind(row.athlete_name).run();
+      await recordApplicationError(env, request, "retorno Garmin", "activity_import_failed", 502);
+    }
+  }
 }
 
 
@@ -3303,7 +3481,7 @@ async function sessaoGarminDoAtleta(env: Env, atleta: string): Promise<GarminSes
   ).bind(atleta, PROVIDERS.garmin.label).first() as
     { access_token_encrypted?: string; refresh_token_encrypted?: string; expires_at?: number; status?: string } | null;
 
-  if (!linha?.access_token_encrypted || linha.status === "Desconectado") return null;
+  if (!linha?.access_token_encrypted || linha.status !== "Conectado") return null;
 
   let sessao: GarminSessao;
   try {
@@ -3369,7 +3547,7 @@ async function publicarSemanaGarmin(env: Env, request: Request, atleta: string, 
   const problemas: string[] = [];
   const existente = await env.DB.prepare("SELECT remote_workouts FROM training_week_publications WHERE athlete_name = ? AND week_start = ? AND provider = ? LIMIT 1")
     .bind(atleta, weekStart, PROVIDERS.garmin.id).first() as { remote_workouts?: string } | null;
-  let remoto: Record<string, { workoutId: number; fingerprint: string }> = {};
+  let remoto: Record<string, { workoutId: number; fingerprint: string; steps?: unknown }> = {};
   try { remoto = JSON.parse(String(existente?.remote_workouts ?? "{}")) as typeof remoto; } catch { remoto = {}; }
 
   for (const dia of dias) {
@@ -3386,13 +3564,13 @@ async function publicarSemanaGarmin(env: Env, request: Request, atleta: string, 
       const subida = await subirTreinoNoGarmin(sessao, traduzido);
       if (!subida.ok) { problemas.push(`${dia}: ${subida.falha}`); continue; }
       workoutId = subida.valor;
-      remoto[dia] = { workoutId, fingerprint };
+      remoto[dia] = { workoutId, fingerprint, steps: resolvido.treino.steps };
       await gravarPublicacao(env, atleta, weekStart, PROVIDERS.garmin.id, "sending", null, JSON.stringify(remoto));
     }
 
     const agenda = await agendarTreinoNoGarmin(sessao, workoutId, data);
     if (!agenda.ok) { problemas.push(`${dia}: ${agenda.falha} ao agendar`); continue; }
-    remoto[dia] = { workoutId, fingerprint };
+    remoto[dia] = { workoutId, fingerprint, steps: resolvido.treino.steps };
     enviados += 1;
     await gravarPublicacao(env, atleta, weekStart, PROVIDERS.garmin.id, "sending", null, JSON.stringify(remoto));
   }
@@ -3472,7 +3650,7 @@ async function studentIntegrationsApi(request: Request, env: Env, athleteName: s
 
   if (request.method === "GET") {
     const connections = await env.DB.prepare(
-      "SELECT provider, status, scopes, external_athlete_id, last_sync_at, updated_at FROM external_integrations WHERE athlete_name = ?",
+      "SELECT provider, status, scopes, external_athlete_id, last_sync_at, last_import_attempt_at, last_import_error, updated_at FROM external_integrations WHERE athlete_name = ?",
     ).bind(athleteName).all();
     const byLabel = new Map((connections.results as Record<string, unknown>[]).map(row => [String(row.provider), row]));
     return Response.json({
@@ -3658,7 +3836,7 @@ async function integrationsCoachApi(request: Request, env: Env): Promise<Respons
     /* Conexão de relógio diz de quem é a conta no Strava ou no Garmin e quando
        a pessoa treinou. Sem recorte, isso aparecia para qualquer treinador. */
     const connections = await env.DB.prepare(
-      `SELECT athlete_name, provider, status, external_athlete_id, last_sync_at, updated_at
+      `SELECT athlete_name, provider, status, external_athlete_id, last_sync_at, last_import_attempt_at, last_import_error, updated_at
          FROM external_integrations WHERE ${carteira.clausula} ORDER BY athlete_name, provider`,
     ).bind(...carteira.valores).all();
     const activities = await env.DB.prepare(
@@ -4535,7 +4713,8 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
 
 const worker = {
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(liberarSemanaVigenteAutomaticamente(env, controller.scheduledTime));
+    if (controller.cron === "*/10 * * * *") ctx.waitUntil(receberResultadosGarminAutomaticamente(env));
+    else ctx.waitUntil(liberarSemanaVigenteAutomaticamente(env, controller.scheduledTime));
   },
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     /* Falhar aqui não pode derrubar a resposta: se o banco estiver fora, quem

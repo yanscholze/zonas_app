@@ -79,6 +79,7 @@ export type FalhaDoGarmin =
   | "desafio_de_robo"
   | "bloqueado_na_porta"
   | "limite_de_tentativas"
+  | "autorizacao_expirada"
   | "garmin_indisponivel";
 
 /**
@@ -267,6 +268,56 @@ export async function agendarTreino(sessao: Sessao, idDoTreino: number, dataIso:
   const r = await chamar(sessao, `/workout-service/schedule/${idDoTreino}`, { date: dataIso });
   if (!r.ok) return r;
   return { ok: true, valor: true };
+}
+
+/** Leitura pelo mesmo Connect usado no envio; referências em docs/retorno-garmin.md. */
+async function consultar<T>(sessao: Sessao, caminho: string): Promise<Resultado<T>> {
+  try {
+    const resposta = await fetch(`${API}${caminho}`, {
+      headers: {
+        Authorization: `Bearer ${sessao.token}`, Accept: "application/json",
+        "User-Agent": "GCM-Android-5.23", "DI-Backend": "connectapi.garmin.com", NK: "NT",
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (resposta.status === 401) return { ok: false, falha: "autorizacao_expirada" };
+    if (resposta.status === 403) return { ok: false, falha: "bloqueado_na_porta" };
+    if (resposta.status === 429) return { ok: false, falha: "limite_de_tentativas" };
+    if (!resposta.ok) return { ok: false, falha: "garmin_indisponivel", detalhe: `HTTP ${resposta.status}` };
+    return { ok: true, valor: await resposta.json() as T };
+  } catch {
+    return { ok: false, falha: "garmin_indisponivel" };
+  }
+}
+
+export async function listarAtividades(sessao: Sessao, desde: string, ate: string): Promise<Resultado<Record<string, unknown>[]>> {
+  const params = new URLSearchParams({ startDate: desde, endDate: ate, start: "0", limit: "50" });
+  const result = await consultar<unknown>(sessao, `/activitylist-service/activities/search/activities?${params}`);
+  if (!result.ok) return result;
+  if (!Array.isArray(result.valor)) return { ok: false, falha: "garmin_indisponivel", detalhe: "lista inválida" };
+  return { ok: true, valor: result.valor.filter(item => item && typeof item === "object") };
+}
+
+export type DetalhesAtividadeGarmin = {
+  summary: Record<string, unknown>; splits: Record<string, unknown>;
+  typedSplits: Record<string, unknown>; charts: Record<string, unknown>;
+  complete: boolean;
+};
+
+export async function lerAtividade(sessao: Sessao, id: string): Promise<Resultado<DetalhesAtividadeGarmin>> {
+  if (!/^\d{1,24}$/.test(id)) return { ok: false, falha: "garmin_indisponivel", detalhe: "activityId inválido" };
+  const base = `/activity-service/activity/${id}`;
+  const summary = await consultar<Record<string, unknown>>(sessao, base);
+  if (!summary.ok) return summary;
+  const partes: Record<string, unknown>[] = [];
+  let complete = true;
+  for (const suffix of ["/splits", "/typedsplits", "/details?maxChartSize=2000&maxPolylineSize=0"]) {
+    const result = await consultar<Record<string, unknown>>(sessao, `${base}${suffix}`);
+    if (!result.ok && ["autorizacao_expirada", "limite_de_tentativas", "bloqueado_na_porta"].includes(result.falha)) return result;
+    if (!result.ok) complete = false;
+    partes.push(result.ok ? result.valor : {});
+  }
+  return { ok: true, valor: { summary: summary.valor, splits: partes[0], typedSplits: partes[1], charts: partes[2], complete } };
 }
 
 /* --- Renovação ------------------------------------------------------------ */

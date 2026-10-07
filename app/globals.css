@@ -15059,3 +15059,41 @@ p, span, b, strong, small, em, li, td, th, label {
   font-size: var(--fs-xs);
   line-height: 1.5;
 }
+
+/* Resultado de atividade compartilhado pelo aluno e pelo professor. */
+.workout-result {
+  width: 100%;
+  flex-basis: 100%;
+  grid-column: 1 / -1;
+  border: 1px solid var(--border, #dedbd4);
+  border-radius: 12px;
+  margin-top: 12px;
+  background: var(--card, #fff);
+  overflow: hidden;
+}
+.workout-result > summary {
+  padding: 14px 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.workout-result > summary:focus-visible {
+  outline: 2px solid #9b751a;
+  outline-offset: -3px;
+}
+.workout-result-body { padding: 0 16px 16px; }
+.workout-result-body > header { display: flex; flex-direction: column; gap: 5px; margin: 8px 0 16px; }
+.workout-result-body p { font-size: 13px; line-height: 1.5; color: #615d53; margin: 8px 0; }
+.workout-result-body h3 { font-size: 16px; margin: 22px 0 10px; }
+.workout-result-body h4 { font-size: 14px; margin: 0; }
+.workout-result-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(135px, 1fr)); gap: 12px; margin: 12px 0; }
+.workout-result-metrics > div { min-width: 0; }
+.workout-result-metrics dt { font-size: 12px; color: #686357; }
+.workout-result-metrics dd { margin: 4px 0 0; font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.workout-result-stage { display: block !important; padding: 14px !important; border: 1px solid #e8e4dc; border-radius: 9px; margin: 10px 0; }
+.workout-result-missing { font-style: italic; }
+.recent-workouts > article, .workout-accuracy-coach > article, .history-item { flex-wrap: wrap; }
+@media (max-width: 600px) {
+  .workout-result-body { padding: 0 12px 12px; }
+  .workout-result > summary { padding: 12px; font-size: 13px; }
+  .workout-result-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

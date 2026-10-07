@@ -33,8 +33,9 @@ Chrome. Reescrever isto do zero sob pressão seria pior do que mantê-lo parado.
 **E o normalizador dele não é código morto.** `worker/integrations.ts` entende o
 formato que o `python-garminconnect` devolve — `activityId`, `beginTimestamp`,
 `activityType.typeKey` — porque é o MESMO formato que o nosso cliente em
-TypeScript receberá no dia em que importar atividades: os dois falam com a mesma
-API interna do Garmin. O outro formato aceito ali, `startTimeInSeconds`, é o da
+TypeScript importa agora: os dois falam com a mesma API interna do Garmin.
+O retorno automático e a leitura de voltas estão descritos em
+[retorno-garmin.md](../docs/retorno-garmin.md). O outro formato aceito ali, `startTimeInSeconds`, é o da
 Activity API oficial, que passa a valer se o programa de desenvolvedores for
 aprovado.
 

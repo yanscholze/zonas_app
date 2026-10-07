@@ -168,7 +168,7 @@ test("launching a week routes it through the student's selected integration", as
   const routeEnd = worker.indexOf("/** Histórico de cada movimento", routeStart);
   const route = worker.slice(routeStart, routeEnd);
 
-  assert.match(client, /Salve como rascunho ou lance a semana/);
+  assert.match(client, /liberada automaticamente aos domingos à meia-noite/);
   assert.match(client, /Lançar semana/);
   assert.doesNotMatch(client, /Enviar para o relógio/);
   assert.match(client, /calendarWeekLabel=outsidePlan\?/);
@@ -910,7 +910,7 @@ test("lets the student send a test result the same way they finish a workout", a
   // O arquivo não sobe: é lido no navegador e só o que ele mede segue.
   assert.match(client, /leArquivoDeAtividade\(arquivo\)/);
   assert.doesNotMatch(worker, /"\/api\/student\/performance-tests": new Set\(\["id","minutes","seconds"\]\)/);
-  assert.match(worker, /"\/api\/student\/performance-tests": new Set\(\["id","minutes","seconds","effort","note","sourceFormat","sourceKm"\]\)/);
+  assert.match(worker, /"\/api\/student\/performance-tests": new Set\(\["id","minutes","seconds","distanceKm","resultDistanceMeters","effort","note","sourceFormat","sourceKm"\]\)/);
 
   // E o treinador precisa ver o que o aluno contou: o número sozinho não conta
   // tudo, porque um teste feito com dor pede outra leitura dos ritmos.
@@ -1248,7 +1248,7 @@ test("uses approved Tempo Run paces as first-class workout intensities", async (
 test("builds workout steps by minutes or meters without separating the recovery", async () => {
   const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   assert.match(source, /<option value="min">Minutos<\/option><option value="m">Metros<\/option>/);
-  assert.match(source, /effortUnit:"s",effortZone:"Z5",recovery:40,recoveryUnit:"s",recoveryZone:"Z1"/);
+  assert.match(source, /effortUnit:"s",effortZone:"Z5",effortActivity:"run",recovery:40,recoveryUnit:"s",recoveryZone:"Z1",recoveryActivity:"run"/);
   assert.match(source, /effortMeters:step\.effort/);
   assert.match(source, /meters:Math\.round\(step\.amount\*1000\)/);
   assert.match(source, /A recuperação acontece após cada repetição, inclusive a última/);
@@ -2474,18 +2474,18 @@ test("runs the performance test as a round trip", async () => {
   // O aluno devolve só o tempo; as zonas continuam saindo da revisão.
   // O aluno passou a devolver o teste como conclui um treino: além do tempo, como
   // terminou, uma observação e, se anexou o arquivo do relógio, a origem do número.
-  assert.match(worker, /SET total_seconds = \?, effort = \?, athlete_note = \?, source_format = \?, source_km = \?, status = 'Aguardando revisão'/);
+  assert.match(worker, /SET total_seconds = \?, distance_km = \?, result_distance_meters = \?, effort = \?, athlete_note = \?, source_format = \?, source_km = \?, status = 'Aguardando revisão'/);
   assert.match(worker, /const esforcosAceitos = \["Muito bem", "Cansado", "Sentiu dor"\]/);
   assert.match(worker, /error: "invalid_effort"/);
   assert.match(worker, /AND status = 'Solicitado' LIMIT 1/);
   assert.match(client, /className="student-test-request"/);
   // No pedido o treinador informa só a distância: o tempo é medido pelo aluno.
-  assert.match(client, /action:"request",athleteName,distanceKm:distanciaPedida/);
+  assert.match(client, /action:"request",athleteName,testType:tipoTeste,distanceKm:selectedTest\.distanceKm/);
   assert.doesNotMatch(client, /action:"request".*minutes/);
   // E quando o teste volta, distância e tempo são leitura na calculadora.
   assert.match(client, /zonasapp:test-returned/);
   assert.match(client, /readOnly=\{Boolean\(devolvido\)\}/);
-  assert.match(client, /Distância e tempo vieram do aluno e não se editam aqui/);
+  assert.match(client, /Resultado informado pelo aluno\. Você revisará os ritmos antes de liberar/);
 });
 
 test("marks the days the athlete can train but has no workout", async () => {
@@ -3377,7 +3377,7 @@ test("shows the student the last seven days without turning it into a wall", asy
   assert.match(worker, /Number\(url\.searchParams\.get\("days"\)\) \|\| 7/);
   assert.match(worker, /created_at >= \?/);
   assert.match(client, /function RecentWorkouts/);
-  assert.match(client, /ÚLTIMOS 7 DIAS/);
+  assert.match(client, /ÚLTIMOS \{days\} DIAS/);
   // O registro mostra o que veio do relógio, não só a porcentagem.
   assert.match(client, /average_pace_seconds/);
   assert.match(client, /average_heart_rate/);
@@ -3797,7 +3797,7 @@ test("shares one import path between the providers that have a list endpoint", a
   assert.match(worker, /async function importarAtividades/);
   // Cada provedor declara o próprio endpoint; quem não tem, não finge ter.
   assert.match(integrations, /activitiesUrl: "https:\/\/www\.strava\.com\/api\/v3\/athlete\/activities"/);
-  assert.match(integrations, /activitiesUrl: "https:\/\/apis\.garmin\.com\/wellness-api\/rest\/activities"/);
+  assert.match(integrations, /activitiesUrl: "https:\/\/connectapi\.garmin\.com\/activitylist-service\/activities\/search\/activities"/);
   assert.match(worker, /if \(!provider\.activitiesUrl\)/);
 });
 

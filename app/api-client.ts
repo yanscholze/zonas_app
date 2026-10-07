@@ -62,6 +62,13 @@ const friendlyMessages: Record<string, string> = {
   not_connected: "Conecte o serviço antes de sincronizar.",
   token_unreadable: "A autorização guardada não pode mais ser lida. Conecte o serviço novamente.",
   refresh_failed: "A autorização expirou e não pôde ser renovada. Conecte o serviço novamente.",
+  reconnect_required: "Reconecte sua conta Garmin para receber os resultados.",
+  autorizacao_expirada: "A autorização do Garmin expirou. Reconecte sua conta.",
+  sync_in_progress_or_not_connected: "A sincronização já está em andamento ou a conta precisa ser reconectada.",
+  limite_de_tentativas: "O Garmin limitou as consultas. O Zonas tentará novamente automaticamente.",
+  bloqueado_na_porta: "O Garmin recusou a consulta agora. O Zonas tentará novamente.",
+  garmin_indisponivel: "O Garmin não respondeu agora. Tente novamente em instantes.",
+  activity_details_incomplete: "O resumo chegou. Os detalhes restantes serão buscados automaticamente.",
   strava_request_failed: "O Strava não respondeu agora. Tente de novo em instantes.",
   provider_setup_required: "Este serviço ainda não foi liberado pelo professor.",
 };

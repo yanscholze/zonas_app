@@ -27,12 +27,13 @@ const raiz = new URL("..", import.meta.url);
    duas contas que o worker cria sozinho no primeiro acesso. */
 const OBRIGATORIOS = ["DEV_LOGIN", "DEV_INITIAL_PASSWORD", "COACH_EMAIL", "COACH_INITIAL_PASSWORD"];
 
-/* Estes desligam funções quando faltam, mas não impedem o resto de funcionar —
-   a tela de integrações já diz "cadastro oficial pendente" sem eles. */
+/* Garmin Connect usa a sessão móvel cifrada, sem chaves do programa oficial.
+   O nome histórico da chave de cifra também atende as outras integrações. */
 const OPCIONAIS_POR_FUNCAO = {
   "Strava": ["STRAVA_CLIENT_ID", "STRAVA_CLIENT_SECRET", "STRAVA_WEBHOOK_VERIFY_TOKEN", "STRAVA_TOKEN_ENCRYPTION_KEY"],
-  "Garmin": ["GARMIN_CONSUMER_KEY", "GARMIN_CONSUMER_SECRET"],
-  "Amazfit / Zepp": ["ZEPP_APP_ID", "ZEPP_APP_SECRET", "ZEPP_WEBHOOK_SECRET"],
+  "Garmin Connect (sessão do aluno)": ["STRAVA_TOKEN_ENCRYPTION_KEY"],
+  "Garmin API oficial (opcional)": ["GARMIN_CONSUMER_KEY", "GARMIN_CONSUMER_SECRET"],
+  "Zepp OAuth (opcional; ingestão por token é independente)": ["ZEPP_APP_ID", "ZEPP_APP_SECRET", "ZEPP_WEBHOOK_SECRET"],
 };
 
 /** Os nomes que o worker de fato lê, extraídos do código e não de uma lista à parte. */

@@ -216,6 +216,7 @@ export const workoutExecutions = sqliteTable("workout_executions", {
   averageHeartRate: integer("average_heart_rate"),
   averagePaceSeconds: integer("average_pace_seconds"),
   externalActivityId: text("external_activity_id"),
+  activityResult: text("activity_result"),
 }, (table) => ({
   athleteIdx: index("workout_executions_athlete_created_idx").on(table.athleteName, table.createdAt),
 }));
@@ -232,6 +233,8 @@ export const externalIntegrations = sqliteTable("external_integrations", {
      vez na área dele, ela é trocada pelo token e descartada na mesma requisição.
      O que renova a sessão é o refresh_token, não uma senha guardada. */
   loginEmail: text("login_email"),
+  lastImportAttemptAt: integer("last_import_attempt_at"),
+  lastImportError: text("last_import_error"),
 }, (table) => ({ athleteProviderIdx: uniqueIndex("external_integrations_athlete_provider_idx").on(table.athleteName, table.provider) }));
 
 /** Fluxos OAuth em andamento. Guarda o `code_verifier` exigido pelo PKCE da Garmin. */
@@ -248,6 +251,7 @@ export const externalActivities = sqliteTable("external_activities", {
   distanceMeters: integer("distance_meters"), movingSeconds: integer("moving_seconds"), elapsedSeconds: integer("elapsed_seconds"),
   averageHeartRate: integer("average_heart_rate"), averagePaceSeconds: integer("average_pace_seconds"), rawPayload: text("raw_payload"),
   matchedWeekStart: text("matched_week_start"), matchedWorkoutDay: text("matched_workout_day"),
+  activityResult: text("activity_result"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 }, (table) => ({
   providerActivityIdx: uniqueIndex("external_activities_provider_activity_idx").on(table.provider, table.externalActivityId),
