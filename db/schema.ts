@@ -98,6 +98,14 @@ export const performanceTests = sqliteTable("performance_tests", {
      no registro de treino. */
   sourceFormat: text("source_format"),
   sourceKm: text("source_km"),
+  executionType: text("execution_type"),
+  effortClassification: text("effort_classification"),
+  completionStatus: text("completion_status"),
+  elapsedSeconds: integer("elapsed_seconds"),
+  meanSpeedKmh: text("mean_speed_kmh"),
+  meanPaceSeconds: text("mean_pace_seconds"),
+  estimatedVamKmh: text("estimated_vam_kmh"),
+  coachNote: text("coach_note"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 }, (table) => ({
   athleteDateIdx: index("performance_tests_athlete_date_idx").on(table.athleteName, table.testDate),

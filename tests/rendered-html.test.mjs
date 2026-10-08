@@ -910,14 +910,14 @@ test("lets the student send a test result the same way they finish a workout", a
   // O arquivo não sobe: é lido no navegador e só o que ele mede segue.
   assert.match(client, /leArquivoDeAtividade\(arquivo\)/);
   assert.doesNotMatch(worker, /"\/api\/student\/performance-tests": new Set\(\["id","minutes","seconds"\]\)/);
-  assert.match(worker, /"\/api\/student\/performance-tests": new Set\(\["id","minutes","seconds","distanceKm","resultDistanceMeters","effort","note","sourceFormat","sourceKm"\]\)/);
+  assert.match(worker, /"\/api\/student\/performance-tests": new Set\(\["id","minutes","seconds","distanceKm","resultDistanceMeters","effort","note","sourceFormat","sourceKm","executionType","effortClassification","completionStatus","elapsedSeconds","testDate"\]\)/);
 
   // E o treinador precisa ver o que o aluno contou: o número sozinho não conta
   // tudo, porque um teste feito com dor pede outra leitura dos ritmos.
   assert.match(schema, /effort: text\("effort"\)/);
   assert.match(schema, /athleteNote: text\("athlete_note"\)/);
   assert.match(client, /className="test-back-esforco"/);
-  assert.match(worker, /status,effort,athlete_note,source_format,source_km FROM performance_tests/);
+  assert.match(worker, /status,effort,athlete_note,source_format,source_km,execution_type,effort_classification,completion_status,elapsed_seconds,mean_speed_kmh,mean_pace_seconds,estimated_vam_kmh,coach_note FROM performance_tests/);
 });
 
 test("tells the student a test was requested, separately from one under review", async () => {
@@ -1362,6 +1362,50 @@ test("calculates and saves 3 km performance tests on the server", async () => {
   assert.equal(saved.zones.length,5);
   assert.equal(saved.tempoRuns.length,4);
   assert.ok(writes.some(({sql,values})=>sql.includes("INSERT INTO performance_tests")&&values.includes("Everton Barbosa")&&values.includes("Aguardando revisão")));
+});
+
+test("saves the 5-minute result in meters and does not generate VO2 or zones", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("performance-test-5min", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const writes=[];
+  const prepare=(sql)=>({values:[],bind(...values){this.values=values;return this},async first(){return null},async all(){return{results:[]}},async run(){writes.push({sql,values:this.values});return{success:true}}});
+  const env={ASSETS:{fetch:async()=>new Response("Not found",{status:404})},DB:{prepare:withSession(prepare),async batch(items){for(const item of items)await item.run();return[];}}};
+  const response=await worker.fetch(new Request("https://zonasapp.example/api/performance-tests",{method:"POST",headers:{"content-type":"application/json",...coachCookie},body:JSON.stringify({athleteName:"Everton Barbosa",testDate:"2026-10-08",testType:"5min",resultDistanceMeters:800,minutes:5,seconds:0,executionType:"continuous",effortClassification:"maximum_sustainable",completionStatus:"complete",elapsedSeconds:300,coachNote:"Pista plana"})}),env,{waitUntil(){},passThroughOnException(){}});
+  assert.equal(response.status,201);
+  const saved=await response.json();
+  assert.equal(saved.distanceKm,0.8);
+  assert.equal(saved.resultDistanceMeters,800);
+  assert.equal(saved.meanSpeedKmh,9.6);
+  assert.equal(saved.meanPaceSeconds,375);
+  assert.equal(saved.estimatedVamKmh,9.6);
+  assert.deepEqual(saved.zones,[]);
+  assert.deepEqual(saved.tempoRuns,[]);
+  const insert=writes.find(({sql})=>sql.includes("INSERT INTO performance_tests"));
+  assert.ok(insert);
+  assert.equal(insert.values[5],800);
+  assert.equal(insert.values[14],"continuous");
+  assert.equal(insert.values[15],"maximum_sustainable");
+  assert.equal(insert.values[16],"complete");
+  assert.equal(insert.values[18],"9.6");
+  assert.equal(insert.values[19],"375");
+  assert.equal(insert.values[20],"9.6");
+  assert.equal(insert.values[21],"Pista plana");
+  assert.equal(insert.values[12],"[]");
+  assert.equal(insert.values[13],"[]");
+});
+
+test("approves a 5-minute result without zones and stores the coach observation", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("approve-performance-test-5min", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const writes=[];
+  const prepare=(sql)=>({values:[],bind(...values){this.values=values;return this},async first(){return sql.includes("SELECT test_type FROM performance_tests")?{test_type:"5min"}:null},async all(){return{results:[]}},async run(){writes.push({sql,values:this.values});return{success:true}}});
+  const env={ASSETS:{fetch:async()=>new Response("Not found",{status:404})},DB:{prepare:withSession(prepare),async batch(items){for(const item of items)await item.run();return[];}}};
+  const response=await worker.fetch(new Request("https://zonasapp.example/api/performance-tests",{method:"POST",headers:{"content-type":"application/json",...coachCookie},body:JSON.stringify({id:"five-minute-test",action:"approve",zones:[],tempoRuns:[],coachNote:"Boa execução"})}),env,{waitUntil(){},passThroughOnException(){}});
+  assert.equal(response.status,200);
+  assert.deepEqual(await response.json(),{id:"five-minute-test",status:"Aprovado",zones:[],tempoRuns:[],coachNote:"Boa execução"});
+  assert.ok(writes.some(({sql,values})=>sql.includes("coach_note = ?")&&values.includes("Boa execução")&&values.includes("Aprovado")));
 });
 
 test("approves only complete and valid coach-reviewed zones", async () => {
@@ -2474,7 +2518,7 @@ test("runs the performance test as a round trip", async () => {
   // O aluno devolve só o tempo; as zonas continuam saindo da revisão.
   // O aluno passou a devolver o teste como conclui um treino: além do tempo, como
   // terminou, uma observação e, se anexou o arquivo do relógio, a origem do número.
-  assert.match(worker, /SET total_seconds = \?, distance_km = \?, result_distance_meters = \?, effort = \?, athlete_note = \?, source_format = \?, source_km = \?, status = 'Aguardando revisão'/);
+  assert.match(worker, /SET total_seconds = \?, test_date = COALESCE\(\?,test_date\), distance_km = \?, result_distance_meters = \?, effort = \?, athlete_note = \?, source_format = \?, source_km = \?, status = 'Aguardando revisão'/);
   assert.match(worker, /const esforcosAceitos = \["Muito bem", "Cansado", "Sentiu dor"\]/);
   assert.match(worker, /error: "invalid_effort"/);
   assert.match(worker, /AND status = 'Solicitado' LIMIT 1/);
@@ -2485,7 +2529,7 @@ test("runs the performance test as a round trip", async () => {
   // E quando o teste volta, distância e tempo são leitura na calculadora.
   assert.match(client, /zonasapp:test-returned/);
   assert.match(client, /readOnly=\{Boolean\(devolvido\)\}/);
-  assert.match(client, /Resultado informado pelo aluno\. Você revisará os ritmos antes de liberar/);
+  assert.match(client, /Resultado informado pelo aluno\. Revise os dados antes de aprovar/);
 });
 
 test("marks the days the athlete can train but has no workout", async () => {
