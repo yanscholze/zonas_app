@@ -580,15 +580,35 @@ async function garanteEsquema(env: Env): Promise<void> {
        que tocam, e a economia se perde no primeiro handler que roda. */
     for (const tabela of TODAS_AS_TABELAS) tabelasConferidas.add(nomeDaTabela(tabela));
     await migrarInicioDaSemanaParaDomingo(env);
+    await migrarIndiceUnicoDosConvites(env);
     esquemaConferidoNestaInstancia = true;
     return;
   }
 
   await ensureTables(env, ...TODAS_AS_TABELAS);
   await migrarInicioDaSemanaParaDomingo(env);
+  await migrarIndiceUnicoDosConvites(env);
   await env.DB.prepare("INSERT INTO schema_state (id, signature) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET signature = excluded.signature")
     .bind(assinatura).run();
   esquemaConferidoNestaInstancia = true;
+}
+
+/**
+ * Bancos antigos chegaram a criar `coach_invites_coach_idx` como UNIQUE.
+ * Isso impedia gerar um segundo convite e até fazia o GET do link padrão
+ * responder 503 quando o único link existente havia expirado. O índice atual
+ * é propositalmente comum: um treinador pode manter histórico e vários links.
+ */
+async function migrarIndiceUnicoDosConvites(env: Env): Promise<void> {
+  await ensureTables(env, schema.dataMigrations);
+  const id = "coach-invites-coach-index-nonunique-v1";
+  const aplicada = await env.DB.prepare("SELECT id FROM data_migrations WHERE id = ? LIMIT 1").bind(id).first();
+  if (aplicada) return;
+  await env.DB.batch([
+    env.DB.prepare("DROP INDEX IF EXISTS coach_invites_coach_idx"),
+    env.DB.prepare("CREATE INDEX IF NOT EXISTS coach_invites_coach_idx ON coach_invites (coach_email)"),
+    env.DB.prepare("INSERT OR IGNORE INTO data_migrations (id, applied_at) VALUES (?, ?)").bind(id, Date.now()),
+  ]);
 }
 
 /**
@@ -1277,6 +1297,16 @@ async function convitePadrao(env: Env, carteira: string): Promise<Record<string,
   if (existente?.code) {
     return { code: existente.code, expiresAt: null, maxUses: null, uses: Number(existente.uses ?? 0) };
   }
+  /* Se o código já divulgado tinha prazo/limite, atualiza o mesmo registro
+     para o link permanente. Abrir a tela renova o convite sem trocar a URL. */
+  const anterior = await env.DB.prepare(
+    "SELECT code, uses FROM coach_invites WHERE coach_email = ? AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",
+  ).bind(carteira).first() as { code?: string; uses?: number } | null;
+  if (anterior?.code) {
+    await env.DB.prepare("UPDATE coach_invites SET expires_at = NULL, max_uses = NULL WHERE code = ? AND coach_email = ? AND revoked_at IS NULL")
+      .bind(anterior.code, carteira).run();
+    return { code: anterior.code, expiresAt: null, maxUses: null, uses: Number(anterior.uses ?? 0) };
+  }
   return await emiteConvite(env, carteira, null, null);
 }
 
@@ -1372,16 +1402,35 @@ async function accessRequestApi(request: Request, env: Env, sessionEmail: string
     return Response.json({ request: requestRow ?? null });
   }
   if (request.method === "POST") {
-    const input = await request.json() as Record<string, unknown>;
+    let input: Record<string, unknown>;
+    try { input = await request.json() as Record<string, unknown>; }
+    catch {
+      await recordApplicationError(env, request, "cadastro do aluno", "invalid_json", 400);
+      return Response.json({ error: "invalid_json", message: "Não conseguimos ler os dados enviados. Atualize a página e tente novamente." }, { status: 400 });
+    }
     const name = boundedText(input.name, 120);
     const phone = boundedText(input.phone, 30);
     const objective = boundedText(input.objective, 240);
     const distance = boundedText(input.distance, 30);
-    const integration = boundedText(input.integration, 30) || "Sem integração";
+    const integrationInput = boundedText(input.integration, 30) || "Sem integração";
+    /* Versões antigas do formulário enviavam "Amazfit"; a API passou a usar
+       o nome canônico "Amazfit / Zepp" e recusava o valor antigo como inválido. */
+    const integration = ["Amazfit", "Zepp"].includes(integrationInput) ? "Amazfit / Zepp" : integrationInput;
     const allowedDistances = ["Iniciantes", "5 km", "10 km", "Meia", "Maratona"];
     const allowedIntegrations = [...SUPPORTED_PROVIDER_LABELS, "Sem integração"];
     const trainingDays = diasDeTreino(input.trainingDays);
-    if (!name || name.length < 3 || !allowedDistances.includes(distance) || !trainingDays.length || !allowedIntegrations.includes(integration)) return Response.json({ error: "invalid_registration" }, { status: 400 });
+    const campos: Array<[boolean, string, string, string]> = [
+      [name.length >= 3, "invalid_name", "name", "Informe seu nome completo com pelo menos 3 caracteres."],
+      [allowedDistances.includes(distance), "invalid_distance", "distance", "Escolha uma das opções de distância disponíveis."],
+      [Array.isArray(input.trainingDays) && trainingDays.length > 0 && input.trainingDays.every(dia => typeof dia === "string" && DIAS_DA_SEMANA.includes(dia.trim().toLocaleUpperCase("pt-BR"))), "invalid_training_days", "trainingDays", "Escolha pelo menos um dia da semana para treinar."],
+      [allowedIntegrations.includes(integration), "invalid_integration", "integration", "Escolha um relógio ou aplicativo da lista, ou selecione “Sem integração”."],
+    ];
+    const invalido = campos.find(([valido]) => !valido);
+    if (invalido) {
+      const [, codigo, campo, mensagem] = invalido;
+      await recordApplicationError(env, request, "validação de cadastro", codigo, 400);
+      return Response.json({ error: codigo, field: campo, message: mensagem }, { status: 400 });
+    }
     const existing = await env.DB.prepare("SELECT status FROM access_requests WHERE email = ? LIMIT 1").bind(email).first() as {status?:string}|null;
     if (existing?.status === "Aprovado") return Response.json({ error: "already_approved" }, { status: 409 });
     /* O código vem do link que o treinador enviou. Sem ele o pedido chega sem
@@ -1391,12 +1440,13 @@ async function accessRequestApi(request: Request, env: Env, sessionEmail: string
        puniria o aluno por algo que não é dele. */
     const convite = boundedText(input.invite, 40);
     const dono = await donoDoConvite(env, convite);
+    if (convite && !dono) await recordApplicationError(env, request, "link de cadastro", "invalid_or_expired_invite", 400);
     const id = crypto.randomUUID(); const now = Date.now();
     await env.DB.prepare(`INSERT INTO access_requests (id,email,name,phone,objective,distance,training_days,integration,status,coach_email,reviewed_by,reviewed_at,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,NULL,NULL,?,?)
       ON CONFLICT(email) DO UPDATE SET name=excluded.name,phone=excluded.phone,objective=excluded.objective,distance=excluded.distance,training_days=excluded.training_days,integration=excluded.integration,status='Pendente',coach_email=COALESCE(excluded.coach_email,access_requests.coach_email),reviewed_by=NULL,reviewed_at=NULL,updated_at=excluded.updated_at`)
       .bind(id,email,name,phone||null,objective||null,distance,JSON.stringify(trainingDays),integration,"Pendente",dono,now,now).run();
-    return Response.json({ id, email, status:"Pendente", createdAt:now }, { status: 201 });
+    return Response.json({ id, email, status:"Pendente", createdAt:now, inviteValid: !convite || Boolean(dono) }, { status: 201 });
   }
   return new Response("Method not allowed", { status: 405 });
 }

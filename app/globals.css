@@ -7893,6 +7893,11 @@ p, span, b, strong, small, em, li, td, th, label {
   opacity: .45;
 }
 
+.registration-grid [aria-invalid="true"] {
+  border-color: #ff8b80;
+  box-shadow: 0 0 0 2px rgb(255 139 128 / 16%);
+}
+
 .registration-security,
 .registration-error {
   padding: 10px;
@@ -7911,6 +7916,16 @@ p, span, b, strong, small, em, li, td, th, label {
   color: #ffc0b8;
   background: #351b19;
   border: 1px solid #6b302b;
+}
+
+.registration-status .registration-invite-warning {
+  margin: 16px 0;
+  padding: 12px;
+  border: 1px solid #957329;
+  border-radius: var(--radius-md);
+  background: #302714;
+  color: #f6dfa0;
+  font-size: var(--fs-xs);
 }
 
 .registration-signout {
