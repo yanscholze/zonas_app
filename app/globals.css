@@ -3381,7 +3381,7 @@ p, span, b, strong, small, em, li, td, th, label {
   gap: 11px;
 }
 
-.plan-library>button {
+.plan-library>.plan-proprio {
   display: flex;
   flex-direction: column;
   min-height: 260px;
@@ -3391,12 +3391,31 @@ p, span, b, strong, small, em, li, td, th, label {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius:var(--radius-lg);
-  cursor: pointer;
 }
 
-.plan-library>button:hover {
+.plan-library>.plan-proprio:hover {
   border-color: #7c6531;
   background: #201e19;
+}
+
+.plan-proprio-open {
+  display:flex;
+  flex:1;
+  flex-direction:column;
+  align-items:stretch;
+  width:100%;
+  padding:0;
+  border:0;
+  background:transparent;
+  color:var(--text);
+  text-align:left;
+  cursor:pointer;
+}
+
+.plan-proprio-open:focus-visible,
+.plan-proprio-acoes button:focus-visible {
+  outline:2px solid var(--gold2);
+  outline-offset:3px;
 }
 
 .plan-library header {
@@ -3644,7 +3663,7 @@ p, span, b, strong, small, em, li, td, th, label {
   }
 }
 
-.plan-library>button.pending-plan {
+.plan-library>.plan-proprio.pending-plan {
   border-color: #6b4b2e;
   background: linear-gradient(145deg,#241d18,#171718);
 }
@@ -11008,6 +11027,89 @@ p, span, b, strong, small, em, li, td, th, label {
   font-size:var(--fs-overline);
 }
 
+.student-garmin-connect {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  margin:0 0 12px;
+  padding:16px;
+  border:1px solid var(--gold);
+  border-radius:var(--radius-lg);
+  background:linear-gradient(125deg,var(--surface-2),var(--panel));
+}
+
+.student-garmin-connect h2 {
+  margin:4px 0;
+  font-size:var(--fs-md);
+}
+
+.student-garmin-connect p {
+  margin:0;
+  color:var(--muted);
+  font-size:var(--fs-sm);
+}
+
+.student-garmin-connect button {
+  min-height:48px;
+  flex:0 0 auto;
+  padding:0 16px;
+  border:1px solid var(--gold);
+  border-radius:var(--radius-md);
+  background:var(--gold);
+  color:#181612;
+  font-weight:800;
+  cursor:pointer;
+}
+
+.student-garmin-connect button:disabled {
+  opacity:.6;
+  cursor:not-allowed;
+}
+
+.student-quick-access {
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:8px;
+  margin:0 0 18px;
+}
+
+.student-quick-access button {
+  display:grid;
+  min-height:64px;
+  align-content:center;
+  gap:3px;
+  padding:10px 12px;
+  border:1px solid var(--line);
+  border-radius:var(--radius-md);
+  background:var(--surface-2);
+  color:var(--text);
+  text-align:left;
+  cursor:pointer;
+}
+
+.student-quick-access button:hover {
+  border-color:var(--gold);
+}
+
+.student-quick-access span {
+  color:var(--muted);
+  font-size:var(--fs-overline);
+}
+
+@media(max-width:760px) {
+  .student-garmin-connect {
+    align-items:stretch;
+    flex-direction:column;
+  }
+  .student-garmin-connect button {
+    width:100%;
+  }
+  .student-quick-access {
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+}
+
 @media(max-width:760px) {
   .profile-quick-actions {
     grid-template-columns: 1fr;
@@ -12232,7 +12334,7 @@ p, span, b, strong, small, em, li, td, th, label {
   font-size: var(--fs-base);
 }
 
-.plan-form>div {
+.plan-form>div:last-child {
   grid-column: 1 / -1;
   display: flex;
   gap: var(--space-2);
@@ -12252,22 +12354,34 @@ p, span, b, strong, small, em, li, td, th, label {
   color: var(--gold2);
 }
 
+.plan-form-heading {
+  grid-column:1 / -1;
+  display:grid;
+  gap:5px;
+  color:var(--text);
+}
+
+.plan-form-heading .overline {
+  color:var(--gold2);
+}
+
 .plan-proprio-acoes {
   display: flex;
   gap: var(--space-2);
   margin-top: var(--space-3);
 }
 
-.plan-proprio-acoes span {
+.plan-proprio-acoes button {
   padding: 4px 9px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
+  background:transparent;
   color: var(--muted);
   font-size: var(--fs-xs);
   cursor: pointer;
 }
 
-.plan-proprio-acoes span:hover {
+.plan-proprio-acoes button:hover {
   border-color: var(--gold);
   color: var(--gold2);
 }

@@ -1530,13 +1530,22 @@ test("identifies an active student and scopes every student query to that athlet
     email: "everton.teste@example.com", athleteName: "Everton Barbosa", mustChangePassword: false,
   });
 
-  const dashboard = await worker.fetch(new Request("https://zonasapp.example/api/student/dashboard?athlete=Marina%20Costa", { headers }), env, { waitUntil() {}, passThroughOnException() {} });
+  const originalDateNow = Date.now;
+  Date.now = () => Date.parse("2026-10-13T12:00:00-03:00");
+  let dashboard;
+  try {
+    dashboard = await worker.fetch(new Request("https://zonasapp.example/api/student/dashboard?athlete=Marina%20Costa", { headers }), env, { waitUntil() {}, passThroughOnException() {} });
+  } finally {
+    Date.now = originalDateNow;
+  }
   assert.equal(dashboard.status, 200);
   assert.equal((await dashboard.json()).athleteName, "Everton Barbosa");
   const athleteDataReads = reads.filter(({ sql }) => /training_weeks|athlete_races|personal_records/.test(sql) && /SELECT/.test(sql));
   assert.ok(athleteDataReads.length >= 3);
   assert.ok(athleteDataReads.every(({ values }) => values[0] === "Everton Barbosa"));
   assert.ok(athleteDataReads.every(({ values }) => !values.includes("Marina Costa")));
+  const weekRead = reads.find(({ sql }) => sql.includes("FROM training_weeks"));
+  assert.equal(weekRead.values[1], "2026-10-12", "aluno deve consultar a segunda-feira usada na semana liberada pelo treinador");
 });
 
 test("identifies the authorized coach on protected APIs", async () => {
@@ -2027,6 +2036,8 @@ test("shows only the real released workout for the current Brazilian day", async
   assert.doesNotMatch(source, /Garmin conectado · alertas/);
   assert.match(workerSource, /week_start = \? AND status = 'Liberada'/);
   assert.match(workerSource, /currentWeekStart/);
+  assert.match(workerSource, /const currentWeekStart = weekStartOf\(Date\.now\(\)\)/);
+  assert.doesNotMatch(workerSource, /brazilNow\.setUTCDate\(brazilNow\.getUTCDate\(\) - brazilDay\)/);
 });
 
 test("uses the current calendar week when the coach previews the student area", async () => {
@@ -2034,6 +2045,26 @@ test("uses the current calendar week when the coach previews the student area", 
   assert.match(source, /const currentWeekStart=mondayOf\(todayInSaoPaulo\(\)\)/);
   assert.match(source, /weekStart=\$\{currentWeekStart\}/);
   assert.doesNotMatch(source, /weekStart=2026-08-09/);
+});
+
+test("puts Garmin login and useful student areas on the home screen", async () => {
+  const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  assert.match(source, /student-garmin-connect/);
+  assert.match(source, /Realizar login na Garmin/);
+  assert.match(source, /setLoginExterno\("garmin"\)/);
+  assert.match(source, /student-quick-access/);
+  assert.match(source, /autoComplete="username"/);
+  assert.match(source, /autoComplete="current-password"/);
+});
+
+test("opens the plan editor as a visible form and keeps actions as real buttons", async () => {
+  const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  assert.match(source, /const editarDados=\(plano:PlanoProprio\)/);
+  assert.match(source, /editFormRef\.current\?\.scrollIntoView/);
+  assert.match(source, /Ver e editar treinos das semanas/);
+  assert.match(source, /Editar dados/);
+  assert.match(source, /className="plan-proprio-acoes"[\s\S]{0,220}Excluir/);
+  assert.doesNotMatch(source, /role="button" tabIndex=\{0\} onClick=\{evento=>\{evento\.stopPropagation\(\)/);
 });
 
 test("opens the student's real profile and only coach-approved training zones", async () => {

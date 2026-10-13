@@ -1506,10 +1506,10 @@ async function accessRequestsCoachApi(request: Request, env: Env): Promise<Respo
 async function studentDashboardApi(request: Request, env: Env, athleteName: string): Promise<Response> {
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
   await ensureTables(env, schema.trainingWeeks, schema.athleteProfiles, schema.athleteRaces, schema.personalRecords);
-  const brazilNow = new Date(Date.now() - 3 * 60 * 60 * 1000);
-  const brazilDay = brazilNow.getUTCDay();
-  brazilNow.setUTCDate(brazilNow.getUTCDate() - brazilDay);
-  const currentWeekStart = brazilNow.toISOString().slice(0, 10);
+  /* A grade e os registros usam semana iniciada na segunda. Esta consulta
+     ainda calculava domingo; a semana liberada ficava invisível no dashboard
+     autenticado do aluno, embora aparecesse no calendário do professor. */
+  const currentWeekStart = weekStartOf(Date.now());
   const [week, profile, races, records] = await Promise.all([
     env.DB.prepare("SELECT * FROM training_weeks WHERE athlete_name = ? AND week_start = ? AND status = 'Liberada' LIMIT 1").bind(athleteName, currentWeekStart).first(),
     env.DB.prepare("SELECT integration FROM athlete_profiles WHERE athlete_name = ? LIMIT 1").bind(athleteName).first(),
