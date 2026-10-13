@@ -8,11 +8,15 @@ export type ResultLap = {
   index: number; label: string; intensity: string | null; startedAt: number | null;
   metrics: Metrics; stageIndex: number | null; association: "explicit" | "sequence" | "unmatched";
 };
+export type ActivityChartSeries = { key: string; label: string; unit: string; points: Array<{ x: number; y: number }> };
 export type ActivityResult = {
   version: 1; activityId: string; provider: string; title: string; startedAt: number; importedAt: number;
   workoutId: string | null; workoutMatch: "workout-id" | "date" | "unmatched";
   complete: boolean; mappingVersion?: number; summary: Metrics; laps: ResultLap[];
   stages: Array<PlannedStage & { metrics: Metrics | null; lapIndexes: number[] }>;
+  charts?: ActivityChartSeries[];
+  zones?: Array<{ label: string; seconds: number }>;
+  otherMetrics?: Array<{ label: string; value: number }>;
 };
 
 export const METRICS = [
@@ -76,6 +80,64 @@ export function readMetrics(raw: Record<string, unknown>): Metrics {
   if (metrics.distanceMeters && metrics.durationSeconds) metrics.paceSeconds = metrics.durationSeconds / (metrics.distanceMeters / 1000);
   else if (metrics.averageSpeed) metrics.paceSeconds = 1000 / metrics.averageSpeed;
   return metrics;
+}
+
+function labelFromKey(key: string): string {
+  return key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim()
+    .replace(/^./, character => character.toUpperCase());
+}
+
+/** Normaliza as séries temporais que o endpoint Connect `/details` fornece. */
+function chartSeries(value: unknown): ActivityChartSeries[] {
+  const details = object(value);
+  const descriptors = Array.isArray(details.metricDescriptors) ? details.metricDescriptors.map(object) : [];
+  const rows = Array.isArray(details.activityDetailMetrics) ? details.activityDetailMetrics.map(object) : [];
+  if (!descriptors.length || !rows.length) return [];
+  const normalized = rows.map(row => Array.isArray(row.metrics) ? row.metrics.map(numeric) : []);
+  const xIndex = descriptors.findIndex(item => /timestamp|elapsed/i.test(String(item.key ?? "")));
+  const series: ActivityChartSeries[] = [];
+  for (let index = 0; index < descriptors.length; index++) {
+    const descriptor = descriptors[index];
+    const key = String(descriptor.key ?? "");
+    if (!key || /timestamp|latitude|longitude|distance/i.test(key)) continue;
+    const points = normalized.flatMap((values, rowIndex) => {
+      const raw = values[index];
+      if (raw === null || raw === undefined) return [];
+      const factor = numeric(descriptor.factor) ?? 1;
+      const x = xIndex >= 0 ? values[xIndex] ?? rowIndex : rowIndex;
+      return [{ x, y: raw * factor }];
+    });
+    if (points.length < 2) continue;
+    const name = key.replace(/^direct/i, "");
+    series.push({ key, label: labelFromKey(name), unit: String(object(descriptor.unit).unitKey ?? descriptor.unit ?? ""), points: decimate(points, 500) });
+    if (series.length >= 8) break;
+  }
+  return series;
+}
+
+function decimate<T>(values: T[], maximum: number): T[] {
+  if (values.length <= maximum) return values;
+  const result: T[] = [];
+  for (let index = 0; index < maximum; index++) result.push(values[Math.round(index * (values.length - 1) / (maximum - 1))]);
+  return result;
+}
+
+function connectZones(raw: Record<string, unknown>): ActivityResult["zones"] {
+  const values = Object.entries(raw).flatMap(([key, value]) => {
+    const seconds = numeric(value);
+    if (seconds === null || seconds <= 0 || !/(?:hr|heart.?rate).*zone|zone.*(?:hr|heart.?rate)/i.test(key)) return [];
+    return [{ label: labelFromKey(key), seconds }];
+  });
+  return values.slice(0, 10);
+}
+
+function extraSummaryMetrics(raw: Record<string, unknown>): ActivityResult["otherMetrics"] {
+  const known = new Set<string>(METRICS.map(([key]) => key));
+  return Object.entries(raw).flatMap(([key, value]) => {
+    const number = numeric(value);
+    if (number === null || known.has(key) || /(?:id|timestamp|time|date|start|end|owner|athlete|activity|workout|sport|type|latitude|longitude|name|title)/i.test(key)) return [];
+    return [{ label: labelFromKey(key), value: number }];
+  }).slice(0, 40);
 }
 
 function positive(value: unknown): number | null { const n = numeric(value); return n !== null && n > 0 ? n : null; }
@@ -256,8 +318,11 @@ export function buildActivityResult(input: {
   return {
     version: 1, provider: input.provider, activityId: input.activityId, startedAt: input.startedAt, importedAt: Date.now(),
     title: String(raw.activityName ?? raw.title ?? "Atividade concluída").slice(0, 160),
-    workoutId: remoteWorkoutId(raw), workoutMatch: input.workoutMatch ?? "unmatched", complete: input.complete ?? true, mappingVersion: 2,
+    workoutId: remoteWorkoutId(raw), workoutMatch: input.workoutMatch ?? "unmatched", complete: input.complete ?? true, mappingVersion: 3,
     summary: readMetrics(summaryRaw), laps,
+    charts: input.provider === "Garmin" ? chartSeries(raw.charts) : [],
+    zones: input.provider === "Garmin" ? connectZones(summaryRaw) : [],
+    otherMetrics: extraSummaryMetrics(summaryRaw),
     stages: planned.map(stage => {
       const stageLaps = laps.filter(lap => lap.stageIndex === stage.index);
       const measured = stageLaps.length === 1 ? stageLaps[0].metrics : stageLaps.length > 1 ? combineMetrics(stageLaps.map(lap => lap.metrics)) : null;

@@ -21,8 +21,7 @@
 export type ProviderId = "strava" | "garmin" | "zepp" | "apple";
 /* "senha" é o caminho em que o ATLETA entra com a conta dele e o sistema guarda
    só o token devolvido — a senha é usada na troca e descartada na mesma
-   requisição, nunca chega ao banco. É o caso do Garmin, cuja API oficial exige
-   aprovação que ainda não temos. */
+   requisição, nunca chega ao banco. É o caso da sessão do Garmin Connect. */
 export type AuthType = "oauth2" | "oauth2-pkce" | "device" | "senha";
 
 export type ProviderDefinition = {
@@ -57,7 +56,7 @@ export const PROVIDERS: Record<ProviderId, ProviderDefinition> = {
     authorizeUrl: "https://www.strava.com/oauth/authorize",
     tokenUrl: "https://www.strava.com/api/v3/oauth/token",
     scope: "activity:read_all",
-    requiredEnv: ["STRAVA_CLIENT_ID", "STRAVA_CLIENT_SECRET", "STRAVA_TOKEN_ENCRYPTION_KEY"],
+    requiredEnv: ["STRAVA_TOKEN_ENCRYPTION_KEY"],
     canImportActivities: true,
     canSendWorkouts: false,
     notes: "Importa atividades concluídas. O Strava não recebe treinos planejados.",
@@ -70,10 +69,7 @@ export const PROVIDERS: Record<ProviderId, ProviderDefinition> = {
     label: "Garmin",
     /* O atleta entra com a conta dele e guardamos só o token.
      *
-     * Era "oauth2-pkce", apontando para o Garmin Connect Developer Program —
-     * que exige aprovação que não temos e uma Training API cuja URL só vem no
-     * material de aprovação. Enquanto isso não existe, o caminho é o mesmo que o
-     * aplicativo Garmin Connect do celular usa.
+     * O caminho é o mesmo que o aplicativo Garmin Connect do celular usa.
      *
      * Quem digita a senha é o ATLETA, na área dele, e ela morre na troca pelo
      * token: o banco guarda token e refresh, nunca a senha. */
@@ -88,7 +84,7 @@ export const PROVIDERS: Record<ProviderId, ProviderDefinition> = {
     canImportActivities: true,
     canSendWorkouts: true,
     notes: "O atleta entra com a conta do Garmin Connect. A Zonas-App guarda apenas o token de acesso.",
-    // A sessão móvel só autoriza o Connect; a Activity API oficial tem outro OAuth.
+    // Sessão móvel Connect usada para enviar treinos e importar atividades.
     activitiesUrl: "https://connectapi.garmin.com/activitylist-service/activities/search/activities",
     activitiesRange: "iso",
     activitiesPath: "",
@@ -205,31 +201,7 @@ export function normalizeActivity(provider: ProviderId, raw: Record<string, unkn
     };
   }
   if (provider === "garmin") {
-  /*
-   * Dois formatos, porque há duas APIs do Garmin com nomes diferentes para os
-   * mesmos campos.
-   *
-   * O primeiro é o da API INTERNA — `activityId`, `beginTimestamp`,
-   * `activityType.typeKey`. É o que o `python-garminconnect` devolve, e é o que
-   * o nosso próprio cliente receberá quando importar atividades: os dois falam
-   * com `connectapi.garmin.com`. (O serviço em `garmin-bridge/` está inativo e
-   * não é chamado por ninguém — ver o README de lá.)
-   *
-   * O segundo é o da Activity API OFICIAL do Developer Program —
-   * `summaryId`, `startTimeInSeconds`, `distanceInMeters` —, que passa a valer
-   * se o programa for aprovado.
-   *
-   * Os DOIS são aceitos porque ler só um faz o outro devolver `null` — e
-   * atividade nula é descartada em silêncio, sem erro em lugar nenhum: o aluno
-   * correria e o treino sumiria sem ninguém saber por quê.
-   */
-
-  const id = String(
-    raw.activityId ??
-    raw.activityUUID ??
-    raw.summaryId ??      /* Activity API oficial */
-    ""
-  );
+  const id = String(raw.activityId ?? raw.activityUUID ?? "");
 
   /*
    * python-garminconnect retorna:
@@ -240,17 +212,10 @@ export function normalizeActivity(provider: ProviderId, raw: Record<string, unkn
    * beginTimestamp já está em milissegundos e é a fonte mais segura.
    */
   const beginTimestamp = Number(raw.beginTimestamp ?? NaN);
-  /* A oficial manda segundos; a ponte manda milissegundos. Confundir as duas
-     joga a atividade para 1970 ou para o ano 58000, e ela nunca casa com a
-     semana planejada. */
-  const startTimeInSeconds = Number(raw.startTimeInSeconds ?? NaN);
-
   let startedAt: number;
 
   if (Number.isFinite(beginTimestamp)) {
     startedAt = beginTimestamp;
-  } else if (Number.isFinite(startTimeInSeconds)) {
-    startedAt = startTimeInSeconds * 1000;
   } else {
     const startTime = String(
       raw.startTimeGMT ??
@@ -353,18 +318,18 @@ export function dateInSaoPaulo(timestamp: number): string {
   return `${value("year")}-${value("month")}-${value("day")}`;
 }
 
-/** O domingo da semana local da atividade, no formato de `training_weeks`. */
+/** A segunda-feira da semana local da atividade, no formato de `training_weeks`. */
 export function weekStartOf(timestamp: number): string {
   const date = new Date(`${dateInSaoPaulo(timestamp)}T12:00:00Z`);
   const day = date.getUTCDay();
-  date.setUTCDate(date.getUTCDate() - day);
+  date.setUTCDate(date.getUTCDate() - ((day + 6) % 7));
   return date.toISOString().slice(0, 10);
 }
 
-const WEEKDAY_KEYS = ["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SÁB"];
+const WEEKDAY_KEYS = ["SEG", "TER", "QUA", "QUI", "SEX", "SÁB", "DOM"];
 
 export function workoutDayOf(timestamp: number): string {
-  return WEEKDAY_KEYS[new Date(`${dateInSaoPaulo(timestamp)}T12:00:00Z`).getUTCDay()];
+  return WEEKDAY_KEYS[(new Date(`${dateInSaoPaulo(timestamp)}T12:00:00Z`).getUTCDay() + 6) % 7];
 }
 
 /* -------------------------------------------------------------------------- */

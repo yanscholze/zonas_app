@@ -15,7 +15,7 @@
 	"compatibility_flags": [
 		"nodejs_compat"
 	],
-	// Domingo às 00:00 e 01:00 em Brasília (03:00 e 04:00 UTC): a segunda
+	// Segunda às 00:00 e 01:00 em Brasília (03:00 e 04:00 UTC): a segunda
 	// execução permite repetir publicações que falharam ou ficaram pendentes.
 	// A consulta de resultados concluídos roda separadamente a cada dez minutos.
 	"triggers": {
@@ -50,17 +50,7 @@
 	"images": {
 		"binding": "IMAGES"
 	},
-	// Configuração, não segredo: ligam ou desligam comportamento e não têm valor
-	// sigiloso, então ficam à vista e versionadas. Estas flags controlam apenas
-	// a API oficial Garmin; a integração móvel Connect não depende delas.
-	//
-	// Nenhum segredo aqui. Tudo o que é segredo entra por `wrangler secret put`,
-	// que grava na conta e nunca no repositório — que é público.
-	"vars": {
-		"GARMIN_ACTIVITY_API_ENABLED": "false",
-		"GARMIN_TRAINING_API_ENABLED": "false",
-		"GARMIN_TRAINING_API_URL": ""
-	},
+	"vars": {},
 	// Ambiente de ensaio.
 	//
 	// Outro worker, outro banco, outros segredos. Serve para experimentar sem
@@ -91,11 +81,6 @@
 			],
 			"images": {
 				"binding": "IMAGES"
-			},
-			"vars": {
-				"GARMIN_ACTIVITY_API_ENABLED": "false",
-				"GARMIN_TRAINING_API_ENABLED": "false",
-				"GARMIN_TRAINING_API_URL": ""
 			}
 		}
 	}

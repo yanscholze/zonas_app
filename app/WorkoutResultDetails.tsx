@@ -21,6 +21,25 @@ function MetricList({ metrics }: { metrics: Metrics }) {
   })}</dl>;
 }
 
+function ActivityCharts({ result }: { result: ActivityResult }) {
+  const series = result.charts ?? [];
+  if (!series.length) return null;
+  return <section className="workout-result-charts" aria-label="Gráficos enviados pelo Garmin Connect">
+    <h3>Gráficos da atividade</h3>
+    {series.map(item => {
+      const values = item.points.map(point => point.y);
+      const min = Math.min(...values); const max = Math.max(...values); const spread = max - min || 1;
+      const points = item.points.map((point, index) => `${(index / Math.max(1, item.points.length - 1)) * 600},${100 - ((point.y - min) / spread) * 90}`).join(" ");
+      return <article key={item.key}>
+        <header><b>{item.label}</b><span>{min.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}–{max.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}{item.unit ? ` ${item.unit}` : ""}</span></header>
+        <svg viewBox="0 0 600 110" role="img" aria-label={`${item.label} ao longo do treino`} preserveAspectRatio="none">
+          <line x1="0" y1="105" x2="600" y2="105"/><polyline points={points}/>
+        </svg>
+      </article>;
+    })}
+  </section>;
+}
+
 function planned(stage: PlannedStage): string {
   const parts = [stage.activity === "walk" ? "Caminhar" : "Correr",
     stage.meters ? format(stage.meters, "m") : stage.seconds ? format(stage.seconds, "s") : "até avançar a etapa",
@@ -41,6 +60,9 @@ export function WorkoutResultDetails({ result, expanded = false }: { result?: Ac
       <header><b>{result.title}</b><small>{date} · {result.workoutMatch === "workout-id" ? "Vinculado ao treino enviado" : result.workoutMatch === "date" ? "Relacionado ao treino desta data" : "Atividade recebida"}</small></header>
       {!result.complete && <p>O resumo chegou. Alguns detalhes ainda aguardam nova sincronização.</p>}
       <MetricList metrics={result.summary}/>
+      <ActivityCharts result={result}/>
+      {result.zones?.length ? <section className="workout-result-zones" aria-label="Zonas fornecidas pelo Garmin Connect"><h3>Tempo nas zonas informado pelo Connect</h3><dl>{result.zones.map(zone=><div key={zone.label}><dt>{zone.label}</dt><dd>{time(zone.seconds)}</dd></div>)}</dl></section> : null}
+      {result.otherMetrics?.length ? <details className="workout-result-extra"><summary>Outras métricas fornecidas pelo Connect ({result.otherMetrics.length})</summary><dl>{result.otherMetrics.map(item=><div key={item.label}><dt>{item.label}</dt><dd>{item.value.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}</dd></div>)}</dl></details> : null}
       {result.stages.length > 0 && <section aria-label="Resultados por etapa"><h3>Etapas planejadas e realizadas</h3>
         {sequence && <p>Etapas relacionadas pela sequência e pelos limites das voltas registradas. Confira a correspondência abaixo.</p>}
         {result.stages.map(stage => <article className="workout-result-stage" key={stage.index}>

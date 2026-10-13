@@ -168,14 +168,14 @@ test("launching a week routes it through the student's selected integration", as
   const routeEnd = worker.indexOf("/** Histórico de cada movimento", routeStart);
   const route = worker.slice(routeStart, routeEnd);
 
-  assert.match(client, /liberada automaticamente aos domingos à meia-noite/);
+  assert.match(client, /liberada automaticamente às segundas-feiras à meia-noite/);
   assert.match(client, /Lançar semana/);
   assert.doesNotMatch(client, /Enviar para o relógio/);
   assert.match(client, /calendarWeekLabel=outsidePlan\?/);
   assert.match(route, /normalizedWeek\.status === "Liberada"/);
   assert.match(route, /publicarSemanaParaIntegracaoEscolhida/);
   assert.match(route, /foraDaCarteira\(env, request, athleteName\)/);
-  assert.match(route, /week_start_must_be_sunday/);
+  assert.match(route, /week_start_must_be_monday/);
   assert.match(worker, /profile\.integration/);
   assert.match(worker, /selected === "Garmin"/);
   assert.match(worker, /selected === "Amazfit"/);
@@ -1268,7 +1268,7 @@ test("allows a continuous workout without mandatory repeats or fixed blocks", as
 
 test("selects and persists the real calendar week instead of a fixed date", async () => {
   const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
-  assert.match(source, /sundayOf\(todayInSaoPaulo\(\)\)/);
+  assert.match(source, /mondayOf\(todayInSaoPaulo\(\)\)/);
   assert.match(source, /Semana anterior/);
   assert.match(source, /Próxima semana/);
   assert.match(source, /weekStart=\$\{weekStart\}/);
@@ -1830,12 +1830,12 @@ test("records who changed a training week and preserves both snapshots", async (
   const prepare = (sql) => ({
     values: [],
     bind(...values) { this.values = values; return this; },
-    async first() { return sql.includes("SELECT * FROM training_weeks") ? { athlete_name: "Everton Barbosa", week_start: "2026-08-09", plan: "10 km Lion", phase: "Base", week_label: "3 de 16", training_days: "[]", sessions: "{}", status: "Rascunho", updated_at: 100 } : null; },
+    async first() { return sql.includes("SELECT * FROM training_weeks") ? { athlete_name: "Everton Barbosa", week_start: "2026-08-10", plan: "10 km Lion", phase: "Base", week_label: "3 de 16", training_days: "[]", sessions: "{}", status: "Rascunho", updated_at: 100 } : null; },
     async run() { writes.push({ sql, values: this.values }); return { success: true }; },
   });
   const env = { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) }, DB: { prepare: withSession(prepare), async batch(items) { for (const item of items) await item.run(); return []; } } };
   const structured = { description: "Treino completo", steps: [{ type: "Parte principal", duration: 30, unit: "min", intensity: "Z3" }] };
-  const response = await worker.fetch(new Request("https://zonasapp.example/api/training-weeks", { method: "POST", headers: { "content-type": "application/json", ...coachCookie }, body: JSON.stringify({ athleteName: "Everton Barbosa", weekStart: "2026-08-09", plan: "10 km Lion", phase: "Específica", weekLabel: "4 de 16", trainingDays: ["TER","QUI","SÁB"], sessions: { TER: structured, QUI: structured, SÁB: structured }, status: "Liberada" }) }), env, { waitUntil() {}, passThroughOnException() {} });
+  const response = await worker.fetch(new Request("https://zonasapp.example/api/training-weeks", { method: "POST", headers: { "content-type": "application/json", ...coachCookie }, body: JSON.stringify({ athleteName: "Everton Barbosa", weekStart: "2026-08-10", plan: "10 km Lion", phase: "Específica", weekLabel: "4 de 16", trainingDays: ["TER","QUI","SÁB"], sessions: { TER: structured, QUI: structured, SÁB: structured }, status: "Liberada" }) }), env, { waitUntil() {}, passThroughOnException() {} });
   assert.equal(response.status, 201);
   const audit = writes.find(({ sql }) => sql.includes("INSERT INTO training_week_audit"));
   assert.ok(audit);
@@ -1914,46 +1914,45 @@ test("offers a truthful integration center without claiming external authorizati
   assert.match(client, /Apple Saúde \/ Apple Watch/);
   assert.match(client, /AGUARDANDO CADASTRO OFICIAL DO PROFESSOR/);
   assert.match(worker, /student\/integration-preference/);
-  assert.match(worker, /Aguardando conexão oficial/);
+  assert.match(worker, /Aguardando autorização/);
 });
 
-test("gives the coach a real overview of every athlete integration", async () => {
+test("gives the coach a real per-athlete integration diagnosis", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
   assert.match(client, /Integrações dos alunos/);
-  assert.match(client, /Sem conexão falsa/);
-  assert.match(client, /ÚLTIMA IMPORTAÇÃO/);
-  assert.match(client, /Integrações prioritárias: Garmin e Amazfit/);
+  assert.match(client, /DIAGNÓSTICO INDIVIDUAL/);
+  assert.match(client, /ÚLTIMA TENTATIVA/);
+  assert.match(client, /Sincronização Garmin automática/);
   assert.match(worker, /integration-overview/);
-  assert.match(worker, /Aguardando conexão oficial/);
+  assert.match(worker, /Strava não conectado/);
   assert.match(worker, /last_import_at/);
 });
 
-test("prepares Garmin and Amazfit without pretending they are connected", async () => {
+test("shows real Garmin Connect and Strava setup status", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
-  assert.match(client, /PRIMEIRAS CONEXÕES/);
-  assert.match(client, /Cadastro e credenciais oficiais/);
+  assert.match(client, /CONFIGURAÇÃO DO SERVIÇO/);
+  assert.match(client, /Client ID/);
+  assert.match(client, /Client Secret/);
   assert.match(client, /Receber atividades realizadas/);
   assert.match(client, /Enviar treinos estruturados/);
-  assert.match(client, /developer\.garmin\.com/);
-  assert.match(client, /developer\.zepp\.com/);
-  assert.match(worker, /GARMIN_ACTIVITY_API_ENABLED/);
-  assert.match(worker, /GARMIN_TRAINING_API_ENABLED/);
+  assert.match(worker, /Conexão direta Garmin Connect/);
+  assert.doesNotMatch(worker, /GARMIN_CONSUMER_KEY|GARMIN_CONSUMER_SECRET|GARMIN_TRAINING_API/);
   assert.match(worker, /ZEPP_WEBHOOK_SECRET/);
   assert.match(worker, /integration-readiness/);
   assert.doesNotMatch(client, /GARMIN_CONSUMER_SECRET|ZEPP_APP_SECRET|ZEPP_WEBHOOK_SECRET/);
 });
 
-test("provides the public documents and application profile required by device portals", async () => {
+test("provides public service policies and the callback needed by Strava setup", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
   const privacy = await readFile(new URL("../app/privacy/page.tsx", import.meta.url), "utf8");
   const terms = await readFile(new URL("../app/terms/page.tsx", import.meta.url), "utf8");
-  assert.match(client, /Ficha oficial da Zonas-App/);
-  assert.match(client, /Política de Privacidade/);
-  assert.match(client, /Termos de Uso/);
-  assert.match(client, /PRONTA PARA COPIAR/);
-  assert.match(client, /As credenciais recebidas depois nunca devem ser coladas nesta tela/);
+  assert.match(client, /Integração do Strava/);
+  assert.match(client, /strava-settings/);
+  assert.match(worker, /api\/integrations\/callback\/strava/);
+  assert.match(client, /A Zonas-App cifra os dados no banco/);
   assert.match(privacy, /Dados de relógios e aplicativos somente serão acessados depois da autorização expressa/);
   assert.match(terms, /não exibirá uma integração como ativa antes da confirmação oficial/);
 });
@@ -2032,7 +2031,7 @@ test("shows only the real released workout for the current Brazilian day", async
 
 test("uses the current calendar week when the coach previews the student area", async () => {
   const source = await readFile("app/ZonasAppClient.tsx", "utf8");
-  assert.match(source, /const currentWeekStart=sundayOf\(todayInSaoPaulo\(\)\)/);
+  assert.match(source, /const currentWeekStart=mondayOf\(todayInSaoPaulo\(\)\)/);
   assert.match(source, /weekStart=\$\{currentWeekStart\}/);
   assert.doesNotMatch(source, /weekStart=2026-08-09/);
 });
@@ -2405,7 +2404,7 @@ test("keeps one vocabulary for the training days", async () => {
   assert.match(worker, /function diasDeTreino\(valor: unknown\): string\[\]/);
   assert.equal((worker.match(/const trainingDays = diasDeTreino\(input\.trainingDays\);/g) ?? []).length, 4);
   assert.doesNotMatch(worker, /input\.trainingDays\.map\(day => boundedText\(day, 12\)\)/);
-  assert.match(client, /const weekDays = \["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SÁB"\]/);
+  assert.match(client, /const weekDays = \["SEG", "TER", "QUA", "QUI", "SEX", "SÁB", "DOM"\]/);
   // E o cadastro pelo treinador passou a gravar o perfil, como a aprovação de
   // pedido de acesso já fazia: é de lá que saem os dias disponíveis.
   assert.match(worker, /INSERT INTO athlete_profiles \(athlete_name, phone, birth_date, objective, integration, training_days, updated_at\)/);
@@ -2902,7 +2901,7 @@ test("mantém a mecânica de PKCE pronta, com o verifier preso ao servidor", asy
 test("normalizes activities from every provider into the same shape", async () => {
   const source = await readFile(new URL("../worker/integrations.ts", import.meta.url), "utf8");
   assert.match(source, /provider === "strava"[\s\S]*?raw\.start_date/);
-  assert.match(source, /provider === "garmin"[\s\S]*?startTimeInSeconds/);
+  assert.match(source, /provider === "garmin"[\s\S]*?beginTimestamp/);
   assert.match(source, /provider === "zepp"[\s\S]*?raw\.trackid/);
   assert.match(source, /raw\.workoutActivityType/);
   // A atividade importada já chega ligada à semana e ao dia do treino planejado.
@@ -3703,7 +3702,7 @@ test("normalizes a real activity from each provider", async () => {
     `npx tsx -e "` +
     `import {normalizeActivity,averagePaceSeconds,weekStartOf,workoutDayOf} from './worker/integrations.ts';` +
     `const s=normalizeActivity('strava',{id:1,start_date:'2026-08-24T07:00:00Z',distance:10000,moving_time:3000,average_heartrate:155});` +
-    `const g=normalizeActivity('garmin',{summaryId:'g1',startTimeInSeconds:1787554800,distanceInMeters:10000,durationInSeconds:3000,averageHeartRateInBeatsPerMinute:150});` +
+    `const g=normalizeActivity('garmin',{activityId:'g1',beginTimestamp:1787554800000,distance:10000,duration:3000,averageHR:150,activityType:{typeKey:'running'}});` +
     /* O mesmo provedor com o formato da ponte em Python, que é o caminho de
        hoje. Ler só um dos dois faz o outro virar null — e null é atividade
        descartada em silêncio. */
@@ -3715,7 +3714,7 @@ test("normalizes a real activity from each provider", async () => {
   );
   const d = JSON.parse(saida.trim().split("\n").pop());
   // Cinco formatos, muito diferentes entre si, chegam ao mesmo resultado —
-  // incluindo os DOIS do Garmin: a Activity API oficial e a ponte em Python.
+  // incluindo a sessão Garmin Connect que o Worker usa.
   for (const provedor of ["s", "g", "gb", "z", "a"]) {
     assert.equal(d[provedor].distanceMeters, 10000, `${provedor}: distância`);
     assert.equal(d[provedor].movingSeconds, 3000, `${provedor}: duração`);
@@ -3724,7 +3723,7 @@ test("normalizes a real activity from each provider", async () => {
   }
   // 10 km em 50 min são 5:00/km, e a atividade cai na semana e no dia certos.
   assert.equal(d.pace, 300);
-  assert.equal(d.semana, "2026-08-23");
+  assert.equal(d.semana, "2026-08-24");
   assert.equal(d.dia, "SEG");
 });
 
@@ -3819,7 +3818,7 @@ test("answers the Strava subscription handshake and refuses a wrong token", asyn
      endpoint mede o tempo da resposta e descobre o token caractere a caractere —
      e com ele inscreve o próprio endereço para receber as atividades dos alunos.
      Toda comparação de segredo passa pelo mesmo laço de tempo constante. */
-  assert.match(worker, /!constantTimeEquals\(token \?\? "", env\.STRAVA_WEBHOOK_VERIFY_TOKEN\)/);
+  assert.match(worker, /!constantTimeEquals\(token \?\? "", credentials\.webhookVerifyToken\)/);
   assert.doesNotMatch(worker, /token !== env\.STRAVA_WEBHOOK_VERIFY_TOKEN/);
   const auth = await readFile(new URL("../worker/auth.ts", import.meta.url), "utf8");
   assert.match(auth, /export function constantTimeEquals\(left: string, right: string\): boolean/);
@@ -3884,16 +3883,12 @@ test("translates a session into a Garmin workout", async () => {
   assert.ok(w.steps.some((p) => p.intensity === "RECOVERY"));
 });
 
-test("refuses to send a Garmin workout until the program is approved", async () => {
+test("sends Garmin workouts only through the Connect session client", async () => {
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
-  // O endereço da Training API só vem no material que o Garmin entrega ao
-  // aprovar a conta. Inventar uma URL faria a integração parecer pronta.
-  assert.match(worker, /if \(env\.GARMIN_TRAINING_API_ENABLED !== "true"\) return \{ enviado: false, erro: "training_api_not_enabled" \};/);
-  assert.match(worker, /if \(!env\.GARMIN_TRAINING_API_URL\) return \{ enviado: false, erro: "training_api_url_missing" \};/);
-  assert.doesNotMatch(worker, /https:\/\/apis\.garmin\.com\/training-api/);
-  // O resto do caminho está pronto e passa a valer no dia da aprovação.
-  assert.match(worker, /const treino = toGarminWorkout\(/);
+  assert.match(worker, /subirTreinoNoGarmin/);
+  assert.match(worker, /agendarTreinoNoGarmin/);
   assert.match(worker, /action === "send_workout"/);
+  assert.doesNotMatch(worker, /GARMIN_CONSUMER_KEY|GARMIN_CONSUMER_SECRET|GARMIN_TRAINING_API/);
 });
 
 /* --- Tradução de treino para o Garmin -------------------------------------

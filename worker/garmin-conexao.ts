@@ -1,10 +1,9 @@
 /**
  * Conversa com o Garmin Connect pela API que o aplicativo do celular usa.
  *
- * ATENÇÃO, antes de mexer aqui: esta NÃO é a API oficial do Garmin Developer
- * Program. É a mesma que o aplicativo Garmin Connect usa no telefone. A escolha
- * foi consciente — a oficial exige aprovação que não temos e uma Training API
- * cuja URL só vem no material de aprovação.
+ * Implementação da sessão Garmin Connect baseada no cliente cyberjunky e nos
+ * fluxos de criação/agendamento observados no projeto sydspost. Não usa chaves
+ * nem endpoints do Garmin Developer Program.
  *
  * Quem digita a senha é o ATLETA, na área dele. Ela é usada aqui para obter o
  * token e **não é guardada em lugar nenhum** — nem cifrada. O que fica no banco
@@ -26,7 +25,8 @@
  * que o cliente em Python faz serve à estratégia do formulário web, que não é
  * esta. `bloqueado_na_porta` segue existindo por precaução, não por diagnóstico.
  *
- * Os endereços e o formato vieram de cyberjunky/python-garminconnect.
+ * Referências: cyberjunky/python-garminconnect e
+ * sydspost/Garmin-Connect-Workout-and-Schedule-creator.
  */
 
 /* --- Endereços ------------------------------------------------------------ */

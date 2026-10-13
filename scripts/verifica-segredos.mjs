@@ -30,9 +30,8 @@ const OBRIGATORIOS = ["DEV_LOGIN", "DEV_INITIAL_PASSWORD", "COACH_EMAIL", "COACH
 /* Garmin Connect usa a sessão móvel cifrada, sem chaves do programa oficial.
    O nome histórico da chave de cifra também atende as outras integrações. */
 const OPCIONAIS_POR_FUNCAO = {
-  "Strava": ["STRAVA_CLIENT_ID", "STRAVA_CLIENT_SECRET", "STRAVA_WEBHOOK_VERIFY_TOKEN", "STRAVA_TOKEN_ENCRYPTION_KEY"],
+  "Strava (credenciais protegidas no painel)": ["STRAVA_TOKEN_ENCRYPTION_KEY"],
   "Garmin Connect (sessão do aluno)": ["STRAVA_TOKEN_ENCRYPTION_KEY"],
-  "Garmin API oficial (opcional)": ["GARMIN_CONSUMER_KEY", "GARMIN_CONSUMER_SECRET"],
   "Zepp OAuth (opcional; ingestão por token é independente)": ["ZEPP_APP_ID", "ZEPP_APP_SECRET", "ZEPP_WEBHOOK_SECRET"],
 };
 
@@ -112,7 +111,7 @@ for (const [funcao, nomes] of Object.entries(OPCIONAIS_POR_FUNCAO)) {
    comportamento e não têm valor sigiloso. Vão em `vars` no wrangler.jsonc, onde
    ficam à vista e versionadas — misturá-las com segredo faria alguém gravar um
    segredo no lugar errado por analogia. */
-const CONFIGURACAO_PUBLICA = ["GARMIN_ACTIVITY_API_ENABLED", "GARMIN_TRAINING_API_ENABLED", "GARMIN_TRAINING_API_URL"];
+const CONFIGURACAO_PUBLICA = [];
 
 /* O worker pode ter passado a ler algo que nenhuma das listas acima conhece.
    Avisar é melhor que a lista envelhecer em silêncio. */

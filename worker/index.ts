@@ -55,15 +55,7 @@ interface Env {
   DEV_LOGIN?: string;
   DEV_INITIAL_PASSWORD?: string;
   COACH_INITIAL_PASSWORD?: string;
-  STRAVA_CLIENT_ID?: string;
-  STRAVA_CLIENT_SECRET?: string;
   STRAVA_TOKEN_ENCRYPTION_KEY?: string;
-  STRAVA_WEBHOOK_VERIFY_TOKEN?: string;
-  GARMIN_CONSUMER_KEY?: string;
-  GARMIN_CONSUMER_SECRET?: string;
-  GARMIN_ACTIVITY_API_ENABLED?: string;
-  GARMIN_TRAINING_API_ENABLED?: string;
-  GARMIN_TRAINING_API_URL?: string;
   ZEPP_APP_ID?: string;
   ZEPP_APP_SECRET?: string;
   ZEPP_WEBHOOK_SECRET?: string;
@@ -135,6 +127,7 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/auth/password": new Set(["currentPassword","newPassword"]),
   "/api/accounts": new Set(["action","email","name","athleteName","password"]),
   "/api/integrations": new Set(["action","provider","athleteName","payload","weekStart","workoutDay"]),
+  "/api/strava-settings": new Set(["clientId","clientSecret"]),
   "/api/integrations/strava/subscription": new Set(["action","id"]),
   "/api/dev/coaches": new Set(["action","email","name","password","role","athleteName"]),
   "/api/equipe": new Set(["action","email","name","password","role","athleteName"]),
@@ -160,7 +153,7 @@ function boundedText(value: unknown, max: number): string {
  * maiúsculas. Guardar "Seg" onde o resto guarda "SEG" faz o dia nunca casar, e
  * o aluno acaba sem nenhum dia disponível.
  */
-const DIAS_DA_SEMANA = ["DOM","SEG","TER","QUA","QUI","SEX","SÁB"];
+const DIAS_DA_SEMANA = ["SEG","TER","QUA","QUI","SEX","SÁB","DOM"];
 
 function diasDeTreino(valor: unknown): string[] {
   if (!Array.isArray(valor)) return [];
@@ -579,14 +572,14 @@ async function garanteEsquema(env: Env): Promise<void> {
        handlers virarem no-op — sem isto eles refazem o PRAGMA de cada tabela
        que tocam, e a economia se perde no primeiro handler que roda. */
     for (const tabela of TODAS_AS_TABELAS) tabelasConferidas.add(nomeDaTabela(tabela));
-    await migrarInicioDaSemanaParaDomingo(env);
+    await migrarInicioDaSemanaParaSegunda(env);
     await migrarIndiceUnicoDosConvites(env);
     esquemaConferidoNestaInstancia = true;
     return;
   }
 
   await ensureTables(env, ...TODAS_AS_TABELAS);
-  await migrarInicioDaSemanaParaDomingo(env);
+  await migrarInicioDaSemanaParaSegunda(env);
   await migrarIndiceUnicoDosConvites(env);
   await env.DB.prepare("INSERT INTO schema_state (id, signature) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET signature = excluded.signature")
     .bind(assinatura).run();
@@ -612,18 +605,18 @@ async function migrarIndiceUnicoDosConvites(env: Env): Promise<void> {
 }
 
 /**
- * Converte as chaves semanais antigas (segunda-feira) para domingo e mantém
+ * Converte as chaves semanais de domingo para segunda-feira e mantém
  * históricos, auditorias e integrações alinhados com a mesma semana.
  * A migração roda uma vez por banco e permanece segura entre instâncias do Worker.
  */
-async function migrarInicioDaSemanaParaDomingo(env: Env): Promise<void> {
+async function migrarInicioDaSemanaParaSegunda(env: Env): Promise<void> {
   await ensureTables(env, schema.dataMigrations);
-  const id = "training-week-start-sunday-v1";
+  const id = "training-week-start-monday-v1";
   const aplicada = await env.DB.prepare("SELECT id FROM data_migrations WHERE id = ? LIMIT 1").bind(id).first();
   if (aplicada) return;
   const agora = Date.now();
   const deslocar = (tabela: string, coluna: string) => env.DB.prepare(
-    `UPDATE OR IGNORE ${tabela} SET ${coluna} = date(${coluna}, '-1 day') WHERE strftime('%w', ${coluna}) = '1'`,
+    `UPDATE OR IGNORE ${tabela} SET ${coluna} = date(${coluna}, '+1 day') WHERE strftime('%w', ${coluna}) = '0'`,
   );
   await env.DB.batch([
     deslocar("training_weeks", "week_start"),
@@ -1631,7 +1624,7 @@ async function studentIntegrationPreferenceApi(request: Request, env: Env, athle
   await env.DB.prepare(`INSERT INTO athlete_profiles (athlete_name,phone,birth_date,objective,integration,training_days,updated_at)
     VALUES (?,NULL,NULL,NULL,?,?,?) ON CONFLICT(athlete_name) DO UPDATE SET integration=excluded.integration,updated_at=excluded.updated_at`)
     .bind(athleteName,integration,existing?.training_days||"[]",Date.now()).run();
-  return Response.json({ integration, status: integration === "Sem integração" ? "Desativada" : "Aguardando conexão oficial" });
+  return Response.json({ integration, status: integration === "Sem integração" ? "Desativada" : "Aguardando autorização do aluno" });
 }
 
 async function studentPainApi(request: Request, env: Env, athleteName: string): Promise<Response> {
@@ -2072,7 +2065,7 @@ async function trainingWeeksApi(request: Request, env: Env): Promise<Response> {
     if (fora) return fora;
 
     if (input.action === "publish") {
-      if (new Date(`${weekStart}T00:00:00Z`).getUTCDay() !== 0) return Response.json({ error: "week_start_must_be_sunday" }, { status: 400 });
+      if (new Date(`${weekStart}T00:00:00Z`).getUTCDay() !== 1) return Response.json({ error: "week_start_must_be_monday" }, { status: 400 });
       const week = await env.DB.prepare("SELECT sessions,training_days,plan,phase,week_label FROM training_weeks WHERE athlete_name = ? AND week_start = ? LIMIT 1")
         .bind(athleteName, weekStart).first() as { sessions?: string; training_days?: string; plan?: string; phase?: string; week_label?: string } | null;
       if (!week) return Response.json({ error: "week_not_saved" }, { status: 404 });
@@ -2097,7 +2090,7 @@ async function trainingWeeksApi(request: Request, env: Env): Promise<Response> {
     const trainingDays = diasDeTreino(input.trainingDays);
     if (!input.sessions || Array.isArray(input.sessions) || typeof input.sessions !== "object") return Response.json({ error: "invalid_sessions" }, { status: 400 });
     if (boundedText(input.status ?? "Rascunho", 30) === "Liberada") {
-      if (new Date(`${weekStart}T00:00:00Z`).getUTCDay() !== 0) return Response.json({ error: "week_start_must_be_sunday" }, { status: 400 });
+      if (new Date(`${weekStart}T00:00:00Z`).getUTCDay() !== 1) return Response.json({ error: "week_start_must_be_monday" }, { status: 400 });
       const sessions = input.sessions as Record<string, unknown>;
       const incompleteDays = trainingDays.filter(day => {
         const session = sessions[day];
@@ -2156,7 +2149,7 @@ async function trainingWeeksApi(request: Request, env: Env): Promise<Response> {
   return new Response("Method not allowed", { status: 405 });
 }
 
-/** Libera e publica somente os treinos completos da semana vigente no domingo. */
+/** Libera e publica somente os treinos completos da semana vigente na segunda-feira. */
 async function liberarSemanaVigenteAutomaticamente(env: Env, scheduledTime: number): Promise<void> {
   await garanteEsquema(env);
   await ensureTables(env, schema.trainingWeeks, schema.trainingWeekAudit, schema.trainingWeekPublications);
@@ -2200,7 +2193,7 @@ async function liberarSemanaVigenteAutomaticamente(env: Env, scheduledTime: numb
         await env.DB.prepare(`INSERT INTO training_week_audit
           (id,athlete_name,week_start,actor_email,action,changed_fields,previous_snapshot,new_snapshot,created_at)
           VALUES (?,?,?,?,?,?,?,?,?)`)
-          .bind(crypto.randomUUID(), athleteName, weekStart, "sistema@zonasapp.local", "Semana liberada automaticamente no domingo", JSON.stringify(["status"]), previousSnapshot, nextSnapshot, now).run();
+          .bind(crypto.randomUUID(), athleteName, weekStart, "sistema@zonasapp.local", "Semana liberada automaticamente na segunda-feira", JSON.stringify(["status"]), previousSnapshot, nextSnapshot, now).run();
         resumo.released += 1;
       }
 
@@ -2228,7 +2221,7 @@ async function liberarSemanaVigenteAutomaticamente(env: Env, scheduledTime: numb
       try {
         await recordApplicationError(env, request, "liberação semanal automática", "weekly_auto_release_failed", 500,
           error instanceof Error ? error : new Error(String(error)));
-      } catch { /* a próxima execução de domingo poderá tentar novamente */ }
+      } catch { /* a próxima execução de segunda-feira poderá tentar novamente */ }
     }
   }
 
@@ -2614,28 +2607,50 @@ async function workoutExecutionsApi(request: Request, env: Env): Promise<Respons
 
 async function integrationOverviewApi(request: Request, env: Env): Promise<Response> {
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
-  await ensureTables(env, schema.athletes, schema.athleteProfiles, schema.athleteAccess, schema.workoutExecutions);
+  await ensureTables(env, schema.athletes, schema.athleteProfiles, schema.athleteAccess, schema.workoutExecutions, schema.externalIntegrations, schema.externalActivities);
   const alunos = recorteDeAlunos(carteiraDe(request));
   const result = await env.DB.prepare(`SELECT athletes.name AS athlete_name,
     COALESCE(athlete_profiles.integration, athletes.integration, 'Sem integração') AS integration,
     COALESCE(athlete_access.status, 'Não liberado') AS access_status,
     (SELECT source FROM workout_executions WHERE workout_executions.athlete_name = athletes.name ORDER BY created_at DESC LIMIT 1) AS last_source,
-    (SELECT created_at FROM workout_executions WHERE workout_executions.athlete_name = athletes.name ORDER BY created_at DESC LIMIT 1) AS last_import_at
+    (SELECT created_at FROM workout_executions WHERE workout_executions.athlete_name = athletes.name ORDER BY created_at DESC LIMIT 1) AS last_import_at,
+    (SELECT status FROM external_integrations WHERE external_integrations.athlete_name = athletes.name AND provider='Garmin' LIMIT 1) AS garmin_status,
+    (SELECT last_sync_at FROM external_integrations WHERE external_integrations.athlete_name = athletes.name AND provider='Garmin' LIMIT 1) AS garmin_last_sync_at,
+    (SELECT last_import_attempt_at FROM external_integrations WHERE external_integrations.athlete_name = athletes.name AND provider='Garmin' LIMIT 1) AS garmin_last_attempt_at,
+    (SELECT last_import_error FROM external_integrations WHERE external_integrations.athlete_name = athletes.name AND provider='Garmin' LIMIT 1) AS garmin_error,
+    (SELECT COUNT(*) FROM external_activities WHERE external_activities.athlete_name = athletes.name AND provider='Garmin') AS garmin_activity_count,
+    (SELECT MAX(started_at) FROM external_activities WHERE external_activities.athlete_name = athletes.name AND provider='Garmin') AS garmin_last_activity_at,
+    (SELECT COUNT(*) FROM workout_executions WHERE workout_executions.athlete_name = athletes.name AND source='Garmin') AS garmin_linked_count,
+    (SELECT status FROM external_integrations WHERE external_integrations.athlete_name = athletes.name AND provider='Strava' LIMIT 1) AS strava_status,
+    (SELECT last_sync_at FROM external_integrations WHERE external_integrations.athlete_name = athletes.name AND provider='Strava' LIMIT 1) AS strava_last_sync_at,
+    (SELECT last_import_error FROM external_integrations WHERE external_integrations.athlete_name = athletes.name AND provider='Strava' LIMIT 1) AS strava_error,
+    (SELECT COUNT(*) FROM external_activities WHERE external_activities.athlete_name = athletes.name AND provider='Strava') AS strava_activity_count
     FROM athletes
     LEFT JOIN athlete_profiles ON athlete_profiles.athlete_name = athletes.name
     LEFT JOIN athlete_access ON athlete_access.athlete_name = athletes.name
     WHERE ${alunos.clausula || "1=1"}
     ORDER BY athletes.name ASC`).bind(...alunos.valores).all();
-  const integrations = result.results.map((row:any) => ({...row, connection_status: row.integration === "Sem integração" ? "Sem integração" : row.last_source && row.last_source !== "Manual" ? "Sincronizado" : "Aguardando conexão oficial"}));
+  const integrations = result.results.map((row:any) => {
+    const garminPreferred = row.integration === "Garmin";
+    const stravaPreferred = row.integration === "Strava";
+    const status = !garminPreferred && stravaPreferred ? row.strava_status === "Conectado" ? row.strava_error ? `Erro: ${String(row.strava_error)}` : Number(row.strava_activity_count) ? "Conectado · atividades recebidas" : "Conectado · aguardando atividade" : row.strava_status === "Reconectar" ? "Reconectar Strava" : "Strava não conectado"
+      : !garminPreferred ? (row.integration === "Sem integração" ? "Sem integração" : row.last_source && row.last_source !== "Manual" ? "Sincronizado" : "Aguardando autorização")
+      : row.garmin_status === "Conectado" ? row.garmin_error ? `Erro: ${String(row.garmin_error)}` : row.garmin_last_attempt_at && Date.now() - Number(row.garmin_last_attempt_at) < 3 * 60_000 ? "Consultando Garmin" : Number(row.garmin_activity_count) ? Number(row.garmin_last_activity_at) && Date.now() - Number(row.garmin_last_activity_at) > 30 * 86_400_000 ? "Conectado · sem atividade recente" : `Atividades recebidas · ${Number(row.garmin_linked_count) || 0} treino(s) vinculado(s)` : "Conectado · aguardando atividade"
+      : row.garmin_status === "Reconectar" ? "Reconectar Garmin" : row.garmin_status === "Desconectado" ? "Garmin desconectado" : "Garmin não conectado";
+    return { ...row, connection_status: status, last_import_at: garminPreferred ? row.garmin_last_attempt_at : stravaPreferred ? row.strava_last_sync_at : row.last_import_at };
+  });
   return Response.json({ integrations });
 }
 
 async function integrationReadinessApi(request:Request,env:Env):Promise<Response>{
   if(request.method!=="GET")return new Response("Method not allowed",{status:405});
   const garminCredentials=Boolean(env.STRAVA_TOKEN_ENCRYPTION_KEY);
+  const strava = await providerCredentials(env, PROVIDERS.strava);
+  const stravaConfigured = Boolean(strava.clientId && strava.clientSecret && env.STRAVA_TOKEN_ENCRYPTION_KEY);
   const zeppCredentials=Boolean(env.ZEPP_APP_ID&&env.ZEPP_APP_SECRET&&env.ZEPP_WEBHOOK_SECRET);
   return Response.json({providers:[
-    {id:"garmin",name:"Garmin",credentialsConfigured:garminCredentials,receiveActivities:garminCredentials,sendStructuredWorkouts:garminCredentials,automaticReturn:garminCredentials,pollIntervalMinutes:10,status:garminCredentials?"Disponível pelo Garmin Connect":"Credenciais não configuradas"},
+    {id:"garmin",name:"Garmin Connect",credentialsConfigured:garminCredentials,receiveActivities:garminCredentials,sendStructuredWorkouts:garminCredentials,automaticReturn:garminCredentials,pollIntervalMinutes:10,status:garminCredentials?"Conexão direta Garmin Connect":"Chave de proteção ausente"},
+    {id:"strava",name:"Strava",credentialsConfigured:stravaConfigured,receiveActivities:stravaConfigured,sendStructuredWorkouts:false,status:stravaConfigured?"Credenciais configuradas":"Aguardando credenciais do aplicativo"},
     {id:"amazfit",name:"Amazfit / Zepp",credentialsConfigured:zeppCredentials,receiveActivities:false,sendStructuredWorkouts:false,status:!zeppCredentials?"Cadastro oficial necessário":"Aplicativo Zepp em preparação"}
   ]});
 }
@@ -2815,32 +2830,92 @@ async function decryptIntegrationToken(value: string, secret: string): Promise<s
  */
 
 async function ensureIntegrationTables(env: Env) {
-  await ensureTables(env, schema.externalIntegrations, schema.oauthFlows, schema.externalActivities, schema.deviceIngestTokens);
+  await ensureTables(env, schema.externalIntegrations, schema.oauthFlows, schema.externalActivities, schema.deviceIngestTokens, schema.integrationSettings);
 }
 
-function providerCredentials(env: Env, provider: ProviderDefinition): { clientId?: string; clientSecret?: string } {
-  if (provider.id === "strava") return { clientId: env.STRAVA_CLIENT_ID, clientSecret: env.STRAVA_CLIENT_SECRET };
-  if (provider.id === "garmin") return { clientId: env.GARMIN_CONSUMER_KEY, clientSecret: env.GARMIN_CONSUMER_SECRET };
+type StravaCredentials = { clientId: string; clientSecret: string; webhookVerifyToken: string };
+
+async function stravaCredentials(env: Env): Promise<StravaCredentials | null> {
+  await ensureIntegrationTables(env);
+  const saved = await env.DB.prepare("SELECT value_encrypted FROM integration_settings WHERE key='strava_credentials' LIMIT 1").first() as { value_encrypted?: string } | null;
+  if (saved?.value_encrypted && env.STRAVA_TOKEN_ENCRYPTION_KEY) {
+    const clear = await decryptIntegrationToken(saved.value_encrypted, env.STRAVA_TOKEN_ENCRYPTION_KEY);
+    try {
+      const value = JSON.parse(clear) as Partial<StravaCredentials>;
+      if (value.clientId && value.clientSecret && value.webhookVerifyToken) return value as StravaCredentials;
+    } catch { /* valor inválido: preserva o fallback configurado no ambiente */ }
+  }
+  return null;
+}
+
+async function stravaSettingsApi(request: Request, env: Env): Promise<Response> {
+  await ensureIntegrationTables(env);
+  const actor = normalizedAuthenticatedEmail(request)?.toLowerCase();
+  const ownerEmail = String(env.COACH_EMAIL ?? "").trim().toLowerCase();
+  const canConfigure = Boolean(ownerEmail && actor === ownerEmail);
+  if (request.method === "GET") {
+    const credentials = await stravaCredentials(env);
+    const configured = Boolean(credentials && env.STRAVA_TOKEN_ENCRYPTION_KEY);
+    let webhookActive: boolean | null = null;
+    if (configured) {
+      try {
+        const url = new URL(request.url);
+        const check = await stravaSubscriptionApi(new Request(url, { method: "GET" }), url, env);
+        const current = await check.json().catch(() => ({})) as { subscriptions?: Array<{ callback_url?: string }> };
+        const callbackUrl = new URL("/api/integrations/strava/webhook", request.url).toString();
+        webhookActive = check.ok && Boolean(current.subscriptions?.some(item => item.callback_url === callbackUrl));
+      } catch { webhookActive = false; }
+    }
+    return Response.json({ configured, canConfigure, webhookActive, callbackUrl: new URL("/api/integrations/callback/strava", request.url).toString(), maskedClientId: configured ? `${credentials!.clientId.slice(0, 2)}••••${credentials!.clientId.slice(-2)}` : null });
+  }
+  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
+  if (!canConfigure) return Response.json({ error: "primary_coach_required" }, { status: 403 });
+  if (!env.STRAVA_TOKEN_ENCRYPTION_KEY) return Response.json({ error: "encryption_key_missing" }, { status: 503 });
+  const input = await request.json() as Record<string, unknown>;
+  const clientId = boundedText(input.clientId, 30);
+  const clientSecret = typeof input.clientSecret === "string" ? input.clientSecret.trim() : "";
+  if (!/^\d{1,20}$/.test(clientId)) return Response.json({ error: "invalid_client_id", field: "clientId" }, { status: 400 });
+  if (clientSecret.length < 8 || clientSecret.length > 200) return Response.json({ error: "invalid_client_secret", field: "clientSecret" }, { status: 400 });
+  const previous = await stravaCredentials(env);
+  const webhookVerifyToken = previous?.webhookVerifyToken ?? base64UrlEncode(crypto.getRandomValues(new Uint8Array(32)));
+  const encrypted = await encryptIntegrationToken(JSON.stringify({ clientId, clientSecret, webhookVerifyToken } satisfies StravaCredentials), env.STRAVA_TOKEN_ENCRYPTION_KEY);
+  await env.DB.prepare(`INSERT INTO integration_settings (key,value_encrypted,updated_at,updated_by) VALUES ('strava_credentials',?,?,?)
+    ON CONFLICT(key) DO UPDATE SET value_encrypted=excluded.value_encrypted,updated_at=excluded.updated_at,updated_by=excluded.updated_by`)
+    .bind(encrypted, Date.now(), actor).run();
+  let webhookActive = false;
+  try {
+    const url = new URL(request.url);
+    const check = await stravaSubscriptionApi(new Request(url, { method: "GET" }), url, env);
+    const current = await check.json().catch(() => ({})) as { subscriptions?: Array<{ callback_url?: string }> };
+    const callbackUrl = new URL("/api/integrations/strava/webhook", request.url).toString();
+    webhookActive = check.ok && Boolean(current.subscriptions?.some(item => item.callback_url === callbackUrl));
+    if (!webhookActive) {
+      const subscribe = await stravaSubscriptionApi(new Request(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "subscribe" }) }), url, env);
+      webhookActive = subscribe.ok;
+    }
+  } catch { /* As credenciais ficam salvas; a interface explicará se o callback ainda precisar de ajuste. */ }
+  return Response.json({ saved: true, configured: true, webhookActive, maskedClientId: `${clientId.slice(0, 2)}••••${clientId.slice(-2)}` });
+}
+
+async function providerCredentials(env: Env, provider: ProviderDefinition): Promise<{ clientId?: string; clientSecret?: string }> {
+  if (provider.id === "strava") {
+    const credentials = await stravaCredentials(env);
+    return credentials ? { clientId: credentials.clientId, clientSecret: credentials.clientSecret } : {};
+  }
   if (provider.id === "zepp") return { clientId: env.ZEPP_APP_ID, clientSecret: env.ZEPP_APP_SECRET };
   return {};
 }
 
 /** Um provedor só é oferecido ao atleta quando tudo que ele exige existe. */
-function providerIsReady(env: Env, provider: ProviderDefinition): boolean {
-  const values: Record<string, string | undefined> = {
-    STRAVA_CLIENT_ID: env.STRAVA_CLIENT_ID,
-    STRAVA_CLIENT_SECRET: env.STRAVA_CLIENT_SECRET,
-    STRAVA_TOKEN_ENCRYPTION_KEY: env.STRAVA_TOKEN_ENCRYPTION_KEY,
-    GARMIN_CONSUMER_KEY: env.GARMIN_CONSUMER_KEY,
-    GARMIN_CONSUMER_SECRET: env.GARMIN_CONSUMER_SECRET,
-    ZEPP_APP_ID: env.ZEPP_APP_ID,
-    ZEPP_APP_SECRET: env.ZEPP_APP_SECRET,
-  };
-  return provider.requiredEnv.every(name => Boolean(values[name]));
+async function providerIsReady(env: Env, provider: ProviderDefinition): Promise<boolean> {
+  if (provider.id === "garmin") return Boolean(env.STRAVA_TOKEN_ENCRYPTION_KEY);
+  if (provider.id === "strava") return Boolean(env.STRAVA_TOKEN_ENCRYPTION_KEY && await stravaCredentials(env));
+  if (provider.id === "zepp") return true;
+  return true;
 }
 
-function providerStatusLabel(env: Env, provider: ProviderDefinition): string {
-  if (!providerIsReady(env, provider)) return "Credenciais não configuradas";
+async function providerStatusLabel(env: Env, provider: ProviderDefinition): Promise<string> {
+  if (!await providerIsReady(env, provider)) return "Credenciais não configuradas";
   if (provider.id === "garmin") {
     return "Envio e retorno pelo Garmin Connect";
   }
@@ -2875,7 +2950,7 @@ async function beginOauthFlow(
   request: Request, env: Env, provider: ProviderDefinition, athleteName: string, email: string,
 ): Promise<Response> {
   const url = new URL(request.url);
-  const { clientId } = providerCredentials(env, provider);
+  const { clientId } = await providerCredentials(env, provider);
   if (!clientId || !provider.authorizeUrl) {
     return Response.json({ error: "provider_setup_required", provider: provider.id }, { status: 503 });
   }
@@ -2928,7 +3003,7 @@ async function integrationCallbackApi(request: Request, url: URL, env: Env, prov
   ).bind(stateHash, provider.id).first() as { athlete_name?: string; code_verifier?: string | null; redirect_uri?: string; expires_at?: number } | null;
   if (!flow?.athlete_name || Number(flow.expires_at ?? 0) <= Date.now()) return failure("expirada");
 
-  const { clientId, clientSecret } = providerCredentials(env, provider);
+  const { clientId, clientSecret } = await providerCredentials(env, provider);
   if (!clientId || !clientSecret) return failure("indisponivel");
 
   const body = new URLSearchParams({
@@ -3097,7 +3172,7 @@ async function tokenValidoDe(
   env: Env, provider: ProviderDefinition, athleteName: string,
 ): Promise<{ token: string } | { erro: string }> {
   if (!env.STRAVA_TOKEN_ENCRYPTION_KEY) return { erro: "provider_setup_required" };
-  const { clientId, clientSecret } = providerCredentials(env, provider);
+  const { clientId, clientSecret } = await providerCredentials(env, provider);
   if (!clientId || !clientSecret || !provider.tokenUrl) return { erro: "provider_setup_required" };
 
   const row = await env.DB.prepare(
@@ -3207,10 +3282,15 @@ async function importarAtividadesGarmin(env: Env, athleteName: string, dias = 30
   await ensureWorkoutExecutions(env);
   const now = Date.now();
   // Uma reivindicação atômica evita duas telas ou dois crons importando juntos.
+  const connection = await env.DB.prepare("SELECT status,last_import_attempt_at FROM external_integrations WHERE athlete_name=? AND provider='Garmin' LIMIT 1")
+    .bind(athleteName).first() as { status?: string; last_import_attempt_at?: number } | null;
+  if (connection?.status !== "Conectado") {
+    return { imported: 0, scanned: 0, error: connection?.status === "Reconectar" ? "reconnect_required" : "not_connected" };
+  }
   const claim = await env.DB.prepare(`UPDATE external_integrations SET last_import_attempt_at=? WHERE athlete_name=? AND provider='Garmin'
     AND status='Conectado' AND (last_import_attempt_at IS NULL OR last_import_attempt_at<?)`)
     .bind(now, athleteName, now - 120_000).run();
-  if (!claim.meta.changes) return { imported: 0, scanned: 0, error: "sync_in_progress_or_not_connected" };
+  if (!claim.meta.changes) return { imported: 0, scanned: 0, error: "sync_in_progress" };
   const failure = async (error: string) => {
     await env.DB.prepare("UPDATE external_integrations SET last_import_error=? WHERE athlete_name=? AND provider='Garmin'").bind(error, athleteName).run();
     return { imported: 0, scanned: 0, error };
@@ -3233,7 +3313,7 @@ async function importarAtividadesGarmin(env: Env, athleteName: string, dias = 30
     if (!activity || !runningSport(activity.sport)) return false;
     const prior = known.get(activity.externalId);
     const result = parseActivityResult(prior?.activity_result);
-    return !result?.complete || result.mappingVersion !== 2 || Boolean(prior?.matched_week_start && !prior.execution_id);
+    return !result?.complete || result.mappingVersion !== 3 || Boolean(prior?.matched_week_start && !prior.execution_id);
   });
   let imported = 0; let updated = 0; let error: string | undefined;
   for (const activity of candidates.slice(0, limit)) {
@@ -3276,7 +3356,7 @@ async function receberResultadosGarminAutomaticamente(env: Env): Promise<void> {
       // Até 45 chamadas externas por execução (5 contas × 2 atividades × 4
       // detalhes + 5 listas). Novas contas são atendidas nos lotes seguintes.
       const result = await importarAtividadesGarmin(env, row.athlete_name, 30, 2);
-      if (result.error) await recordApplicationError(env, request, "retorno Garmin", result.error, 502);
+      if (result.error && !["sync_in_progress", "not_connected", "reconnect_required"].includes(result.error)) await recordApplicationError(env, request, "retorno Garmin", result.error, 502);
     } catch {
       await env.DB.prepare("UPDATE external_integrations SET last_import_error='activity_import_failed' WHERE athlete_name=? AND provider='Garmin'").bind(row.athlete_name).run();
       await recordApplicationError(env, request, "retorno Garmin", "activity_import_failed", 502);
@@ -3306,7 +3386,8 @@ async function stravaWebhookApi(request: Request, url: URL, env: Env, ctx: Execu
        A comparação é em tempo constante: com `!==`, que para na primeira letra
        diferente, quem chama mede o tempo da resposta e descobre o token
        caractere a caractere. */
-    if (!env.STRAVA_WEBHOOK_VERIFY_TOKEN || !constantTimeEquals(token ?? "", env.STRAVA_WEBHOOK_VERIFY_TOKEN)) {
+    const credentials = await stravaCredentials(env);
+    if (!credentials || !constantTimeEquals(token ?? "", credentials.webhookVerifyToken)) {
       return Response.json({ error: "invalid_verify_token" }, { status: 403 });
     }
     return Response.json({ "hub.challenge": desafio });
@@ -3353,14 +3434,10 @@ async function stravaWebhookApi(request: Request, url: URL, env: Env, ctx: Execu
  * instalação — o Strava aceita uma inscrição por aplicativo.
  */
 async function stravaSubscriptionApi(request: Request, url: URL, env: Env): Promise<Response> {
-  if (!env.STRAVA_CLIENT_ID || !env.STRAVA_CLIENT_SECRET) {
-    return Response.json({ error: "provider_setup_required", missing: ["STRAVA_CLIENT_ID", "STRAVA_CLIENT_SECRET"] }, { status: 503 });
-  }
-  if (!env.STRAVA_WEBHOOK_VERIFY_TOKEN) {
-    return Response.json({ error: "webhook_token_required", missing: ["STRAVA_WEBHOOK_VERIFY_TOKEN"] }, { status: 503 });
-  }
+  const stored = await stravaCredentials(env);
+  if (!stored) return Response.json({ error: "provider_setup_required", missing: ["Credenciais do Strava"] }, { status: 503 });
   const base = "https://www.strava.com/api/v3/push_subscriptions";
-  const credenciais = { client_id: env.STRAVA_CLIENT_ID, client_secret: env.STRAVA_CLIENT_SECRET };
+  const credenciais = { client_id: stored.clientId, client_secret: stored.clientSecret };
 
   if (request.method === "GET") {
     const r = await fetch(`${base}?${new URLSearchParams(credenciais).toString()}`);
@@ -3385,7 +3462,7 @@ async function stravaSubscriptionApi(request: Request, url: URL, env: Env): Prom
     body: new URLSearchParams({
       ...credenciais,
       callback_url: `${url.origin}/api/integrations/strava/webhook`,
-      verify_token: env.STRAVA_WEBHOOK_VERIFY_TOKEN,
+      verify_token: stored.webhookVerifyToken,
     }),
   });
   const corpo = await r.json().catch(() => ({}));
@@ -3772,8 +3849,8 @@ async function studentIntegrationsApi(request: Request, env: Env, athleteName: s
     ).bind(athleteName).all();
     const byLabel = new Map((connections.results as Record<string, unknown>[]).map(row => [String(row.provider), row]));
     return Response.json({
-      providers: Object.values(PROVIDERS).map(provider => {
-        const pronto = providerIsReady(env, provider);
+      providers: await Promise.all(Object.values(PROVIDERS).map(async provider => {
+        const pronto = await providerIsReady(env, provider);
         const conexao = byLabel.get(provider.label) ?? null;
         // Uma autorização antiga não vale nada se as credenciais do serviço
         // saíram do ambiente: nada seria importado. Continuar exibindo
@@ -3786,13 +3863,13 @@ async function studentIntegrationsApi(request: Request, env: Env, athleteName: s
           label: provider.label,
           authType: provider.authType,
           available: pronto,
-          status: providerStatusLabel(env, provider),
+          status: await providerStatusLabel(env, provider),
           canImportActivities: provider.canImportActivities,
           canSendWorkouts: provider.canSendWorkouts,
           notes: provider.notes,
           connection: conexaoUtil,
         };
-      }),
+      })),
     });
   }
 
@@ -3801,7 +3878,7 @@ async function studentIntegrationsApi(request: Request, env: Env, athleteName: s
   const provider = providerById(boundedText(input.provider, 20));
   const action = boundedText(input.action, 20) || "connect";
   if (!provider) return Response.json({ error: "unknown_provider" }, { status: 400 });
-  if (!providerIsReady(env, provider)) {
+  if (!await providerIsReady(env, provider)) {
     return Response.json({ error: "provider_setup_required", provider: provider.id, missing: provider.requiredEnv }, { status: 503 });
   }
 
@@ -3892,60 +3969,6 @@ async function studentIntegrationsApi(request: Request, env: Env, athleteName: s
 }
 
 
-/**
- * Envia um treino da semana liberada para o Garmin Connect do atleta.
- *
- * O endereço da Training API não está em documentação pública — ele vem no
- * material que o Garmin entrega quando aprova a conta no Developer Program.
- * Por isso o endpoint é uma variável de ambiente: inventar uma URL aqui daria a
- * impressão de que a integração está pronta quando ela ainda não pode funcionar.
- * Todo o resto — autorização, renovação de token, tradução do treino e registro
- * do envio — já está feito e passa a valer no dia em que a variável existir.
- */
-async function enviarTreinoParaGarmin(
-  env: Env, athleteName: string, weekStart: string, workoutDay: string, actorEmail: string,
-): Promise<{ enviado: boolean; erro?: string; detalhe?: unknown }> {
-  const provider = PROVIDERS.garmin;
-  if (!providerIsReady(env, provider)) return { enviado: false, erro: "provider_setup_required" };
-  if (env.GARMIN_TRAINING_API_ENABLED !== "true") return { enviado: false, erro: "training_api_not_enabled" };
-  if (!env.GARMIN_TRAINING_API_URL) return { enviado: false, erro: "training_api_url_missing" };
-
-  const semana = await env.DB.prepare(
-    "SELECT sessions, plan, week_label FROM training_weeks WHERE athlete_name = ? AND week_start = ? AND status = 'Liberada' LIMIT 1",
-  ).bind(athleteName, weekStart).first() as { sessions?: string; plan?: string; week_label?: string } | null;
-  if (!semana?.sessions) return { enviado: false, erro: "released_workout_not_found" };
-
-  let sessao: Record<string, unknown> | undefined;
-  try { sessao = (JSON.parse(semana.sessions) as Record<string, Record<string, unknown>>)[workoutDay]; }
-  catch { return { enviado: false, erro: "invalid_workout_plan" }; }
-  if (!sessao || sessao.removed) return { enviado: false, erro: "planned_session_not_found" };
-
-  const etapas = Array.isArray(sessao.steps) ? sessao.steps as Array<Record<string, unknown>> : [];
-  if (!etapas.length) return { enviado: false, erro: "workout_without_steps" };
-
-  const credencial = await tokenValidoDe(env, provider, athleteName);
-  if ("erro" in credencial) return { enviado: false, erro: credencial.erro };
-
-  const treino = toGarminWorkout(
-    String(sessao.title ?? sessao.type ?? "Treino"),
-    `${semana.plan ?? ""} · ${semana.week_label ?? ""} · ${workoutDay}`.trim(),
-    etapas,
-  );
-
-  const resposta = await fetch(env.GARMIN_TRAINING_API_URL, {
-    method: "POST",
-    headers: { authorization: `Bearer ${credencial.token}`, "content-type": "application/json" },
-    body: JSON.stringify(treino),
-  });
-  const detalhe = await resposta.json().catch(() => ({}));
-  if (!resposta.ok) return { enviado: false, erro: "training_api_rejected", detalhe };
-
-  await ensureTables(env, schema.securityEvents);
-  await env.DB.prepare("INSERT INTO security_events (id, actor_email, event_type, route, details, created_at) VALUES (?, ?, 'Treino enviado ao Garmin', '/api/integrations', ?, ?)")
-    .bind(crypto.randomUUID(), actorEmail, `${athleteName} · ${weekStart} · ${workoutDay}`, Date.now()).run();
-  return { enviado: true, detalhe };
-}
-
 /** Visão do treinador: quem conectou o quê, e o que ainda depende de cadastro. */
 async function integrationsCoachApi(request: Request, env: Env): Promise<Response> {
   await ensureIntegrationTables(env);
@@ -3962,16 +3985,14 @@ async function integrationsCoachApi(request: Request, env: Env): Promise<Respons
          FROM external_activities WHERE ${carteira.clausula} GROUP BY athlete_name, provider`,
     ).bind(...carteira.valores).all();
     return Response.json({
-      providers: Object.values(PROVIDERS).map(provider => ({
-        id: provider.id,
-        label: provider.label,
-        authType: provider.authType,
-        available: providerIsReady(env, provider),
-        status: providerStatusLabel(env, provider),
-        missing: provider.requiredEnv.filter(name => !providerIsReady(env, provider)),
-        canImportActivities: provider.canImportActivities,
-        canSendWorkouts: provider.canSendWorkouts,
-        notes: provider.notes,
+      providers: await Promise.all(Object.values(PROVIDERS).map(async provider => {
+        const ready = await providerIsReady(env, provider);
+        return {
+          id: provider.id, label: provider.label, authType: provider.authType,
+          available: ready, status: await providerStatusLabel(env, provider),
+          missing: ready ? [] : provider.id === "strava" ? ["Credenciais do Strava e chave de proteção"] : provider.requiredEnv,
+          canImportActivities: provider.canImportActivities, canSendWorkouts: provider.canSendWorkouts, notes: provider.notes,
+        };
       })),
       connections: connections.results,
       activityTotals: activities.results,
@@ -3991,9 +4012,10 @@ async function integrationsCoachApi(request: Request, env: Env): Promise<Respons
     if (!athleteName || !isIsoDate(weekStart) || !workoutDay) {
       return Response.json({ error: "workout_reference_required" }, { status: 400 });
     }
-    const resultado = await enviarTreinoParaGarmin(env, athleteName, weekStart, workoutDay, normalizedAuthenticatedEmail(request) ?? "sistema");
-    if (!resultado.enviado) return Response.json({ error: resultado.erro, detail: resultado.detalhe }, { status: 409 });
-    return Response.json({ sent: true });
+    const resultado = await publicarSemanaParaIntegracaoEscolhida(env, request, athleteName, weekStart, [workoutDay]);
+    const status = String(resultado.status ?? "");
+    if (!["sent", "published"].includes(status)) return Response.json({ error: status || "publication_failed", detail: resultado.message }, { status: 409 });
+    return Response.json({ sent: true, provider: resultado.provider, message: resultado.message });
   }
 
   // Importar por ordem do treinador, sem depender de o atleta abrir o app.
@@ -4095,7 +4117,7 @@ async function devOverviewApi(request: Request, env: Env): Promise<Response> {
       // marcar "configurado" nesse caso esconderia justamente a falha.
       devLoginConfigurado: Boolean(env.DEV_LOGIN) && isValidDevLogin(String(env.DEV_LOGIN)),
       chaveDeCifraConfigurada: Boolean(env.STRAVA_TOKEN_ENCRYPTION_KEY),
-      provedores: Object.values(PROVIDERS).map(p => ({ id: p.id, label: p.label, disponivel: providerIsReady(env, p), estado: providerStatusLabel(env, p) })),
+      provedores: await Promise.all(Object.values(PROVIDERS).map(async p => ({ id: p.id, label: p.label, disponivel: await providerIsReady(env, p), estado: await providerStatusLabel(env, p) }))),
     },
     contas: contas.results,
     sessoes: sessoes.results,
@@ -4781,6 +4803,10 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
     if (url.pathname === "/api/integration-overview") {
       try { return await integrationOverviewApi(request, env); }
       catch (falha) { return await applicationFailure(env, request, "integrações dos alunos", "database_unavailable", falha); }
+    }
+    if (url.pathname === "/api/strava-settings") {
+      try { return await stravaSettingsApi(request, env); }
+      catch (falha) { return await applicationFailure(env, request, "configuração Strava", "integration_settings_unavailable", falha); }
     }
     if (url.pathname === "/api/integration-readiness") {
       try { return await integrationReadinessApi(request, env); }

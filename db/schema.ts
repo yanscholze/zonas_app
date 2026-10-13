@@ -266,6 +266,14 @@ export const externalActivities = sqliteTable("external_activities", {
   athleteStartedIdx: index("external_activities_athlete_started_idx").on(table.athleteName, table.startedAt),
 }));
 
+/** Credenciais de serviços cadastradas pelo proprietário, cifradas em repouso. */
+export const integrationSettings = sqliteTable("integration_settings", {
+  key: text("key").primaryKey(),
+  valueEncrypted: text("value_encrypted").notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  updatedBy: text("updated_by").notNull(),
+});
+
 /** Tokens que o Atalho do iOS usa para enviar treinos do Apple Saúde. */
 export const deviceIngestTokens = sqliteTable("device_ingest_tokens", {
   tokenHash: text("token_hash").primaryKey(), athleteName: text("athlete_name").notNull(), provider: text("provider").notNull(),
