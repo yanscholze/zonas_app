@@ -3537,6 +3537,31 @@ p, span, b, strong, small, em, li, td, th, label {
   margin: 18px 0;
 }
 
+.template-editing-scope {
+  padding: 14px 16px;
+  border: 1px solid var(--gold);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(120deg, #252117, var(--panel));
+}
+
+.template-editing-scope .overline { color: var(--gold2); }
+
+.template-editing-scope p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+}
+
+.template-editing-scope p b { color: var(--text); }
+
+.plan-proprio-acoes { flex-wrap: wrap; }
+
+.plan-proprio-acoes button:first-child {
+  border-color: var(--gold);
+  color: var(--gold2);
+}
+
 .plan-details .profile-title small {
   color: var(--muted);
   font-size:var(--fs-overline);
@@ -11029,6 +11054,7 @@ p, span, b, strong, small, em, li, td, th, label {
 
 .student-garmin-connect {
   display:flex;
+  flex-wrap:wrap;
   align-items:center;
   justify-content:space-between;
   gap:16px;
@@ -11065,6 +11091,17 @@ p, span, b, strong, small, em, li, td, th, label {
 .student-garmin-connect button:disabled {
   opacity:.6;
   cursor:not-allowed;
+}
+
+.student-garmin-login {
+  flex: 1 1 360px;
+  min-width: min(100%, 320px);
+  margin-top: 0;
+  grid-column: auto;
+}
+
+.student-garmin-login>button {
+  width: 100%;
 }
 
 .student-zepp-connect {

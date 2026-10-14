@@ -1639,6 +1639,7 @@ test("records final activation and denies a blocked student", async () => {
   assert.equal(activated.status, "Ativo");
   assert.ok(Number.isFinite(activated.activatedAt));
   assert.ok(writes.some(({ sql, values }) => sql.includes("INSERT INTO athlete_access") && values.includes("Ativo") && values.filter(value => value === activated.activatedAt).length >= 2));
+  assert.ok(writes.some(({ sql, values }) => sql.includes("UPDATE user_accounts SET athlete_name") && values.includes("Ativo")), "ativar o acesso também precisa tirar a conta do estado pendente");
   assert.ok(writes.some(({ sql, values }) => sql.includes("INSERT INTO access_audit_log") && values.includes("Acesso ativado") && values.includes("treinador@exemplo.com") && !sql.toLowerCase().includes("password")));
 
   const existingAccess = { email: "everton@example.com", status: "Ativo" };
@@ -1665,6 +1666,7 @@ test("keeps a self-registration pending until the coach approves it", async () =
   assert.match(source, /status:"Pendente"/);
   assert.match(source, /action\s*===\s*"approve"/);
   assert.match(source, /Cadastro solicitado aprovado/);
+  assert.match(source, /vinculaContaAoAtleta\(env, email, name, "Ativo"\)/);
   assert.match(entry, /Aguardando liberação do professor/);
   assert.match(entry, /Enviar para aprovação do professor/);
 });
@@ -2050,7 +2052,8 @@ test("uses the current calendar week when the coach previews the student area", 
 test("puts Garmin login and useful student areas on the home screen", async () => {
   const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   assert.match(source, /student-garmin-connect/);
-  assert.match(source, /Realizar login na Garmin/);
+  assert.match(source, /student-garmin-login/);
+  assert.match(source, /Conectar Garmin →/);
   assert.match(source, /setLoginExterno\("garmin"\)/);
   assert.match(source, /student-quick-access/);
   assert.match(source, /autoComplete="username"/);
@@ -2063,7 +2066,7 @@ test("opens the plan editor as a visible form and keeps actions as real buttons"
   assert.match(source, /editFormRef\.current\?\.scrollIntoView/);
   assert.match(source, /Ver e editar treinos das semanas/);
   assert.match(source, /Editar dados/);
-  assert.match(source, /className="plan-proprio-acoes"[\s\S]{0,220}Excluir/);
+  assert.match(source, /className="plan-proprio-acoes"[\s\S]{0,400}Excluir/);
   assert.doesNotMatch(source, /role="button" tabIndex=\{0\} onClick=\{evento=>\{evento\.stopPropagation\(\)/);
 });
 
@@ -2603,11 +2606,16 @@ test("applies a selected base plan, phase and week to a real athlete", async () 
   assert.match(fabrica, /"Meia Start":meiaStartPlanWeeks/);
   assert.match(fabrica, /Primeira meia maratona/);
   assert.match(client, /adaptedTemplate/);
-  assert.match(client, /Ver e editar treino/);
+  assert.match(client, /Editar treinos da planilha-base/);
+  assert.match(client, /Editar treino/);
+  assert.match(client, /Nenhum — edição global/);
+  assert.match(client, /EDITAR TREINOS DA PLANILHA-BASE/);
   assert.match(client, /editingTemplateIndex/);
   assert.match(client, /onSave=\{saveTemplateEdit\}/);
   assert.match(client, /effectiveTemplate\[editingTemplateIndex\]/);
-  assert.match(client, /As alterações serão usadas neste rascunho/);
+  assert.match(client, /Editar, adicionar ou tirar treinos altera a planilha-base global/);
+  assert.match(client, /athleteName="Planilha-base"/);
+  assert.doesNotMatch(client, /setTargetAthlete\(rows\[0\]/);
   assert.match(fabrica, /const meiaFinishPlanWeeks/);
   assert.match(fabrica, /"Meia Finish":meiaFinishPlanWeeks/);
   assert.match(fabrica, /Tempo Run combinado 5 km e meia/);
@@ -2647,6 +2655,19 @@ test("applies a selected base plan, phase and week to a real athlete", async () 
   assert.match(client, /A montagem dos treinos fica no Calendário/);
   assert.match(css, /\.athlete-profile \.training-tab\{display:none\}/);
   assert.match(client, /useState\("Hoje"\)/);
+});
+
+test("refreshes the current student week and shows only the selected device guide on home", async () => {
+  const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  assert.match(client, /fetch\(endpoint,\{cache:"no-store"\}\)/);
+  assert.match(client, /setInterval\(\(\)=>\{if\(!document\.hidden\)void load\(\)\},60_000\)/);
+  assert.match(client, /addEventListener\("visibilitychange",onVisibility\)/);
+  assert.match(client, /integrationPreferenceLoaded&&preferredProviderId==="garmin"/);
+  assert.match(client, /integrationPreferenceLoaded&&preferredProviderId==="zepp"/);
+  assert.match(client, /student-garmin-login/);
+  assert.match(client, /Conectar Garmin →/);
+  assert.match(client, /Perfil → seu relógio → App Store/);
+  assert.match(client, /targetAthlete&&<section className="plan-application-summary"/);
 });
 
 test("guides the coach through a simpler three-step weekly workflow", async () => {

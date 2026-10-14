@@ -57,3 +57,61 @@ editar os treinos estruturados de cada semana.
   `app/ZonasAppClient.tsx:473`, fora das áreas alteradas.
 - O estado de publicação Garmin não é usado para decidir se a semana liberada
   aparece na área do aluno.
+
+## Auditoria de Caio, retornos Garmin e edição global — 14/10/2026
+
+### Treinos não apareciam para Caio
+
+A semana de Caio iniciada em 12/10/2026 está liberada e contém treinos nos
+sete dias. A consulta do painel busca essa semana; portanto, os dados não
+estavam ausentes no servidor. A tela consultava o painel apenas ao montar e
+podia continuar exibindo estado antigo se já estivesse aberta quando a semana
+foi liberada. Agora a consulta não usa cache e é repetida ao voltar para a aba,
+ao recuperar foco e a cada minuto enquanto a página está visível.
+
+A auditoria também encontrou um estado inconsistente na conta de Caio:
+`athlete_access` está `Ativo`, mas `user_accounts.status` continua
+`Aguardando aprovação`. A autenticação do aluno usa o primeiro estado, então
+isso não explica por si só a falta do treino. A rotina de ativação agora
+sincroniza o estado da conta. O registro já existente não foi alterado nesta
+entrega; se o painel continuar sem dados após recarregar, essa divergência
+precisa ser regularizada na conta de produção.
+
+### Retornos Garmin para os alunos
+
+A consulta de produção encontrou 44 atividades importadas: todas com distância
+e resultado de atividade; 43 também têm frequência cardíaca média. Quatorze
+atividades estão associadas a um treino publicado e viraram retorno na tela do
+treino. Isso é uma associação intencionalmente restrita: quando a atividade
+traz um identificador de treino, ele precisa corresponder ao treino publicado
+pela ZonasApp; sem esse identificador, a correspondência usa data local e dia
+planejado. Atividades que não correspondem ficam importadas, mas não são
+apresentadas como execução de um treino específico.
+
+Entre oito cadastros de aluno não arquivados, quatro têm Garmin conectada, um
+cadastro tem integração desconectada e três ainda não têm registro Garmin.
+Nos quatro conectados, a auditoria não encontrou erro de importação salvo. Os
+retornos associados por aluno foram 8, 4, 2 e 0; os demais não tinham atividade
+associada. A disponibilidade das métricas adicionais continua dependendo do
+que o Connect devolveu para cada atividade.
+
+### Edição da planilha-base e integração escolhida
+
+O botão de edição de treinos abre a base sem selecionar automaticamente o
+primeiro aluno. Os editores de sessão usam o contexto `Planilha-base`, e a
+alteração persiste como ajuste global para novos rascunhos. Resumo de aplicação
+só aparece depois que um aluno é escolhido; semanas já liberadas não são
+reescritas.
+
+Na tela inicial, os cards de Garmin ou Amazfit/Zepp só aparecem depois que a
+preferência do aluno foi carregada e somente para a integração selecionada.
+Assim, o valor inicial padrão não mostra um card Garmin transitório para quem
+escolheu Amazfit. O card Garmin mantém login na própria página inicial; o card
+Amazfit mostra o caminho de instalação no app Zepp.
+
+### Verificação desta entrega
+
+- `npm test`: 224 testes aprovados.
+- `npm run build`: compilação validada.
+- O registro preexistente de Caio em `user_accounts` requer correção operacional
+  separada; nenhum dado de produção foi alterado nesta entrega.

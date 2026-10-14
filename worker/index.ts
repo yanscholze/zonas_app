@@ -1166,10 +1166,10 @@ async function coachAccountsApi(request: Request, env: Env): Promise<Response> {
  * atômico: aprovar precisa gravar tudo ou nada, e uma função que roda por conta
  * própria deixaria o vínculo de fora quando o resto falhasse.
  */
-function vinculaContaAoAtleta(env: Env, email: string, athleteName: string) {
+function vinculaContaAoAtleta(env: Env, email: string, athleteName: string, accessStatus = "Convite preparado") {
   return env.DB
-    .prepare("UPDATE user_accounts SET athlete_name = ?, updated_at = ? WHERE email = ? AND role = 'student'")
-    .bind(athleteName, Date.now(), email);
+    .prepare("UPDATE user_accounts SET athlete_name = ?, status = CASE WHEN ? = 'Ativo' THEN 'Ativo' WHEN ? = 'Bloqueado' THEN 'Bloqueado' ELSE status END, updated_at = ? WHERE email = ? AND role = 'student'")
+    .bind(athleteName, accessStatus, accessStatus, Date.now(), email);
 }
 
 /** Mantém `athlete_access` em sincronia com a conta de login do aluno. */
@@ -1186,7 +1186,7 @@ async function linkAthleteAccess(env: Env, athleteName: string, email: string, s
       activated_at = CASE WHEN excluded.status = 'Ativo' THEN excluded.updated_at ELSE athlete_access.activated_at END,
       updated_at = excluded.updated_at`)
     .bind(crypto.randomUUID(), athleteName, email, status, now, status === "Ativo" ? now : null, now).run();
-  await vinculaContaAoAtleta(env, email, athleteName).run();
+  await vinculaContaAoAtleta(env, email, athleteName, status).run();
   await env.DB.prepare(`INSERT INTO access_audit_log (id, athlete_name, actor_email, action, previous_status, new_status, previous_email, new_email, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(crypto.randomUUID(), athleteName, actorEmail, "Conta de acesso atualizada", existing?.status ?? null, status, existing?.email ?? null, email, now).run();
@@ -1232,7 +1232,7 @@ async function athleteAccessApi(request: Request, env: Env): Promise<Response> {
         activated_at=CASE WHEN excluded.status='Ativo' THEN excluded.updated_at ELSE athlete_access.activated_at END,
         updated_at=excluded.updated_at`)
       .bind(id, athleteName, email, status, now, activatedAt, now).run();
-    await vinculaContaAoAtleta(env, email, athleteName).run();
+    await vinculaContaAoAtleta(env, email, athleteName, status).run();
     const emailChanged = Boolean(existing?.email && existing.email !== email);
     const action = emailChanged ? "E-mail de acesso alterado" : status === "Bloqueado" && existing?.status === "Ativo" ? "Sessões e acesso encerrados" : status === "Bloqueado" ? "Acesso bloqueado" : status === "Ativo" && existing?.status === "Bloqueado" ? "Acesso reativado" : status === "Ativo" ? "Acesso ativado" : "Vínculo preparado";
     const actorEmail = normalizedAuthenticatedEmail(request) || "preview@zonasapp.local";
@@ -1495,7 +1495,7 @@ async function accessRequestsCoachApi(request: Request, env: Env): Promise<Respo
       /* Sem esta linha o aluno era aprovado, ganhava ficha, planilha e acesso —
          e continuava caindo na tela de "Solicite seu cadastro" a cada login,
          porque a conta dele seguia sem atleta. */
-      vinculaContaAoAtleta(env, email, name),
+      vinculaContaAoAtleta(env, email, name, "Ativo"),
     );
     await env.DB.batch(statements);
     return Response.json({id,status:"Aprovado",athleteName:name});
