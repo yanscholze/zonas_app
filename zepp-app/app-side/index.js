@@ -13,7 +13,6 @@
  * aparelho fala por este aluno.
  */
 import { BaseSideService } from "@zeppos/zml/base-side";
-import { settingsLib } from "@zos/settings";
 
 /* O endereço do sistema — o worker em produção. Não é `zonasapp.com`: esse
    domínio não é nosso, e apontar para ele faria o relógio conversar com o site
@@ -83,7 +82,7 @@ AppSideService(
      */
     token() {
       try {
-        const bruto = settingsLib.getItem("zonasapp_token") || "";
+        const bruto = settings.settingsStorage.getItem("zonasapp_token") || "";
         const texto = String(bruto).trim();
         return (texto.charAt(0) === '"' ? JSON.parse(texto) : texto).trim();
       } catch { return ""; }
@@ -99,7 +98,7 @@ AppSideService(
     base() {
       let endereco = BASE_PADRAO;
       try {
-        const guardado = String(settingsLib.getItem("zonasapp_servidor") || "").trim();
+        const guardado = String(settings.settingsStorage.getItem("zonasapp_servidor") || "").trim();
         if (guardado) endereco = guardado;
       } catch { /* sem configuração gravada: o padrão é a resposta certa */ }
       return endereco.replace(/\/+$/, "");

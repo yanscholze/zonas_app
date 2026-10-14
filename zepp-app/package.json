@@ -1,6 +1,6 @@
 {
   "name": "zonasapp-zepp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Mini-app do ZonasApp para relogios Amazfit",
   "main": "app.js",
   "license": "UNLICENSED",

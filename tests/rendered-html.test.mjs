@@ -3881,10 +3881,9 @@ test("does not invent an API where the provider has none", async () => {
   // aplicativo. Usar a segunda quebraria os termos e poria a conta do atleta
   // em risco, então a importação passa pelo Strava.
   assert.match(integrations, /id: "zepp"[\s\S]*?activitiesUrl: null/);
-  assert.match(integrations, /id: "zepp"[\s\S]*?canImportActivities: true/);
-  /* A nota mudou junto com o caminho: não há API de leitura, e o que passou a
-     existir é o mini-app no relógio. */
-  assert.match(integrations, /O mini-app do relógio busca o treino do dia/);
+  assert.match(integrations, /id: "zepp"[\s\S]*?canImportActivities: false/);
+  /* O token não deve ser apresentado como prova de conexão funcional. */
+  assert.match(integrations, /Gerar o token sozinho não confirma a sincronização/);
   assert.match(integrations, /activitiesUrl: null/);
   assert.doesNotMatch(integrations, /huami\.com\/v1\/sport/);
   // A Apple também não tem endpoint de servidor: entra pelo Atalho do iOS.

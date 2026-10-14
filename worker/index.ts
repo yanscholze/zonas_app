@@ -1996,15 +1996,14 @@ async function publicarSemanaParaIntegracaoEscolhida(
   }
 
   if (selected === "Amazfit" || selected === "Amazfit / Zepp" || selected === "Zepp") {
-    const [connection, token] = await Promise.all([
-      env.DB.prepare("SELECT status FROM external_integrations WHERE athlete_name = ? AND provider = ? LIMIT 1")
-        .bind(atleta, PROVIDERS.zepp.label).first() as Promise<{ status?: string } | null>,
-      env.DB.prepare("SELECT token_hash FROM device_ingest_tokens WHERE athlete_name = ? AND provider = ? AND revoked_at IS NULL LIMIT 1")
-        .bind(atleta, PROVIDERS.zepp.id).first(),
-    ]);
-    if (!token || connection?.status !== "Conectado") {
-      const status = connection?.status === "Reconectar" ? "reconnect_required" : "not_connected";
-      const message = status === "reconnect_required" ? "Reconecte o mini-app Amazfit / Zepp do aluno." : "O aluno escolheu Amazfit / Zepp, mas o celular ainda não está conectado.";
+    const token = await env.DB.prepare("SELECT token_hash FROM device_ingest_tokens WHERE athlete_name = ? AND provider = ? AND revoked_at IS NULL LIMIT 1")
+      .bind(atleta, PROVIDERS.zepp.id).first();
+    /* O token autoriza o Side Service a buscar a semana. Exigir também status
+     * "Conectado" criava um ciclo impossível: o celular só conseguiria provar
+     * contato consultando a semana, mas a consulta vinha vazia até publicá-la. */
+    if (!token) {
+      const status = "not_connected";
+      const message = "O aluno escolheu Amazfit / Zepp, mas ainda não gerou o token do mini-app.";
       await gravarPublicacao(env, atleta, weekStart, PROVIDERS.zepp.id, status, message, "{}");
       return { provider: PROVIDERS.zepp.id, status, message };
     }
@@ -2920,6 +2919,7 @@ async function providerStatusLabel(env: Env, provider: ProviderDefinition): Prom
     return "Envio e retorno pelo Garmin Connect";
   }
   if (provider.id === "apple") return "Pronta — envio pelo iPhone";
+  if (provider.id === "zepp") return "Validação do mini-app Zepp pendente";
   return "Pronta para conectar";
 }
 
@@ -3496,9 +3496,9 @@ async function issueDeviceIngestToken(env: Env, athleteName: string, provider: P
   ]);
   await env.DB.prepare(`INSERT INTO external_integrations
     (id, athlete_name, provider, external_athlete_id, scopes, access_token_encrypted, refresh_token_encrypted, expires_at, status, last_sync_at, updated_at)
-    VALUES (?, ?, ?, NULL, 'workouts', '', '', 0, 'Conectado', NULL, ?)
-    ON CONFLICT(athlete_name, provider) DO UPDATE SET status = 'Conectado', updated_at = excluded.updated_at`)
-    .bind(crypto.randomUUID(), athleteName, PROVIDERS[provider].label, now).run();
+    VALUES (?, ?, ?, NULL, 'workouts', '', '', 0, ?, NULL, ?)
+    ON CONFLICT(athlete_name, provider) DO UPDATE SET status = excluded.status, last_sync_at = NULL, updated_at = excluded.updated_at`)
+    .bind(crypto.randomUUID(), athleteName, PROVIDERS[provider].label, provider === "zepp" ? "Aguardando conexão" : "Conectado", now).run();
   return token;
 }
 
@@ -3629,6 +3629,15 @@ async function deviceWorkoutApi(request: Request, env: Env): Promise<Response> {
   if (!vinculo?.athlete_name) return Response.json({ error: "invalid_ingest_token" }, { status: 401 });
   const atleta = vinculo.athlete_name;
 
+  /* Isto confirma contato do Side Service no celular, não a entrega Bluetooth
+   * do treino ao relógio. A interface mantém essa diferença explícita. */
+  const contato = Date.now();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE device_ingest_tokens SET last_used_at = ? WHERE token_hash = ?").bind(contato, await sha256Text(apresentado)),
+    env.DB.prepare("UPDATE external_integrations SET status = 'Celular conectado', last_sync_at = ?, updated_at = ? WHERE athlete_name = ? AND provider = ? AND status <> 'Atividade recebida'")
+      .bind(contato, contato, atleta, PROVIDERS.zepp.label),
+  ]);
+
   /* Os mesmos ajudantes que a importação de atividade usa para decidir semana e
      dia. Uma conta só para "que dia é hoje no planejamento": duas divergiriam no
      primeiro fuso ou virada de semana. */
@@ -3646,7 +3655,7 @@ async function deviceWorkoutApi(request: Request, env: Env): Promise<Response> {
   }
 
   await env.DB.prepare("UPDATE training_week_publications SET last_success_at = ?, message = ? WHERE athlete_name = ? AND week_start = ? AND provider = ? AND status = 'published'")
-    .bind(Date.now(), "Mini-app Zepp consultou o treino do dia; o servidor não confirma a entrega Bluetooth ao relógio.", atleta, hoje.weekStart, PROVIDERS.zepp.id).run();
+    .bind(Date.now(), "O celular Zepp consultou o treino; a entrega ao relógio ainda depende da confirmação no dispositivo.", atleta, hoje.weekStart, PROVIDERS.zepp.id).run();
 
   return Response.json({
     athlete: atleta,
@@ -3830,10 +3839,14 @@ async function deviceIngestApi(request: Request, env: Env): Promise<Response> {
     }
   }
   const now = Date.now();
+  const integrationSync = provider === "zepp"
+    ? env.DB.prepare("UPDATE external_integrations SET status = ?, last_sync_at = ?, updated_at = ? WHERE athlete_name = ? AND provider = ?")
+      .bind(imported > 0 ? "Atividade recebida" : "Celular conectado", now, now, record.athlete_name, PROVIDERS[provider].label)
+    : env.DB.prepare("UPDATE external_integrations SET last_sync_at = ?, updated_at = ? WHERE athlete_name = ? AND provider = ?")
+      .bind(now, now, record.athlete_name, PROVIDERS[provider].label);
   await env.DB.batch([
     env.DB.prepare("UPDATE device_ingest_tokens SET last_used_at = ? WHERE token_hash = ?").bind(now, await sha256Text(presented)),
-    env.DB.prepare("UPDATE external_integrations SET last_sync_at = ?, updated_at = ? WHERE athlete_name = ? AND provider = ?")
-      .bind(now, now, record.athlete_name, PROVIDERS[provider].label),
+    integrationSync,
   ]);
   return Response.json({ imported, received: workouts.length });
 }
@@ -3915,7 +3928,7 @@ async function studentIntegrationsApi(request: Request, env: Env, athleteName: s
            aluno com Amazfit lia que precisava de um iPhone. */
         workoutUrl: `${new URL(request.url).origin}/api/ingest/device/workout`,
         instructions: provider.id === "zepp"
-          ? "No aplicativo Zepp do celular, instale o mini-app ZonasApp e cole este token nas configurações dele. A partir daí o treino do dia chega ao relógio e o resultado volta sozinho — você não precisa abrir nada. O token aparece uma única vez."
+          ? "Este token autoriza o celular Zepp a falar com a Zonas-App, mas não instala o mini-app nem comprova que o relógio recebeu ou devolveu um treino. A versão compatível do mini-app ainda precisa estar aprovada e instalada. Guarde o token para colá-lo nas configurações do mini-app; a conexão só muda de estado quando o celular ou uma atividade realmente comunicar com o sistema. O token aparece uma única vez."
           : "No iPhone, crie um Atalho que leia os treinos do app Saúde e envie um POST para o endereço acima com o cabeçalho x-zonas-ingest-token. O token aparece uma única vez.",
       });
     }

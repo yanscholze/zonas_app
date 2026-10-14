@@ -1,6 +1,10 @@
 # Mini-app ZonasApp para Amazfit (Zepp OS)
 
-O relógio recebe o treino do dia e devolve o resultado **sem o aluno abrir nada**.
+**Estado em 13/10/2026: integração em validação.** O código-fonte contém um
+Side Service para buscar treinos e enviar dados, mas o pacote `.zab` mais recente
+encontrado não contém esse módulo nem a tela de configurações. A leitura de
+atividades também não foi comprovada em um relógio real. Não anunciar sincronização
+automática como pronta até gerar, revisar e testar um novo pacote.
 
 ## Como funciona
 
@@ -9,12 +13,17 @@ ZonasApp ──GET /api/ingest/device/workout──▶ celular ──BLE──�
 relógio  ──BLE──▶ celular ──POST /api/ingest/device──▶ ZonasApp
 ```
 
-O relógio não tem internet. Quem fala com o servidor é o **Side Service**, que
-roda dentro do aplicativo Zepp no celular — inclusive com o mini-app fechado.
+O relógio não tem internet. No desenho atual do código, o **Side Service** no
+aplicativo Zepp do celular fala com o servidor. O manifesto-fonte declara API
+3.0, mas o histórico que a documentação oficial expõe nesse nível só garante
+horário inicial e duração. Distância, frequência cardíaca e calorias usadas no
+payload atual não estão comprovadas como campos desse histórico. A página do
+mini-app também precisa estar executando para observar mudanças de estado; não
+há prova de captura automática enquanto o aluno usa somente o esporte nativo.
 
-O aluno corre pelo aplicativo de esporte **nativo** do relógio, como sempre fez.
-O mini-app só escuta o fim da atividade e repassa o que foi medido. É isso que
-torna a sincronização invisível: ninguém muda de hábito.
+Por isso, as setas acima descrevem a arquitetura pretendida, não uma integração
+validada em produção. O app do relógio deve ser instalado pela App Store dentro
+do aplicativo Zepp, depois que a versão compatível for aprovada.
 
 ## Arquivos
 
@@ -43,10 +52,10 @@ zeus build      # gera o .zab para publicar
 
 1. Na Zonas-App, o aluno abre **Mais → Integrações → Amazfit / Zepp → Conectar**
 2. O token aparece **uma única vez** — o servidor guarda só o hash dele
-3. No aplicativo Zepp do celular, instalar o mini-app e colar o token em
-   **Configurações do mini-app → Token**, que confere o formato na hora
-
-A partir daí não há passo manual.
+3. No aplicativo Zepp do celular, abra **Perfil → seu relógio → App Store** e
+   procure ZonasApp. Instale somente quando a versão compatível estiver publicada.
+4. Cole o token em **Configurações do mini-app → Token**. O token autoriza o
+   celular, mas não confirma comunicação com o relógio nem recebimento de dados.
 
 ## Decisões que valem saber
 
