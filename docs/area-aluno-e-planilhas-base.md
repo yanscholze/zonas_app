@@ -168,3 +168,8 @@ duplicidades permanecem para conferência manual.
   coincide exatamente com o acesso ativo do mesmo aluno; demais contas foram
   preservadas.
 - Issue de histórico: [#13](https://github.com/yanscholze/zonas_app/issues/13).
+- Cloudflare Worker publicado na versão `39790d9f-7789-4178-a125-24f5e52b6c57`;
+  a URL de produção respondeu HTTP 200.
+- Após a correção, a consulta remota confirmou 8 contas com status e acesso
+  ativos correspondentes, 3 pendentes sem vínculo ativo e 1 conta ativa sem
+  vínculo exato, preservada.
