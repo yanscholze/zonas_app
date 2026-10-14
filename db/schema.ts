@@ -225,6 +225,9 @@ export const workoutExecutions = sqliteTable("workout_executions", {
   averagePaceSeconds: integer("average_pace_seconds"),
   externalActivityId: text("external_activity_id"),
   activityResult: text("activity_result"),
+  coachNote: text("coach_note"),
+  coachReviewedAt: integer("coach_reviewed_at", { mode: "timestamp_ms" }),
+  coachReviewedBy: text("coach_reviewed_by"),
 }, (table) => ({
   athleteIdx: index("workout_executions_athlete_created_idx").on(table.athleteName, table.createdAt),
 }));

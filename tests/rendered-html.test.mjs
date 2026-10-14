@@ -2662,9 +2662,11 @@ test("refreshes the current student week and shows only the selected device guid
   assert.match(client, /fetch\(endpoint,\{cache:"no-store"\}\)/);
   assert.match(client, /setInterval\(\(\)=>\{if\(!document\.hidden\)void load\(\)\},60_000\)/);
   assert.match(client, /addEventListener\("visibilitychange",onVisibility\)/);
-  assert.match(client, /integrationPreferenceLoaded&&preferredProviderId==="garmin"/);
-  assert.match(client, /integrationPreferenceLoaded&&preferredProviderId==="zepp"/);
+  assert.match(client, /integrationPreferenceLoaded&&\(!secureStudentMode\|\|providersLoaded\)&&preferredProviderId==="garmin"&&!garminConnected/);
+  assert.match(client, /integrationPreferenceLoaded&&\(!secureStudentMode\|\|providersLoaded\)&&preferredProviderId==="zepp"&&!zeppPhoneConnected&&!zeppActivityReceived/);
   assert.match(client, /student-garmin-login/);
+  assert.match(client, /Prévia do professor: este é o cartão da integração escolhida pelo aluno/);
+  assert.match(client, /setIntegrationPreference\(profile\?\.integration\?\?data\?\.athlete\?\.integration\?\?"Sem integração"\)/);
   assert.match(client, /Conectar Garmin →/);
   assert.match(client, /Perfil → seu relógio → App Store/);
   assert.match(client, /targetAthlete&&<section className="plan-application-summary"/);
@@ -3716,15 +3718,18 @@ test("keeps a single queue for what needs the coach decision", async () => {
   assert.doesNotMatch(client, /Treinos claros/);
 });
 
-test("does not report a percentage for a workout nobody measured", async () => {
+test("does not report a percentage for a workout nobody measured and offers coach review controls", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   // O servidor grava 0/0 quando o aluno conclui sem informar tempo nem
   // distância. Exibir "0% certo" acusaria um erro que ninguém mediu.
   assert.match(client, /item\.classification==="Concluído sem medição"\?<div className="accuracy-numbers"><em>Sem medição<\/em><\/div>/);
   // A conferência mostra os maiores desvios e guarda a lista inteira atrás de
   // um clique, em vez de ocupar um terço da página.
-  assert.match(client, /const destaque=\[\.\.\.foraDoPlano\].*\.slice\(0,3\)/);
+  assert.match(client, /const destaque=\[\.\.\.pendentes\.filter\(item=>item\.classification!=="Dentro do planejado"/);
   assert.match(client, /className="accuracy-toggle"/);
+  assert.match(client, /action:"comment"\|"review"\|"reopen"/);
+  assert.match(client, /Comentário de retorno para o aluno/);
+  assert.match(client, /Marcar como revisado/);
 });
 
 test("agrees the verb with the number of pending situations", async () => {

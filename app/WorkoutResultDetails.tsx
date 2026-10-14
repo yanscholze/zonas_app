@@ -49,12 +49,12 @@ function planned(stage: PlannedStage): string {
 }
 
 /** A mesma leitura do resultado na ficha do professor e na área do aluno. */
-export function WorkoutResultDetails({ result, expanded = false }: { result?: ActivityResult | null; expanded?: boolean }) {
+export function WorkoutResultDetails({ result, expanded = false, className = "" }: { result?: ActivityResult | null; expanded?: boolean; className?: string }) {
   if (!result) return null;
   const unmatched = result.laps.filter(lap => lap.stageIndex === null);
   const sequence = result.laps.some(lap => lap.association === "sequence");
   const date = new Date(result.startedAt).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", dateStyle: "short", timeStyle: "short" });
-  return <details className="workout-result" open={expanded}>
+  return <details className={`workout-result ${className}`.trim()} open={expanded}>
     <summary>Resultado de {result.provider} · métricas e etapas</summary>
     <div className="workout-result-body">
       <header><b>{result.title}</b><small>{date} · {result.workoutMatch === "workout-id" ? "Vinculado ao treino enviado" : result.workoutMatch === "date" ? "Relacionado ao treino desta data" : "Atividade recebida"}</small></header>

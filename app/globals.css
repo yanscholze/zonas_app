@@ -6649,13 +6649,26 @@ p, span, b, strong, small, em, li, td, th, label {
 }
 
 .monitor-list article {
-  display: grid;
-  grid-template-columns: 140px 1fr auto;
-  gap: 12px;
-  padding: 12px 0;
+  display: block;
+  min-width: 0;
+  padding: 0;
   border-top: 1px solid #2d2d2f;
   font-size:var(--fs-xs);
 }
+
+.monitor-list .monitor-linha {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: minmax(100px, 1fr) minmax(140px, 2fr) minmax(220px, 3fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  text-align: left;
+}
+
+.monitor-list .monitor-linha > * { min-width: 0; overflow-wrap: anywhere; }
+.monitor-list .monitor-linha small { overflow: visible; white-space: normal; }
 
 .monitor-list span,
 .monitor-list small {
@@ -6668,7 +6681,10 @@ p, span, b, strong, small, em, li, td, th, label {
     flex-direction: column;
   }
   .monitor-list article {
-    grid-template-columns: 1fr;
+    display: block;
+  }
+  .monitor-list .monitor-linha {
+    grid-template-columns: minmax(0, 1fr);
     gap: 5px;
   }
 }
@@ -9379,6 +9395,19 @@ p, span, b, strong, small, em, li, td, th, label {
   gap: 7px;
 }
 
+.accuracy-review-controls { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
+.accuracy-coach-feedback { display:grid; gap:8px; grid-column:1/-1; width:100%; padding:12px; border:1px solid var(--line); border-radius:var(--radius-md); background:#19191a; }
+.accuracy-coach-feedback label { display:grid; gap:6px; color:var(--text); font-size:var(--fs-xs); font-weight:700; }
+.accuracy-coach-feedback textarea { width:100%; min-height:68px; resize:vertical; border:1px solid var(--line); border-radius:var(--radius-sm); padding:9px 10px; background:#101011; color:var(--text); font:inherit; }
+.accuracy-coach-feedback>div { display:flex; flex-wrap:wrap; gap:8px; }
+.accuracy-coach-feedback button { min-height:36px; padding:0 12px; border:1px solid var(--line); border-radius:var(--radius-sm); background:var(--surface-2); color:var(--text); cursor:pointer; }
+.accuracy-coach-feedback button.gold { background:var(--gold); color:#171512; }
+.accuracy-coach-feedback>small { color:#ffb1a7; }
+.workout-accuracy-coach>article.reviewed { opacity:.86; }
+.coach-workout-note { margin:12px 0; padding:12px 14px; border:1px solid #d6b465; border-radius:var(--radius-md); background:#f7f0df; color:#29251c; }
+.coach-workout-note p { margin:5px 0 0; color:#514a3d; white-space:pre-wrap; }
+.recent-workouts .recent-coach-note { flex-basis:100%; margin:8px 0; }
+
 .accuracy-comparison>span {
   display: grid;
   gap: 4px;
@@ -11177,7 +11206,10 @@ p, span, b, strong, small, em, li, td, th, label {
   border:1px solid var(--line);
   border-radius:var(--radius-lg);
   background:var(--surface-2);
+  color:#f6f3ea;
 }
+
+.zepp-install-help h2 { color:#f6f3ea; }
 
 .zepp-install-help header {
   display:flex;
@@ -11189,6 +11221,7 @@ p, span, b, strong, small, em, li, td, th, label {
 .zepp-install-help header p,
 .zepp-install-help .zepp-validation-note {
   margin:6px 0 0;
+  color:#b8b5ad;
 }
 
 .zepp-install-help header>b {
@@ -15388,6 +15421,15 @@ p, span, b, strong, small, em, li, td, th, label {
 .workout-result-zones dd, .workout-result-extra dd { margin: 0; font-weight: 650; }
 .workout-result-extra { margin-top: 14px; }
 .workout-result-extra > summary { cursor: pointer; font-weight: 650; }
+.workout-result.coach-theme { border-color:#383a3c; background:#171819; color:#f3f0e8; }
+.workout-result.coach-theme .workout-result-body p,
+.workout-result.coach-theme .workout-result-metrics dt,
+.workout-result.coach-theme .workout-result-charts article span { color:#c2beb5; }
+.workout-result.coach-theme .workout-result-stage,
+.workout-result.coach-theme .workout-result-charts article,
+.workout-result.coach-theme .workout-result-zones dl>div,
+.workout-result.coach-theme .workout-result-extra dl>div { border-color:#383a3c; background:#1c1d1e; }
+.workout-result.coach-theme .workout-result-charts line { stroke:#55524a; }
 .strava-settings-card { margin-bottom: 20px; padding: 22px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--panel); }
 .strava-settings-card > header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .strava-settings-card h2 { margin: 5px 0; }
@@ -15412,3 +15454,8 @@ p, span, b, strong, small, em, li, td, th, label {
   .workout-result > summary { padding: 12px; font-size: 13px; }
   .workout-result-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+.student .zepp-install-help { color:#f6f3ea; }
+.student .zepp-install-help h2 { color:#f6f3ea; }
+.student .zepp-install-help header p,
+.student .zepp-install-help .zepp-validation-note,
+.student .zepp-install-help li { color:#b8b5ad; }

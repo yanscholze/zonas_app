@@ -120,6 +120,7 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/student/performance-tests": new Set(["id","minutes","seconds","distanceKm","resultDistanceMeters","effort","note","sourceFormat","sourceKm","executionType","effortClassification","completionStatus","elapsedSeconds","testDate"]),
   "/api/financial": new Set(["action","pixKey","pixName","defaultAmount","dueDay","athleteName","referenceMonth","amount","status","dueDate","classId","name","scope","className","athletes","image","note"]),
   "/api/feedbacks": new Set(["id","status"]),
+  "/api/workout-executions": new Set(["id","action","coachNote"]),
   "/api/student/races-records": new Set(["kind","name","raceDate","distance","city","goal","priority","resultTime","eventName"]),
   "/api/plan-template-overrides": new Set(["plan","weekNumber","sessions"]),
   "/api/auth/login": new Set(["email","password"]),
@@ -1089,6 +1090,19 @@ async function coachAccountsApi(request: Request, env: Env): Promise<Response> {
     : { clausula: "", valores: [] as string[] };
 
   if (request.method === "GET") {
+    /* Reconcile legacy accounts only when the exact login email already has
+       active access to the same athlete. Never infer identity from name alone. */
+    const now = Date.now();
+    await env.DB.prepare(`UPDATE user_accounts
+      SET status='Ativo', updated_at=?
+      WHERE role='student' AND status='Aguardando aprovação'
+        AND EXISTS (SELECT 1 FROM athlete_access aa
+                    WHERE aa.athlete_name=user_accounts.athlete_name
+                      AND lower(aa.email)=lower(user_accounts.email)
+                      AND aa.status='Ativo')
+        AND EXISTS (SELECT 1 FROM athletes
+                    WHERE athletes.name=user_accounts.athlete_name${carteira ? " AND athletes.coach_email=?" : ""})`)
+      .bind(...(carteira ? [now, carteira] : [now])).run();
     const accounts = await env.DB.prepare(
       `SELECT user_accounts.id, user_accounts.email, user_accounts.name, user_accounts.role,
               user_accounts.athlete_name, user_accounts.status, user_accounts.must_change_password,
@@ -2463,6 +2477,11 @@ async function ensureColumns(env: Env, table: string, columns: Record<string, st
 
 async function ensureWorkoutExecutions(env: Env) {
   await ensureTables(env, schema.workoutExecutions);
+  await ensureColumns(env, "workout_executions", {
+    coach_note: "TEXT",
+    coach_reviewed_at: "INTEGER",
+    coach_reviewed_by: "TEXT",
+  });
 }
 
 function executionWithResult(row: unknown) {
@@ -2598,8 +2617,35 @@ async function studentWorkoutExecutionsApi(request: Request, env: Env, athleteNa
 
 async function workoutExecutionsApi(request: Request, env: Env): Promise<Response> {
   const carteira = recorteDaCarteira(carteiraDe(request));
-  if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
   await ensureWorkoutExecutions(env);
+  if (request.method === "POST") {
+    const input = await request.json() as Record<string, unknown>;
+    const id = boundedText(input.id, 100);
+    const action = boundedText(input.action, 20);
+    const coachNote = boundedText(input.coachNote, 2000);
+    if (!id || !["comment", "review", "reopen"].includes(action)) {
+      return Response.json({ error: "invalid_review_action" }, { status: 400 });
+    }
+    const row = await env.DB.prepare(`SELECT id, athlete_name FROM workout_executions
+      WHERE id=? AND ${carteira.clausula} LIMIT 1`).bind(id, ...carteira.valores).first() as { id?: string; athlete_name?: string } | null;
+    if (!row) return Response.json({ error: "execution_not_found" }, { status: 404 });
+    const fora = await foraDaCarteira(env, request, String(row.athlete_name || ""));
+    if (fora) return fora;
+    const actor = normalizedAuthenticatedEmail(request) ?? "treinador";
+    if (action === "review") {
+      await env.DB.prepare("UPDATE workout_executions SET coach_note=?, coach_reviewed_at=?, coach_reviewed_by=? WHERE id=?")
+        .bind(coachNote || null, Date.now(), actor, id).run();
+    } else if (action === "reopen") {
+      await env.DB.prepare("UPDATE workout_executions SET coach_reviewed_at=NULL, coach_reviewed_by=NULL WHERE id=?")
+        .bind(id).run();
+    } else {
+      await env.DB.prepare("UPDATE workout_executions SET coach_note=? WHERE id=?")
+        .bind(coachNote || null, id).run();
+    }
+    const updated = await env.DB.prepare("SELECT * FROM workout_executions WHERE id=? LIMIT 1").bind(id).first();
+    return Response.json({ execution: executionWithResult(updated) });
+  }
+  if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
   const result = await env.DB.prepare(`SELECT * FROM workout_executions WHERE ${carteira.clausula} ORDER BY created_at DESC LIMIT 100`).bind(...carteira.valores).all();
   return Response.json({ executions: result.results.map(executionWithResult) });
 }

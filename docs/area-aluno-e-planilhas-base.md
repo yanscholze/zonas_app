@@ -115,3 +115,56 @@ Amazfit mostra o caminho de instalação no app Zepp.
 - `npm run build`: compilação validada.
 - O registro preexistente de Caio em `user_accounts` requer correção operacional
   separada; nenhum dado de produção foi alterado nesta entrega.
+
+## Retorno por treino, cartões de integração e revisão operacional — 14/10/2026
+
+### Comentários e revisões dos treinos
+
+Cada execução tem um comentário persistente do treinador e estado de revisão.
+Salvar comentário não marca revisão; ao marcar como revisado, o registro sai da
+fila padrão de pendentes. A tela permite abrir a lista revisada e reabrir um
+registro, preservando o comentário. O endpoint verifica o vínculo do aluno com
+a carteira antes de alterar o retorno. O aluno vê a nota no detalhe do treino e
+no histórico recente.
+
+### Prévia do aluno e integração escolhida
+
+A prévia de professor não consulta endpoints privados da sessão do aluno. Por
+isso os cartões de provedores dessa tela não informam disponibilidade nem
+conexão real: passam a dizer explicitamente que o status privado não foi
+consultado. A preferência exibida vem do perfil do aluno; o cartão correspondente
+aparece na página inicial da prévia. Na sessão real, o cartão escolhido fica na
+página inicial até uma conexão ser confirmada. O formulário de senha Garmin não
+é apresentado na prévia do professor.
+
+### Contraste e saúde do sistema
+
+Os resultados de atividade no painel do treinador usam painel escuro, bordas e
+texto claro; a apresentação compartilhada da área do aluno permanece clara. A
+lista da Saúde do Zonas deixou de reservar 140 px para o primeiro campo: cada
+registro ocupa a largura disponível, com quatro colunas flexíveis em telas
+grandes e conteúdo empilhado no celular.
+
+### Ativação de conta e dados antigos
+
+A aprovação continua ativando a linha de acesso e sincroniza a conta de login.
+Além disso, ao abrir a lista de contas, registros pendentes são reconciliados
+somente quando existe acesso ativo para o mesmo nome de aluno e o mesmo e-mail
+exato. Contas bloqueadas ou sem essa correspondência não são alteradas. A
+auditoria operacional encontrou 12 contas de aluno: 7 pendentes com acesso
+ativo, 1 ativa e consistente e 3 pendentes sem acesso ativo; duas identidades
+de aluno aparecem com mais de uma conta. Há ainda uma conta marcada como ativa
+sem vínculo exato correspondente; ela não foi alterada. Após publicar a
+reconciliação, as sete correspondências ativas também foram marcadas como ativas
+na conta de login. A correção não apaga contas, senhas ou histórico, e as
+duplicidades permanecem para conferência manual.
+
+### Validação desta implementação
+
+- `npm test`: 226 testes aprovados.
+- React Doctor em arquivos alterados: nenhum diagnóstico; pontuação geral
+  reportada pela ferramenta: 37/100.
+- A correção em lote da produção foi limitada às 7 contas pendentes cujo e-mail
+  coincide exatamente com o acesso ativo do mesmo aluno; demais contas foram
+  preservadas.
+- Issue de histórico: [#13](https://github.com/yanscholze/zonas_app/issues/13).

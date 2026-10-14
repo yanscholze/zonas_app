@@ -57,6 +57,29 @@ test('device completion is persisted once and the same stage metrics are visible
  f.sqlite.close();
 });
 
+test('coach comments and review state persist for the student and stay inside the owning coach portfolio',async()=>{
+ const f=await fixture();const now=Date.now();
+ f.insert("INSERT INTO workout_executions (id,athlete_name,week_start,workout_day,correct_percentage,wrong_percentage,classification,source,created_at,status) VALUES ('review-me','Aluno Teste',?,?,80,20,'Parcialmente correto','Garmin',?,'Concluído')",weekStart,day,now);
+ const coach='c'.repeat(64),other='d'.repeat(64);
+ let response=await f.request('/api/workout-executions','POST',{id:'review-me',action:'review',coachNote:'Boa consistência. Faça a próxima etapa mais leve.'},coach);
+ assert.equal(response.status,200);let body=await response.json();assert.equal(body.execution.coach_note,'Boa consistência. Faça a próxima etapa mais leve.');assert.ok(body.execution.coach_reviewed_at);
+ const student=await(await f.request('/api/student/workout-executions?days=30')).json();assert.equal(student.executions[0].coach_note,'Boa consistência. Faça a próxima etapa mais leve.');
+ response=await f.request('/api/workout-executions','POST',{id:'review-me',action:'comment',coachNote:'Comentário alterado'},other);assert.equal(response.status,404);
+ response=await f.request('/api/workout-executions','POST',{id:'review-me',action:'reopen'},coach);assert.equal(response.status,200);body=await response.json();assert.equal(body.execution.coach_reviewed_at,null);assert.equal(body.execution.coach_note,'Boa consistência. Faça a próxima etapa mais leve.');
+ f.sqlite.close();
+});
+
+test('account list repairs only pending logins with exact matching active access',async()=>{
+ const f=await fixture();const now=Date.now();
+ f.insert("UPDATE athlete_access SET email='student-old@exemplo.test' WHERE athlete_name='Aluno Teste'");
+ f.insert("INSERT INTO user_accounts (id,email,name,role,athlete_name,password_hash,password_salt,password_iterations,status,must_change_password,failed_attempts,created_at,updated_at) VALUES ('legacy-active','student-old@exemplo.test','Aluno Teste','student','Aluno Teste','x','x',1,'Aguardando aprovação',0,0,?,?)",now,now);
+ f.insert("INSERT INTO user_accounts (id,email,name,role,athlete_name,password_hash,password_salt,password_iterations,status,must_change_password,failed_attempts,created_at,updated_at) VALUES ('other-pending','pending@exemplo.test','Outro','student','Aluno Teste','x','x',1,'Aguardando aprovação',0,0,?,?)",now,now);
+ const response=await f.request('/api/accounts','GET',null,'c'.repeat(64));assert.equal(response.status,200);
+ assert.equal(f.sqlite.prepare("SELECT status FROM user_accounts WHERE id='legacy-active'").get().status,'Ativo');
+ assert.equal(f.sqlite.prepare("SELECT status FROM user_accounts WHERE id='other-pending'").get().status,'Aguardando aprovação');
+ f.sqlite.close();
+});
+
 test('Garmin cron imports completion automatically, links workoutId, reuses manual record and avoids duplicates',async()=>{
  const f=await fixture();const now=Date.now();
  f.insert("INSERT INTO external_integrations (id,athlete_name,provider,scopes,access_token_encrypted,refresh_token_encrypted,expires_at,status,updated_at) VALUES ('integration','Aluno Teste','Garmin','',?,'',?,'Conectado',?)",await encrypt('test-mobile-token'),now+3600000,now);
