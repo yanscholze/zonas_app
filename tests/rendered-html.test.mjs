@@ -2265,16 +2265,25 @@ test("always answers the coach after a release attempt", async () => {
   assert.match(client, /liberou\?"Semana liberada":"Não foi possível liberar a semana"/);
 });
 
-test("lets the coach switch accounts from the sidebar", async () => {
+test("gives the coach a clear logout that returns to login from normal and preview views", async () => {
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const auth = await readFile(new URL("../app/AuthGate.tsx", import.meta.url), "utf8");
   const css = await readCss("../app/globals.css");
-  // Sair só existia no topo da tela. Junto do perfil é onde se procura quando a
-  // intenção é trocar de login, e por isso o bloco passou a mostrar o e-mail da
-  // conta em uso em vez do papel.
+  const previewCss = await readCss("../app/overrides.css");
+  // A conta precisa ser identificável no painel, e a ação precisa continuar
+  // acessível enquanto o treinador confere a prévia do aluno.
   assert.match(client, /className="coach-exit"/);
   assert.match(client, /aria-label="Sair e entrar com outra conta"/);
   assert.match(client, /<small>\{session\.email\}<\/small>/);
+  assert.match(client, /aria-label="Sair da conta e voltar ao login">Sair da conta/);
+  assert.match(client, /className="coach-preview-signout" onClick=\{\(\)=>void signOut\(\)\}>Sair da conta/);
+  assert.match(auth, /fetch\("\/api\/auth\/logout"/);
+  assert.match(auth, /if \(!response\.ok\) throw new Error\("logout_failed"\)/);
+  assert.match(auth, /window\.location\.replace\("\/"\)/);
+  assert.match(auth, /Não foi possível encerrar sua sessão/);
   assert.match(css, /\.coach-exit/);
+  assert.match(previewCss, /\.coach-preview-actions\s*\{/);
+  assert.match(previewCss, /\.coach-preview-signout/);
 });
 
 test("counts dev diagnostics without stopping at the table limit", async () => {

@@ -306,10 +306,17 @@ function ChangePassword({ session, onChanged }: { session: Session; onChanged: (
 
 /** Encerra a sessão no servidor e recarrega a aplicação. */
 export async function signOut() {
-  await fetch("/api/auth/logout", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: "{}",
-  }).catch(() => undefined);
-  window.location.href = "/";
+  try {
+    const response = await fetch("/api/auth/logout", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) throw new Error("logout_failed");
+    window.location.replace("/");
+  } catch {
+    window.alert("Não foi possível encerrar sua sessão. Confira sua conexão e tente novamente.");
+  }
 }
