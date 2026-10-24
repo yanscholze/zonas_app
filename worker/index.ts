@@ -101,7 +101,7 @@ const SECURITY_LOG_RETENTION_DAYS = 90;
 const SECURITY_LOG_RETENTION_MS = SECURITY_LOG_RETENTION_DAYS * 86_400_000;
 
 const allowedBodyKeys: Record<string, Set<string>> = {
-  "/api/athletes": new Set(["name","initials","distance","phase","week","nextWorkout","status","phone","email","trainingDays","integration","action","reason"]),
+  "/api/athletes": new Set(["name","initials","distance","phase","week","nextWorkout","status","phone","email","trainingDays","integration","action","reason","confirmName"]),
   "/api/plans": new Set(["action","planId","name","distance","weeks","frequency","level","goal","phases","plans"]),
   "/api/athlete-profile": new Set(["athleteName","phone","birthDate","objective","integration","trainingDays","noTargetRace"]),
   "/api/athlete-planning": new Set(["athleteName","plan","phase","weekNumber","totalWeeks"]),
@@ -1688,6 +1688,39 @@ async function athletesApi(request: Request, env: Env): Promise<Response> {
   if (request.method === "POST") {
     const input = await request.json() as Record<string, unknown>;
     const acao = boundedText(input.action, 20);
+
+    if (acao === "delete") {
+      const alvo = boundedText(input.name, 120);
+      const confirmacao = boundedText(input.confirmName, 120);
+      if (!alvo) return Response.json({ error: "athlete_required" }, { status: 400 });
+      if (confirmacao !== alvo) return Response.json({ error: "athlete_confirmation_mismatch" }, { status: 400 });
+      const existe = await env.DB.prepare("SELECT name FROM athletes WHERE name = ? LIMIT 1").bind(alvo).first();
+      if (!existe) return Response.json({ error: "athlete_not_found" }, { status: 404 });
+      const fora = await foraDaCarteira(env, request, alvo);
+      if (fora) return fora;
+      await ensureTables(env, schema.userAccounts, schema.userSessions, schema.performanceTests, schema.trainingWeeks,
+        schema.trainingWeekPublications, schema.painReports, schema.painReportUpdates, schema.trainingFeedbacks,
+        schema.workoutExecutions, schema.externalIntegrations, schema.oauthFlows, schema.externalActivities,
+        schema.deviceIngestTokens, schema.studentPayments, schema.athleteRaces, schema.personalRecords,
+        schema.accessAuditLog, schema.trainingWeekAudit);
+
+      // O nome do atleta é a chave usada pelas tabelas históricas. A exclusão
+      // remove os dados operacionais em lote e revoga a conta/sessões do aluno.
+      // D1 executa batch como uma transação: não deixa um cadastro parcialmente limpo.
+      const statements = [
+        ["DELETE FROM user_sessions WHERE user_id IN (SELECT id FROM user_accounts WHERE role = 'student' AND athlete_name = ?)", alvo],
+        ["DELETE FROM pain_report_updates WHERE report_id IN (SELECT id FROM pain_reports WHERE athlete_name = ?)", alvo],
+        ...["training_week_audit", "access_audit_log", "athlete_access", "athlete_profiles", "athlete_planning",
+          "performance_tests", "training_week_publications", "pain_reports", "training_feedbacks",
+          "workout_executions", "external_integrations", "oauth_flows", "external_activities",
+          "device_ingest_tokens", "student_payments", "athlete_races", "personal_records", "training_weeks"]
+          .map(table => [`DELETE FROM ${table} WHERE athlete_name = ?`, alvo] as const),
+        ["DELETE FROM user_accounts WHERE role = 'student' AND athlete_name = ?", alvo],
+        ["DELETE FROM athletes WHERE name = ?", alvo],
+      ].map(([sql, name]) => env.DB.prepare(sql as string).bind(name));
+      await env.DB.batch(statements);
+      return Response.json({ name: alvo, deleted: true });
+    }
 
     // Inativar em vez de excluir: o aluno some da operação do dia a dia, mas
     // treinos, testes e queixas permanecem como registro do que foi feito.

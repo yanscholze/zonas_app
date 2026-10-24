@@ -3464,17 +3464,28 @@ test("generates the same columns the schema declares", async () => {
  * Inativação de aluno, histórico recente e integridade do nome
  * -------------------------------------------------------------------------- */
 
-test("inactivates an athlete instead of deleting, keeping the history", async () => {
+test("keeps inactivation reversible and requires explicit confirmation for athlete deletion", async () => {
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
   const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
-  // Não existe exclusão de aluno: apagar destruiria treinos, testes e queixas.
-  assert.doesNotMatch(worker, /DELETE FROM athletes/);
+  // Inativar continua preservando os dados; exclusão é um fluxo separado.
   assert.match(schema, /archivedAt: integer\("archived_at"\)/);
   assert.match(worker, /acao === "archive" \|\| acao === "restore"/);
   // Inativar tira o acesso na hora; reativar não devolve sozinho.
   assert.match(worker, /UPDATE user_accounts SET status = 'Bloqueado'/);
   assert.match(worker, /DELETE FROM user_sessions WHERE user_id = \?/);
+  assert.match(worker, /if \(acao === "delete"\)/);
+  assert.match(worker, /confirmacao !== alvo/);
+  assert.match(worker, /const fora = await foraDaCarteira\(env, request, alvo\)/);
+  assert.match(worker, /DELETE FROM athletes WHERE name = \?/);
+  assert.match(worker, /DELETE FROM user_accounts WHERE role = 'student' AND athlete_name = \?/);
+  assert.match(worker, /training_week_publications/);
+  assert.match(worker, /external_integrations/);
+  assert.match(worker, /student_payments/);
+  assert.match(worker, /await env\.DB\.batch\(statements\)/);
+  assert.match(client, /Excluir cadastro/);
+  assert.match(client, /confirmName:nomeConfirmacao/);
+  assert.match(client, /setConfirmando\(a\.name\)/);
   // A lista traz só ativos por padrão, com filtro para ver os inativos.
   // A condição virou composta ao ganhar o recorte por treinador.
   assert.match(worker, /athletes\.archived_at IS NULL/);
@@ -3482,6 +3493,54 @@ test("inactivates an athlete instead of deleting, keeping the history", async ()
   assert.match(worker, /incluir === "archived"/);
   assert.match(client, /className=\{situation===item\?"selected":""\}/);
   assert.match(client, /Alunos inativos mantêm todo o histórico/);
+});
+
+test("deletes only after exact name confirmation and batches the athlete's related records", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("athlete-delete", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const writes = [];
+  const deletionBatches = [];
+  const ownershipChecks = [];
+  const prepare = (sql) => ({
+    sql,
+    values: [],
+    bind(...values) { this.values = values; return this; },
+    async first() { return sql.includes("SELECT name FROM athletes WHERE name = ? LIMIT 1") ? { name: "Aluno Exemplo" } : null; },
+    async all() { return { results: [] }; },
+    async run() { writes.push({ sql, values: this.values }); return { success: true, meta: { changes: 1 } }; },
+  });
+  const env = { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) }, DB: {
+    prepare(sql) {
+      if (sql.includes("SELECT coach_email FROM athletes WHERE name = ?")) ownershipChecks.push(sql);
+      return withSession(prepare)(sql);
+    },
+    async batch(items) {
+      if (items.some(item => item.sql === "DELETE FROM athletes WHERE name = ?")) deletionBatches.push(items);
+      for (const item of items) await item.run();
+      return [];
+    },
+  } };
+  const ctx = { waitUntil() {}, passThroughOnException() {} };
+  const request = (confirmName) => new Request("https://zonasapp.example/api/athletes", {
+    method: "POST", headers: { "content-type": "application/json", ...coachCookie },
+    body: JSON.stringify({ action: "delete", name: "Aluno Exemplo", confirmName }),
+  });
+
+  const mismatch = await worker.fetch(request("Aluno"), env, ctx);
+  assert.equal(mismatch.status, 400);
+  assert.equal(deletionBatches.length, 0);
+
+  const response = await worker.fetch(request("Aluno Exemplo"), env, ctx);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { name: "Aluno Exemplo", deleted: true });
+  assert.equal(deletionBatches.length, 1);
+  const deletes = deletionBatches[0].map(statement => statement.sql);
+  assert.ok(deletes.some(sql => sql === "DELETE FROM user_sessions WHERE user_id IN (SELECT id FROM user_accounts WHERE role = 'student' AND athlete_name = ?)"));
+  assert.ok(deletes.some(sql => sql === "DELETE FROM external_integrations WHERE athlete_name = ?"));
+  assert.ok(deletes.some(sql => sql === "DELETE FROM student_payments WHERE athlete_name = ?"));
+  assert.ok(deletes.some(sql => sql === "DELETE FROM athletes WHERE name = ?"));
+  assert.ok(ownershipChecks.length > 0);
 });
 
 test("refuses a second athlete with the same name", async () => {

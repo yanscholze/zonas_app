@@ -1461,6 +1461,8 @@ function Athletes({ filtered, allAthletes, distance, phase, plan, setDistance, s
   const termo=busca.trim().toLocaleLowerCase("pt-BR");
   const visiveis=termo?filtered.filter((a:Athlete)=>a.name.toLocaleLowerCase("pt-BR").includes(termo)):filtered;
   const [confirmando,setConfirmando]=useState("");
+  const [confirmandoExclusao,setConfirmandoExclusao]=useState("");
+  const [nomeConfirmacao,setNomeConfirmacao]=useState("");
   const [motivo,setMotivo]=useState("");
 
   /** Inativar preserva o histórico; excluir o destruiria. */
@@ -1470,6 +1472,14 @@ function Athletes({ filtered, allAthletes, distance, phase, plan, setDistance, s
       await api.post("/api/athletes",{action,name:nome,...(action==="archive"&&motivo?{reason:motivo}:{})});
       setConfirmando("");setMotivo("");onArchiveChange?.();
     }catch(error){avise("erro","Não foi possível alterar a situação do aluno",describeError(error,"Tente novamente em alguns instantes."))}
+    finally{setAcaoEmCurso("")}
+  };
+  const excluirAluno=async(nome:string)=>{
+    setAcaoEmCurso(nome);
+    try{
+      await api.post("/api/athletes",{action:"delete",name:nome,confirmName:nomeConfirmacao});
+      setConfirmandoExclusao("");setNomeConfirmacao("");onArchiveChange?.();
+    }catch(error){avise("erro","Não foi possível excluir o cadastro",describeError(error,"Confira o nome digitado e tente novamente."))}
     finally{setAcaoEmCurso("")}
   };
 
@@ -1493,9 +1503,22 @@ function Athletes({ filtered, allAthletes, distance, phase, plan, setDistance, s
       <button onClick={()=>{setConfirmando("");setMotivo("")}}>Cancelar</button>
     </div>
   </div>}
+  {confirmandoExclusao&&<div className="athlete-archive-confirm athlete-delete-confirm">
+    <b>Excluir o cadastro de {confirmandoExclusao}?</b>
+    <p>Esta ação remove o cadastro, o acesso do aluno e os dados associados, incluindo treinos, avaliações, feedbacks, integrações e cobranças. Não há como desfazer pela lista; cópias de segurança anteriores podem conter os dados. Digite o nome completo exatamente como aparece para confirmar.</p>
+    <label>Nome completo do aluno
+      <input value={nomeConfirmacao} onChange={e=>setNomeConfirmacao(e.target.value)} placeholder={confirmandoExclusao}/>
+    </label>
+    <div>
+      <button className="delete-button" disabled={acaoEmCurso===confirmandoExclusao||nomeConfirmacao!==confirmandoExclusao} onClick={()=>excluirAluno(confirmandoExclusao)}>
+        {acaoEmCurso===confirmandoExclusao?"Excluindo…":"Excluir cadastro"}
+      </button>
+      <button onClick={()=>{setConfirmandoExclusao("");setNomeConfirmacao("")}}>Cancelar</button>
+    </div>
+  </div>}
   <div className="filters"><label className="filtro-busca">BUSCAR ALUNO<input value={busca} onChange={event => setBusca(event.target.value)} placeholder="Digite o nome" aria-label="Buscar aluno pelo nome"/>{busca && <button onClick={() => setBusca("")} aria-label="Limpar busca">×</button>}</label><label>DISTÂNCIA<div>{distances.map(d => <button key={d} className={distance === d ? "selected" : ""} onClick={() => setDistance(d)}>{d}</button>)}</div></label><label>PLANILHA-BASE<div>{planNames.filter((name:string) => todasAsPlanilhas || name === "Todas" || name === plan || planCount(name) > 0).map((name:string) => <button key={name} className={plan === name ? "selected" : ""} onClick={() => setPlan(name)}>{name}{name!=="Todas"&&<b>{planCount(name)}</b>}</button>)}{planNames.some((name:string) => name !== "Todas" && planCount(name) === 0) && <button className="filtro-mais" onClick={() => setTodasAsPlanilhas(valor => !valor)}>{todasAsPlanilhas ? "Ocultar vazias" : `+ ${planNames.filter((name:string) => name !== "Todas" && planCount(name) === 0).length} sem aluno`}</button>}</div></label><label>FASE<div>{phases.map(p => <button key={p} className={phase === p ? "selected" : ""} onClick={() => setPhase(p)}>{p}</button>)}</div></label></div><div className="athlete-list"><header><span>ALUNO</span><span>DISTÂNCIA</span><span>PLANILHA-BASE</span><span>FASE</span><span>SEMANA</span><span>PRÓXIMO TREINO</span><span>SITUAÇÃO</span></header>{visiveis.length===0&&<div className="athlete-list-empty">{termo?`Nenhum aluno com “${busca.trim()}” no nome.`:"Nenhum aluno neste recorte de filtros."}</div>}{visiveis.map((a: Athlete) => <article key={a.name} className={`athlete-row${a.archivedAt ? " inativo" : ""}`} onClick={() => openProfile(a)}><span className="athlete-name"><b>{a.initials}</b><strong>{a.name}{a.archivedAt ? <em className="athlete-inactive-tag">inativo</em> : null}</strong></span><span>{a.distance}</span><span className="plan-cell">{athletePlan(a)}</span><span>{a.phase}</span><span>{a.week}</span><span>{a.archivedAt ? (a.archivedReason || "Sem motivo registrado") : a.next}</span><span className="athlete-row-action" onClick={event => event.stopPropagation()}>{a.archivedAt
-  ? <button disabled={acaoEmCurso === a.name} onClick={() => mudarSituacao(a.name, "restore")}>{acaoEmCurso === a.name ? "Reativando…" : "Reativar"}</button>
-  : <><span className={a.flag ? "flag" : "ok"}>{a.flag || "Em dia"}</span><button className="athlete-archive" onClick={() => setConfirmando(a.name)}>Inativar</button><em className="athlete-open" aria-hidden="true">›</em></>}</span></article>)}</div></>;
+  ? <><button disabled={acaoEmCurso === a.name} onClick={() => mudarSituacao(a.name, "restore")}>{acaoEmCurso === a.name ? "Reativando…" : "Reativar"}</button><button className="athlete-delete" onClick={() => {setConfirmandoExclusao(a.name);setNomeConfirmacao("")}}>Excluir</button></>
+  : <><span className={a.flag ? "flag" : "ok"}>{a.flag || "Em dia"}</span><button className="athlete-archive" onClick={() => setConfirmando(a.name)}>Inativar</button><button className="athlete-delete" onClick={() => {setConfirmandoExclusao(a.name);setNomeConfirmacao("")}}>Excluir</button><em className="athlete-open" aria-hidden="true">›</em></>}</span></article>)}</div></>;
 }
 
 function AthleteProfile({ athlete, close, onOpenPain }: { athlete: Athlete; close: () => void; onOpenPain?: (id: string) => void }) {

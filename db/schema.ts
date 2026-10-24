@@ -27,9 +27,8 @@ export const athletes = sqliteTable("athletes", {
   /**
    * Quando o aluno foi inativado. Nulo enquanto ativo.
    *
-   * Aluno que sai é inativado, nunca apagado: o histórico de treinos, testes e
-   * queixas continua valendo como registro do trabalho feito, e apagá-lo
-   * destruiria o passado do atleta e as estatísticas do treinador.
+   * A inativação preserva o histórico de treinos, testes e queixas. A exclusão
+   * permanente é uma ação separada e explícita, com confirmação do treinador.
    */
   archivedAt: integer("archived_at"),
   archivedReason: text("archived_reason"),

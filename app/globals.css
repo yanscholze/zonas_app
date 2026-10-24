@@ -12105,6 +12105,28 @@ p, span, b, strong, small, em, li, td, th, label {
   font-weight: 800;
 }
 
+.athlete-delete-confirm {
+  border-color: var(--red);
+  background: color-mix(in srgb, var(--red) 8%, transparent);
+}
+
+.athlete-delete-confirm .delete-button,
+.athlete-row-action .athlete-delete {
+  border-color: color-mix(in srgb, var(--red) 65%, var(--line));
+  color: var(--red);
+}
+
+.athlete-delete-confirm .delete-button:hover,
+.athlete-row-action .athlete-delete:hover {
+  background: var(--red);
+  color: #fff;
+}
+
+.athlete-delete-confirm .delete-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .athlete-row.inativo {
   opacity: 0.6;
 }
@@ -12141,6 +12163,11 @@ p, span, b, strong, small, em, li, td, th, label {
 .athlete-row-action button:hover {
   border-color: var(--gold);
   color: var(--gold2);
+}
+
+.athlete-row-action .athlete-delete:hover {
+  border-color: var(--red);
+  color: var(--red);
 }
 
 .athlete-archive:hover {
