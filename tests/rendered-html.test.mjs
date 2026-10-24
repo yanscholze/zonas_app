@@ -412,7 +412,7 @@ test("serves the day's workout to a watch, with zones already resolved into pace
     type: "Treino estruturado", title: "Caminhada Livre", description: "Sem zona-alvo",
     durationMinutes: 20, estimatedKm: 1.5,
     steps: [
-      { kind: "simple", label: "Caminhada", minutes: 10, activity: "walk", zone: null },
+      { kind: "simple", label: "Caminhada", meters: 850, distanceUnit: "m", activity: "walk", zone: null },
       { kind: "repeat", label: "Bloco livre", repetitions: 2,
         effortMinutes: 2, effortActivity: "walk", effortZone: null,
         recoveryMinutes: 1, recoveryActivity: "walk", recoveryZone: null },
@@ -424,6 +424,8 @@ test("serves the day's workout to a watch, with zones already resolved into pace
   assert.equal(livreResponse.status, 200);
   const livre = await livreResponse.json();
   assert.equal(livre.workout.steps[0].target, null);
+  assert.equal(livre.workout.steps[0].meters, 850);
+  assert.equal(livre.workout.steps[0].seconds, null);
   assert.equal(livre.workout.steps[1].effort.target, null);
   assert.equal(livre.workout.steps[1].recovery.target, null);
 
@@ -1238,7 +1240,10 @@ test("links the structured workout to an athlete and shows the released steps to
   assert.match(source, /steps:\[\.\.\.\(warmupEnabled&&warmup\.amount>0\?\[payloadForFixedStep\(warmup\)\]/);
   assert.match(source, /cooldownEnabled&&cooldown\.amount>0\?\[payloadForFixedStep\(cooldown\)\]/);
   assert.match(source, /value="km">Distância \(km\)<\/option>/);
-  assert.match(source, /meters:Math\.round\(step\.amount\*1000\)/);
+  assert.match(source, /value="m">Distância \(m\)<\/option>/);
+  assert.match(source, /type FixedStepUnit = "min"\|"m"\|"km"/);
+  assert.match(source, /meters:Math\.round\(step\.amount\*\(step\.unit==="km"\?1000:1\)\),distanceUnit:step\.unit/);
+  assert.match(source, /step\?\.distanceUnit==="m"\?meters/);
   assert.match(source, /aria-label="Remover aquecimento"/);
   assert.match(source, /aria-label="Remover desaquecimento"/);
   assert.match(source, /warmupEnabled\?kmFor\(warmup\.amount/);
@@ -1271,7 +1276,7 @@ test("builds workout steps by minutes or meters without separating the recovery"
   assert.match(source, /<option value="min">Minutos<\/option><option value="m">Metros<\/option>/);
   assert.match(source, /effortUnit:"s",effortZone:"Z5",effortActivity:"run",recovery:40,recoveryUnit:"s",recoveryZone:"Z1",recoveryActivity:"run"/);
   assert.match(source, /effortMeters:step\.effort/);
-  assert.match(source, /meters:Math\.round\(step\.amount\*1000\)/);
+  assert.match(source, /meters:Math\.round\(step\.amount\*\(step\.unit==="km"\?1000:1\)\),distanceUnit:step\.unit/);
   assert.match(source, /A recuperação acontece após cada repetição, inclusive a última/);
   assert.match(source, /step\.effortMeters\?`\$\{step\.effortMeters\} m`/);
 });
