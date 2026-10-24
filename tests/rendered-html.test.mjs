@@ -406,6 +406,27 @@ test("serves the day's workout to a watch, with zones already resolved into pace
     assert.equal(corpo.workout.maxHeartRate, 190);
   }
 
+  /* `Livre` é salvo semanticamente como null. Na resposta que o relógio e o
+     adaptador Garmin consomem, isso precisa continuar sem alvo — nunca virar Z1. */
+  sessao[corpo.day] = {
+    type: "Treino estruturado", title: "Caminhada Livre", description: "Sem zona-alvo",
+    durationMinutes: 20, estimatedKm: 1.5,
+    steps: [
+      { kind: "simple", label: "Caminhada", minutes: 10, activity: "walk", zone: null },
+      { kind: "repeat", label: "Bloco livre", repetitions: 2,
+        effortMinutes: 2, effortActivity: "walk", effortZone: null,
+        recoveryMinutes: 1, recoveryActivity: "walk", recoveryZone: null },
+    ],
+  };
+  const livreResponse = await worker.fetch(new Request("https://zonasapp.example/api/ingest/device/workout", {
+    headers: { "x-zonas-ingest-token": TOKEN },
+  }), env, ctx);
+  assert.equal(livreResponse.status, 200);
+  const livre = await livreResponse.json();
+  assert.equal(livre.workout.steps[0].target, null);
+  assert.equal(livre.workout.steps[1].effort.target, null);
+  assert.equal(livre.workout.steps[1].recovery.target, null);
+
   // Sem token válido não se lê o treino de ninguém.
   const semToken = await worker.fetch(new Request("https://zonasapp.example/api/ingest/device/workout"), env, ctx);
   assert.equal(semToken.status, 401);
@@ -1241,7 +1262,7 @@ test("uses approved Tempo Run paces as first-class workout intensities", async (
   assert.match(source, /JSON\.parse\(approved\.tempo_runs\|\|"\[\]"\)/);
   assert.match(source, /ritmo individual aprovado/);
   assert.match(source, /Este aluno ainda não tem \$\{missingTempoRun\} aprovado/);
-  assert.match(source, /intensity\?\.startsWith\("Tempo Run"\)\?`no \$\{intensity\}`/);
+  assert.match(source, /intensity\.startsWith\("Tempo Run"\)\?`no \$\{intensity\}`/);
   assert.match(source, /Ritmo individual:/);
 });
 
@@ -3939,6 +3960,16 @@ test("translates a session into a Garmin workout", async () => {
   assert.ok(w.steps.some((p) => p.intensity === "RECOVERY"));
 });
 
+test("legacy Garmin translation preserves defaults but treats explicit null as Livre", async () => {
+  const { toGarminWorkout } = await import("../worker/integrations.ts");
+  const workout = toGarminWorkout("Compatibilidade", "", [
+    { label: "Antiga sem campo de zona", minutes: 5 },
+    { label: "Caminhada Livre", activity: "walk", minutes: 5, zone: null },
+  ]);
+  assert.match(workout.steps[0].description, /Zona Z2/);
+  assert.match(workout.steps[1].description, /Sem zona-alvo/);
+});
+
 test("sends Garmin workouts only through the Connect session client", async () => {
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
   assert.match(worker, /subirTreinoNoGarmin/);
@@ -4042,6 +4073,38 @@ test("o alvo de ritmo vai do mais lento para o mais rápido", async () => {
   assert.equal(esforco.targetValueOne, ritmoParaVelocidade(270));
   assert.equal(esforco.targetValueTwo, ritmoParaVelocidade(250));
   assert.ok(esforco.targetValueOne < esforco.targetValueTwo);
+});
+
+test("etapas Livre chegam ao Garmin sem alvo de ritmo", async () => {
+  const { treinoParaGarmin } = await import("../worker/garmin-treino.ts");
+  const treino = treinoParaGarmin({
+    title: "Caminhada livre",
+    description: "Sem zona-alvo",
+    estimatedSeconds: 1200,
+    estimatedMeters: 1000,
+    maxHeartRate: null,
+    steps: [
+      { type: "simple", label: "Caminhada", activity: "walk", seconds: 600, meters: null, target: null },
+      { type: "repeat", label: "Bloco livre", repetitions: 2,
+        effort: { activity: "walk", seconds: 120, meters: null, target: null },
+        recovery: { activity: "walk", seconds: 60, meters: null, target: null } },
+    ],
+  });
+  const [simples, repeticao] = treino.workoutSegments[0].workoutSteps;
+  assert.equal(simples.targetType.workoutTargetTypeKey, "no.target");
+  assert.equal(simples.targetValueOne, null);
+  assert.equal(repeticao.workoutSteps[0].targetType.workoutTargetTypeKey, "no.target");
+  assert.equal(repeticao.workoutSteps[0].targetValueTwo, null);
+  assert.equal(repeticao.workoutSteps[1].targetType.workoutTargetTypeKey, "no.target");
+});
+
+test("o editor representa Livre como ausência de zona e mantém o seletor", async () => {
+  const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  assert.match(source, /const FREE_ZONE="__free__"/);
+  assert.match(source, /const savedZone=\(zone:string\)=>isFreeZone\(zone\)\?null:zone/);
+  assert.match(source, /<option value=\{FREE_ZONE\}>Livre<\/option>/);
+  assert.match(source, /zone:savedZone\(step\.zone\)/);
+  assert.match(source, /effortZone:savedZone\(step\.effortZone\)/);
 });
 
 test("a ordem dos passos é contínua, inclusive dentro da série", async () => {

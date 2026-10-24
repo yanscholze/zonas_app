@@ -362,7 +362,7 @@ export type GarminWorkout = {
 };
 
 /** Zonas mais leves abrem e fecham o treino; as demais são esforço. */
-function intensidadeDaEtapa(rotulo: string, zona: string, posicao: number, total: number): GarminWorkoutStep["intensity"] {
+function intensidadeDaEtapa(rotulo: string, zona: string | null, posicao: number, total: number): GarminWorkoutStep["intensity"] {
   const nome = rotulo.toLowerCase();
   // "desaquecimento" contém "aquec": o encerramento precisa ser testado antes,
   // senão o treino termina com um passo marcado como aquecimento.
@@ -387,7 +387,7 @@ export function toGarminWorkout(
   etapas: Array<Record<string, unknown>>,
 ): GarminWorkout {
   const steps: GarminWorkoutStep[] = [];
-  const expandidas: Array<{ rotulo: string; zona: string; minutos?: number; segundos?: number; metros?: number; atividade: "run"|"walk" }> = [];
+  const expandidas: Array<{ rotulo: string; zona: string | null; minutos?: number; segundos?: number; metros?: number; atividade: "run"|"walk" }> = [];
 
   for (const etapa of etapas) {
     const kind = String(etapa.kind ?? "simple");
@@ -396,20 +396,20 @@ export function toGarminWorkout(
       for (let volta = 1; volta <= vezes; volta += 1) {
         expandidas.push({
           rotulo: `${String(etapa.label ?? "Série")} ${volta}/${vezes}`,
-          zona: String(etapa.effortZone ?? "Z3"),
+          zona: etapa.effortZone === null ? null : String(etapa.effortZone ?? "Z3"),
           minutos: Number(etapa.effortMinutes) || undefined,
           segundos: Number(etapa.effortSeconds) || undefined,
           atividade: etapa.effortActivity === "walk" ? "walk" : "run",
         });
         if (Number(etapa.recoveryMinutes) || Number(etapa.recoverySeconds) || Number(etapa.recoveryMeters)) {
-          expandidas.push({ rotulo: "Recuperação", zona: String(etapa.recoveryZone ?? "Z1"), minutos: Number(etapa.recoveryMinutes) || undefined, segundos: Number(etapa.recoverySeconds) || undefined, atividade: etapa.recoveryActivity === "walk" ? "walk" : "run" });
+          expandidas.push({ rotulo: "Recuperação", zona: etapa.recoveryZone === null ? null : String(etapa.recoveryZone ?? "Z1"), minutos: Number(etapa.recoveryMinutes) || undefined, segundos: Number(etapa.recoverySeconds) || undefined, atividade: etapa.recoveryActivity === "walk" ? "walk" : "run" });
         }
       }
       continue;
     }
     expandidas.push({
       rotulo: String(etapa.label ?? "Etapa"),
-      zona: String(etapa.zone ?? "Z2"),
+      zona: etapa.zone === null ? null : String(etapa.zone ?? "Z2"),
       minutos: Number(etapa.minutes) || undefined,
       segundos: Number(etapa.seconds) || undefined,
       metros: Number(etapa.meters ?? etapa.distanceMeters) || undefined,
@@ -423,7 +423,7 @@ export function toGarminWorkout(
       stepName: `${etapa.atividade === "walk" ? "Caminhar · " : ""}${etapa.rotulo}`.slice(0, 40),
       durationType: etapa.minutos || etapa.segundos ? "TIME" : etapa.metros ? "DISTANCE" : "OPEN",
       intensity: intensidadeDaEtapa(etapa.rotulo, etapa.zona, indice, expandidas.length),
-      description: `${etapa.atividade === "walk" ? "Caminhar · " : ""}Zona ${etapa.zona}`,
+      description: `${etapa.atividade === "walk" ? "Caminhar · " : ""}${etapa.zona ? `Zona ${etapa.zona}` : "Sem zona-alvo"}`,
     };
     if (etapa.minutos || etapa.segundos) { passo.durationValue = Math.round(etapa.segundos || etapa.minutos! * 60); passo.durationValueType = "SECOND"; }
     else if (etapa.metros) { passo.durationValue = Math.round(etapa.metros); passo.durationValueType = "METER"; }
