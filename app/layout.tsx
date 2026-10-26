@@ -7,9 +7,13 @@ export const metadata: Metadata = {
   description: "Plataforma de treinamento de corrida para professores e atletas.",
   manifest: "/manifest.webmanifest",
   icons: {
-    icon: "/app-icon.svg",
+    icon: [
+      { url: "/pwa-icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/pwa-icon-512.png", sizes: "512x512", type: "image/png" },
+      { url: "/app-icon.svg", type: "image/svg+xml" },
+    ],
     shortcut: "/favicon.svg",
-    apple: "/app-icon.svg",
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
   },
   appleWebApp: {
     capable: true,

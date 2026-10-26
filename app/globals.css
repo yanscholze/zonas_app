@@ -9441,7 +9441,7 @@ p, span, b, strong, small, em, li, td, th, label {
 .install-app-card {
   position: fixed;
   right: 18px;
-  bottom: 18px;
+  bottom: calc(18px + env(safe-area-inset-bottom, 0px));
   /* Abaixo de .overlay (20): o convite para instalar nunca deve cobrir um
      formulário aberto nem o botão de salvar de um modal. */
   z-index: 12;
@@ -9470,8 +9470,8 @@ p, span, b, strong, small, em, li, td, th, label {
 
 .install-app-card>.install-app-dismiss {
   flex: none;
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   padding: 0;
   border: 1px solid #66532c;
   border-radius: 999px;
@@ -9525,7 +9525,7 @@ p, span, b, strong, small, em, li, td, th, label {
 @media(max-width:760px) {
   .install-app-card {
     right: 12px;
-    bottom: 78px;
+    bottom: calc(78px + env(safe-area-inset-bottom, 0px));
   }
   .install-app-card>button {
     padding: 10px 13px;

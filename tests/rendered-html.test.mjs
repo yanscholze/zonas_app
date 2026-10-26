@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 
 /**
@@ -109,11 +109,20 @@ test("makes ZonasApp installable on phones and computers", async () => {
   assert.match(layout, /manifest: "\/manifest\.webmanifest"/);
   assert.match(layout, /<InstallApp \/>/);
   assert.match(installer, /beforeinstallprompt/);
+  assert.match(installer, /guideForBrowser/);
+  assert.match(installer, /samsungbrowser/);
+  assert.match(installer, /crios/);
   assert.match(installer, /Instalar ZonasApp/);
   assert.match(installer, /serviceWorker\.register\("\/sw\.js"\)/);
   assert.match(installer, /registration\?\.update/);
   assert.equal(JSON.parse(manifest).display, "standalone");
-  assert.match(serviceWorker, /zonasapp-shell-v2/);
+  assert.deepEqual(JSON.parse(manifest).icons.filter(icon => ["192x192", "512x512"].includes(icon.sizes)).map(icon => icon.sizes).sort(), ["192x192", "512x512"]);
+  assert.match(layout, /apple-touch-icon\.png/);
+  assert.match(serviceWorker, /zonasapp-shell-v3/);
+  for (const icon of ["pwa-icon-192.png", "pwa-icon-512.png", "apple-touch-icon.png"]) {
+    const info = await stat(new URL(`../public/${icon}`, import.meta.url));
+    assert.ok(info.size > 1000, `${icon} should be a real raster image`);
+  }
 });
 
 test("lets the floating install invite be dismissed for the session", async () => {
