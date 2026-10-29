@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildActivityResult, expandStages, readMetrics, stepsFromGarminWorkout } from '../shared/activity-results.ts';
 import { treinoParaGarmin } from '../worker/garmin-treino.ts';
-import { listarAtividades, lerAtividade } from '../worker/garmin-conexao.ts';
+import { entrar, listarAtividades, lerAtividade } from '../worker/garmin-conexao.ts';
 
 const session={token:'synthetic-token',refresh:'',expiraEm:Date.now()+3600000};
 const steps=[{kind:'simple',label:'Aquecimento',minutes:5,zone:'Z1'},
@@ -110,4 +110,39 @@ test('temporarily unavailable detail preserves summary for a later retry',async(
  const original=globalThis.fetch;let calls=0;
  globalThis.fetch=async()=>{calls++;return calls===2?new Response('',{status:503}):Response.json({activityId:123})};
  try{const result=await lerAtividade(session,'123');assert.equal(result.ok,true);assert.equal(result.valor.complete,false)}finally{globalThis.fetch=original}
+});
+
+test('mobile Garmin login loads sign-in page and forwards its session cookies before posting credentials',async()=>{
+ const original=globalThis.fetch;const requests=[];
+ globalThis.fetch=async(url,options)=>{
+  requests.push({url:String(url),options});
+  if(String(url).includes('/mobile/sso/en_US/sign-in')){
+   const headers=new Headers();headers.append('set-cookie','SESSION=synthetic; Path=/; HttpOnly');headers.append('set-cookie','__cf_bm=synthetic-cf; Path=/; Secure');
+   return new Response('<html>sign in</html>',{status:200,headers});
+  }
+  return Response.json({responseStatus:{type:'INVALID_USERNAME_PASSWORD'}});
+ };
+ try{
+  const result=await entrar('student@example.test','synthetic-password');
+  assert.equal(result.ok,false);assert.equal(result.falha,'credenciais_invalidas');
+  assert.equal(requests.length,2);
+  assert.match(requests[0].url,/\/mobile\/sso\/en_US\/sign-in\?clientId=GCM_IOS_DARK/);
+  assert.equal(requests[0].options.headers['Accept-Language'],'en-US,en;q=0.9');
+  assert.match(requests[1].url,/\/mobile\/api\/login\?/);
+  assert.equal(requests[1].options.headers.Referer,requests[0].url);
+  assert.equal(requests[1].options.headers.Cookie,'SESSION=synthetic; __cf_bm=synthetic-cf');
+  assert.equal(requests[1].options.headers['Accept-Language'],'en-US,en;q=0.9');
+ }finally{globalThis.fetch=original}
+});
+
+test('blocked mobile sign-in page stops before sending Garmin credentials',async()=>{
+ const original=globalThis.fetch;
+ for(const status of [427,429]){
+  let calls=0;
+  globalThis.fetch=async()=>{calls++;return new Response('',{status})};
+  try{const result=await entrar('student@example.test','synthetic-password');assert.equal(result.ok,false);assert.equal(result.falha,'limite_de_tentativas');assert.equal(calls,1)}finally{globalThis.fetch=original}
+ }
+ let calls=0;
+ globalThis.fetch=async()=>{calls++;return new Response('',{status:403})};
+ try{const result=await entrar('student@example.test','synthetic-password');assert.equal(result.ok,false);assert.equal(result.falha,'bloqueado_na_porta');assert.equal(calls,1)}finally{globalThis.fetch=original}
 });

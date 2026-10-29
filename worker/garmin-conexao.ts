@@ -19,11 +19,10 @@
  *    a senha no Garmin, não há recuperação automática: a conexão vira
  *    "reconectar" e o atleta precisa entrar de novo.
  *
- * Sobre bloqueio anti-robô: em 18/09/2026 foi medido que um Worker alcança
- * sso.garmin.com, diauth e connectapi com as MESMAS respostas que uma máquina
- * doméstica — sem `cf-mitigated` e sem página de desafio. A impersonação de TLS
- * que o cliente em Python faz serve à estratégia do formulário web, que não é
- * esta. `bloqueado_na_porta` segue existindo por precaução, não por diagnóstico.
+ * O login móvel precisa primeiro carregar a página `/mobile/sso/en_US/sign-in`
+ * na mesma sessão HTTP. Desde abril de 2026, enviar o POST de credenciais sem
+ * os cookies e o Referer dessa página pode receber HTTP 429 mesmo sem limite
+ * real de tentativas. O fluxo abaixo preserva os cookies só durante a chamada.
  *
  * Referências: cyberjunky/python-garminconnect e
  * sydspost/Garmin-Connect-Workout-and-Schedule-creator.
@@ -32,6 +31,7 @@
 /* --- Endereços ------------------------------------------------------------ */
 
 const SSO = "https://sso.garmin.com/mobile/api/login";
+const SSO_ORIGIN = "https://sso.garmin.com";
 const TROCA_DE_TICKET = "https://diauth.garmin.com/di-oauth2-service/oauth/token";
 const API = "https://connectapi.garmin.com";
 
@@ -93,6 +93,20 @@ export type Sessao = { token: string; refresh: string; expiraEm: number };
 
 export type Resultado<T> = { ok: true; valor: T } | { ok: false; falha: FalhaDoGarmin; detalhe?: string };
 
+/** Mantém apenas os pares nome=valor recebidos no preflight; nunca os registra. */
+function cookiesDaResposta(resposta: Response): string {
+  const headers = resposta.headers as Headers & { getSetCookie?: () => string[] };
+  const setCookies = typeof headers.getSetCookie === "function"
+    ? headers.getSetCookie()
+    : [headers.get("set-cookie") ?? ""];
+  return setCookies
+    .map(cookie => cookie.split(";", 1)[0].trim())
+    .filter(cookie => /^[^=;\s]+=/.test(cookie))
+    .join("; ");
+}
+
+const pausa = (milissegundos: number) => new Promise<void>(resolve => setTimeout(resolve, milissegundos));
+
 /* --- Entrada -------------------------------------------------------------- */
 
 /**
@@ -105,6 +119,33 @@ export type Resultado<T> = { ok: true; valor: T } | { ok: false; falha: FalhaDoG
 export async function entrar(email: string, senha: string): Promise<Resultado<Sessao>> {
   const endereco = `${SSO}?clientId=${CLIENTE_SSO}&locale=pt-BR&service=${encodeURIComponent(SERVICO)}`;
 
+  /* O fluxo iOS abre a tela antes de enviar a senha. O Garmin passou a recusar
+     o POST direto com 429, mesmo quando a conta não excedeu tentativas. */
+  const signinUrl = `${SSO_ORIGIN}/mobile/sso/en_US/sign-in`;
+  const signinParams = new URLSearchParams({ clientId: CLIENTE_SSO, service: SERVICO });
+  const referer = `${signinUrl}?${signinParams.toString()}`;
+  let cookies = "";
+
+  try {
+    const pagina = await fetch(referer, {
+      headers: {
+        "User-Agent": AGENTE_IOS,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+    if (pagina.status === 429 || pagina.status === 427) return { ok: false, falha: "limite_de_tentativas", detalhe: `HTTP ${pagina.status} na página de login` };
+    if (pagina.status === 403) return { ok: false, falha: "bloqueado_na_porta", detalhe: "HTTP 403 na página de login" };
+    if (!pagina.ok) return { ok: false, falha: "garmin_indisponivel", detalhe: `HTTP ${pagina.status} na página de login` };
+    cookies = cookiesDaResposta(pagina);
+  } catch (erro) {
+    return { ok: false, falha: "garmin_indisponivel", detalhe: String(erro) };
+  }
+
+  /* Pausa curta observada no fluxo móvel; não reenvia credenciais em caso de
+     bloqueio do preflight e evita transformar um 429 em uma sequência de POSTs. */
+  await pausa(2000 + Math.floor(Math.random() * 3001));
+
   let resposta: Response;
   try {
     resposta = await fetch(endereco, {
@@ -112,8 +153,11 @@ export async function entrar(email: string, senha: string): Promise<Resultado<Se
       headers: {
         "User-Agent": AGENTE_IOS,
         "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
         "Content-Type": "application/json",
         "Origin": "https://sso.garmin.com",
+        "Referer": referer,
+        ...(cookies ? { "Cookie": cookies } : {}),
       },
       body: JSON.stringify({ username: email, password: senha, rememberMe: true, captchaToken: "" }),
     });
@@ -121,7 +165,7 @@ export async function entrar(email: string, senha: string): Promise<Resultado<Se
     return { ok: false, falha: "garmin_indisponivel", detalhe: String(erro) };
   }
 
-  if (resposta.status === 429) return { ok: false, falha: "limite_de_tentativas" };
+  if (resposta.status === 429 || resposta.status === 427) return { ok: false, falha: "limite_de_tentativas", detalhe: `HTTP ${resposta.status}` };
 
   /* 403 aqui é quase sempre a proteção anti-bot, não senha errada. Chamar isso
      de "credenciais inválidas" mandaria o treinador trocar a senha do aluno

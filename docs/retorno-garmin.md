@@ -4,6 +4,8 @@
 
 A Zonas-App usa a sessão do Garmin Connect do próprio aluno. O login troca a senha pela sessão e a descarta; somente os tokens cifrados ficam no D1. O Worker conversa com `connectapi.garmin.com`, renova a sessão e usa o mesmo cliente para publicar treinos e consultar atividades. Nenhuma chave do Garmin Developer Program, Activity API oficial ou Training API é usada.
 
+O login móvel segue o fluxo de tela do Connect: primeiro carrega `/mobile/sso/en_US/sign-in`, mantém os cookies apenas durante a requisição e, após uma pausa curta, envia as credenciais com o `Referer` dessa página. O POST direto para `/mobile/api/login` passou a receber HTTP 429 mesmo sem limite real; o GarminConnect maintainer reproduziu o caso e corrigiu o cliente em 23/10/2026. Se a página inicial responder 427/429 ou desafio 403, o Zonas interrompe antes de enviar a senha. A sessão de preflight nunca é gravada.
+
 Referências upstream:
 
 - [cyberjunky/python-garminconnect](https://github.com/cyberjunky/python-garminconnect): referência para autenticação Connect, atividades, divisões e detalhes.
@@ -16,6 +18,19 @@ Os repositórios são referências, não dependências vendorizadas. Nenhum cód
 Salvar, liberar para o aluno e publicar no Connect continuam sendo operações distintas. Ao liberar uma semana, o backend consulta a integração preferida pelo aluno. Quando for Garmin, cria o treino e agenda cada dia no Garmin Connect. O cron de segunda-feira roda às 00:00 e 01:00 de Brasília; a segunda execução permite repetir publicações pendentes. A consulta de atividades concluídas roda a cada dez minutos.
 
 O início da semana é segunda-feira. A migração `training-week-start-monday-v1` converte as chaves dominicais em treinamento, publicações, execuções, feedbacks, atividades e relatos de dor. Na auditoria de produção anterior à implantação foram encontradas 23 semanas com chave de domingo e nenhuma colisão com uma semana de segunda já existente.
+
+## Estrutura enviada e guias de ritmo
+
+Cada treino de corrida é enviado como um `running` workout com uma sequência de `ExecutableStepDTO` e grupos `RepeatGroupDTO`. Aquecimento e desaquecimento mantêm os tipos específicos; esforço e recuperação ficam dentro do grupo de repetição; cada passo conserva duração ou distância, descrição e alvo. Caminhadas em treinos mistos são passos do workout de corrida identificados pela descrição, pois a referência do Connect não oferece um sport type próprio de caminhada para treino estruturado.
+
+Quando o passo referencia uma zona de um teste aprovado, o conversor a transforma em `pace.zone` (target type 6) e converte segundos/km em m/s, com limite lento antes do rápido. Sem uma zona aprovada ou sem zona no passo, envia `no.target` e não inventa uma faixa. A documentação FIT oficial descreve treinos como passos com duração, intensidade e alvo; a referência do cliente Connect confirma `pace.zone` e m/s para o payload privado utilizado aqui. Compatibilidade da tela de orientação durante a corrida ainda depende do modelo do relógio e do perfil configurado pelo aluno.
+
+Referências técnicas consultadas:
+
+- [Garmin FIT SDK: Workout file type](https://developer.garmin.com/fit/articles/file-types/workout.html) — mensagens obrigatórias, etapas, tipos de duração/alvo e intensidade.
+- [python-garminconnect: correção do login móvel #479](https://github.com/cyberjunky/python-garminconnect/pull/479) — preflight da página, cookies e `Referer` antes das credenciais.
+- [python-garminconnect: release 0.3.19](https://github.com/cyberjunky/python-garminconnect/releases) — alvos de ritmo em m/s e tipo `pace.zone`.
+- [Garmin Connect Workout and Schedule creator](https://github.com/sydspost/Garmin-Connect-Workout-and-Schedule-creator/blob/main/workouts.py) — referência de `ExecutableStepDTO`, unidades de distância e grupos de repetição.
 
 ## Importação e diagnóstico por aluno
 
