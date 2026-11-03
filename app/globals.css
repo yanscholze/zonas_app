@@ -7562,7 +7562,7 @@ p, span, b, strong, small, em, li, td, th, label {
 
 .week-navigator {
   display: grid;
-  grid-template-columns: auto minmax(170px,240px) auto;
+  grid-template-columns: auto minmax(170px,240px) auto minmax(170px,240px);
   justify-content: center;
   gap: 10px;
   align-items: end;
@@ -7588,10 +7588,11 @@ p, span, b, strong, small, em, li, td, th, label {
 .week-navigator label {
   font-size:var(--fs-overline);
   color: var(--muted);
-  text-align: center;
+  text-align: left;
 }
 
-.week-navigator input {
+.week-navigator input,
+.week-navigator select {
   display: block;
   width: 100%;
   margin-top: 5px;
@@ -7606,10 +7607,6 @@ p, span, b, strong, small, em, li, td, th, label {
 @media(max-width:600px) {
   .week-navigator {
     grid-template-columns: 1fr 1fr;
-  }
-  .week-navigator label {
-    grid-column: 1/-1;
-    grid-row: 1;
   }
   .week-navigator button {
     width: 100%;

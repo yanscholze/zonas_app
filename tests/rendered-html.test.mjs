@@ -1223,11 +1223,23 @@ test("shows a different base-plan template when the coach navigates between week
   assert.match(source, /await sessionsForSavedPlanWeek\(current\.plan,calendarPlanWeek,current\.days\)/);
   assert.match(source, /weekLabel:calendarWeekLabel/);
   assert.match(source, /calendarWeekLabel=outsidePlan\?/);
-  assert.match(source, /setCalendarPlanWeek\(value=>value\+1\)/);
+  assert.match(source, /aria-label="Escolher semana da planilha"/);
+  assert.match(source, /onChange=\{e=>setCalendarPlanWeek\(Number\(e\.target\.value\)\)\}/);
+  assert.match(source, /onChange=\{e=>\{if\(!e\.target\.value\)return;setWeekStart\(mondayOf\(e\.target\.value\)\)\}\}/);
+  assert.doesNotMatch(source, /savedNumber.*setCalendarPlanWeek/);
   assert.match(source, /Usar semana \$\{calendarPlanWeek\} da planilha-base/);
   assert.match(source, /replaceWithBasePlanWeek/);
   assert.match(source, /sessions:expected,status:"Rascunho"/);
   assert.match(source, /O aluno deixará de ver a versão anterior até você revisar e liberar novamente/);
+});
+
+test("saving a calendar week persists the selected program week independently of its date", async () => {
+  const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
+  const saveFlow = source.slice(source.indexOf("const saveWeek=async"), source.indexOf("const changeWeekVisibility=async"));
+  assert.match(saveFlow, /if\(status!=="Concluída"&&!outsidePlan\)/);
+  assert.match(saveFlow, /fetch\("\/api\/athlete-planning"/);
+  assert.match(saveFlow, /weekNumber:calendarPlanWeek,totalWeeks:currentPlanningTotal/);
+  assert.match(saveFlow, /if\(!planningResponse\.ok\)throw new Error\("planning_save_failed"\)/);
 });
 
 test("uses permanent library edits when loading or advancing an athlete week", async () => {
