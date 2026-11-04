@@ -15483,3 +15483,9 @@ p, span, b, strong, small, em, li, td, th, label {
 .student .zepp-install-help header p,
 .student .zepp-install-help .zepp-validation-note,
 .student .zepp-install-help li { color:#b8b5ad; }
+
+.workout-chat{grid-column:1/-1;min-width:0;width:100%;margin:12px 0;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--text)}
+.workout-chat summary{cursor:pointer;font-weight:700;padding:6px}.workout-chat-messages{max-height:340px;overflow:auto;display:flex;flex-direction:column;gap:10px;padding:12px 0}
+.workout-chat-messages article{display:block!important;align-self:flex-start;max-width:90%;padding:10px 14px;border-radius:12px;background:var(--bg);border:1px solid var(--line)}
+.workout-chat-messages article.mine{align-self:flex-end;border-color:var(--gold);background:var(--panel)}.workout-chat p{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0}.workout-chat small{color:var(--muted)}
+.workout-chat form{display:grid;gap:8px}.workout-chat textarea{display:block;width:100%;box-sizing:border-box;background:var(--bg);color:var(--text);border:1px solid var(--line);padding:10px;border-radius:8px}.workout-chat button{justify-self:end}

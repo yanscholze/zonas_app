@@ -3,7 +3,8 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } fr
 import handler from "vinext/server/app-router-entry";
 import { treinoParaGarmin } from "./garmin-treino";
 import { entrar as entrarNoGarmin, renovar as renovarGarmin, subirTreino as subirTreinoNoGarmin, agendarTreino as agendarTreinoNoGarmin, listarAtividades as listarAtividadesGarmin, lerAtividade as lerAtividadeGarmin, type Sessao as GarminSessao } from "./garmin-conexao";
-import { buildActivityResult, parseActivityResult, remoteWorkoutId, stepsFromGarminWorkout, object, type ActivityResult } from "../shared/activity-results";
+import { calculateWorkoutAccuracy } from "../shared/workout-accuracy";
+import { expandStages, buildActivityResult, parseActivityResult, remoteWorkoutId, stepsFromGarminWorkout, object, type ActivityResult } from "../shared/activity-results";
 import { calculateFiveMinuteTest } from "../shared/five-minute-test";
 import {
   MIN_PASSWORD_LENGTH,
@@ -120,6 +121,8 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/student/performance-tests": new Set(["id","minutes","seconds","distanceKm","resultDistanceMeters","effort","note","sourceFormat","sourceKm","executionType","effortClassification","completionStatus","elapsedSeconds","testDate"]),
   "/api/financial": new Set(["action","pixKey","pixName","defaultAmount","dueDay","athleteName","referenceMonth","amount","status","dueDate","classId","name","scope","className","athletes","image","note"]),
   "/api/feedbacks": new Set(["id","status"]),
+  "/api/workout-messages": new Set(["executionId","message"]),
+  "/api/student/workout-messages": new Set(["executionId","message"]),
   "/api/workout-executions": new Set(["id","action","coachNote"]),
   "/api/student/races-records": new Set(["kind","name","raceDate","distance","city","goal","priority","resultTime","eventName"]),
   "/api/plan-template-overrides": new Set(["plan","weekNumber","sessions"]),
@@ -493,7 +496,7 @@ function isCoachLevel(identity: ApiIdentity | null): boolean {
 
 
 
-const recoverableTables = ["athletes", "athlete_profiles", "athlete_planning", "performance_tests", "training_weeks", "pain_reports", "training_feedbacks", "workout_executions", "athlete_races", "personal_records", "financial_settings", "student_payments"] as const;
+const recoverableTables = ["athletes", "athlete_profiles", "athlete_planning", "performance_tests", "training_weeks", "pain_reports", "training_feedbacks", "workout_executions", "workout_messages", "athlete_races", "personal_records", "financial_settings", "student_payments"] as const;
 
 
 /**
@@ -1700,7 +1703,7 @@ async function athletesApi(request: Request, env: Env): Promise<Response> {
       if (fora) return fora;
       await ensureTables(env, schema.userAccounts, schema.userSessions, schema.performanceTests, schema.trainingWeeks,
         schema.trainingWeekPublications, schema.painReports, schema.painReportUpdates, schema.trainingFeedbacks,
-        schema.workoutExecutions, schema.externalIntegrations, schema.oauthFlows, schema.externalActivities,
+        schema.workoutExecutions, schema.workoutMessages, schema.externalIntegrations, schema.oauthFlows, schema.externalActivities,
         schema.deviceIngestTokens, schema.studentPayments, schema.athleteRaces, schema.personalRecords,
         schema.accessAuditLog, schema.trainingWeekAudit);
 
@@ -1709,6 +1712,7 @@ async function athletesApi(request: Request, env: Env): Promise<Response> {
       // D1 executa batch como uma transação: não deixa um cadastro parcialmente limpo.
       const statements = [
         ["DELETE FROM user_sessions WHERE user_id IN (SELECT id FROM user_accounts WHERE role = 'student' AND athlete_name = ?)", alvo],
+        ["DELETE FROM workout_messages WHERE execution_id IN (SELECT id FROM workout_executions WHERE athlete_name = ?)", alvo],
         ["DELETE FROM pain_report_updates WHERE report_id IN (SELECT id FROM pain_reports WHERE athlete_name = ?)", alvo],
         ...["training_week_audit", "access_audit_log", "athlete_access", "athlete_profiles", "athlete_planning",
           "performance_tests", "training_week_publications", "pain_reports", "training_feedbacks",
@@ -2518,16 +2522,16 @@ async function ensureWorkoutExecutions(env: Env) {
 }
 
 function executionWithResult(row: unknown) {
-  const execution = object(row);
-  return { ...execution, activity_result: parseActivityResult(execution.activity_result) };
-}
-
-function workoutAccuracy(plannedMinutes: number | null, plannedKm: number | null, actualMinutes: number | null, actualKm: number | null) {
-  const scores: number[] = [];
-  if (plannedMinutes && actualMinutes !== null) scores.push(Math.max(0, 100 - Math.abs(actualMinutes - plannedMinutes) / plannedMinutes * 100));
-  if (plannedKm && actualKm !== null) scores.push(Math.max(0, 100 - Math.abs(actualKm - plannedKm) / plannedKm * 100));
-  const correct = Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length);
-  return { correct, wrong: 100 - correct, classification: correct >= 80 ? "Dentro do planejado" : correct >= 60 ? "Parcialmente correto" : "Fora do planejado" };
+  const {planned_sessions,...execution}=object(row);
+  const result=parseActivityResult(execution.activity_result);
+  let savedSteps:unknown=[];
+  try {savedSteps=object(object(JSON.parse(String(planned_sessions??"{}")))[String(execution.workout_day)]).steps;} catch { /* plano histórico indisponível */ }
+  const stages=result?.stages.length?result.stages:expandStages(savedSteps);
+  const summary=result?.summary??{durationSeconds:Number(execution.actual_minutes)*60||undefined,distanceMeters:Number(execution.actual_km)*1000||undefined};
+  const analysis=execution.status!=="Não realizado"&&stages.length?calculateWorkoutAccuracy(stages,summary):null;
+  const mapped=stages.filter(stage=>"metrics" in stage&&stage.metrics).length;
+  const accuracy_note=analysis?mapped?`Critérios medidos em ${mapped} de ${stages.length} etapas. Etapas sem métricas não foram avaliadas.`:"Comparação do volume prescrito; sem divisões não é possível verificar ritmos diferentes por etapa.":null;
+  return { ...execution, ...(analysis?{correct_percentage:analysis.correct,wrong_percentage:analysis.wrong,classification:analysis.classification}:{}), accuracy_note, activity_result: result };
 }
 
 async function studentWorkoutExecutionsApi(request: Request, env: Env, athleteName: string): Promise<Response> {
@@ -2537,7 +2541,7 @@ async function studentWorkoutExecutionsApi(request: Request, env: Env, athleteNa
     const dias = Math.min(90, Math.max(1, Number(url.searchParams.get("days")) || 7));
     const desde = Date.now() - dias * 86_400_000;
     const result = await env.DB.prepare(
-      "SELECT * FROM workout_executions WHERE athlete_name = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 30",
+      "SELECT workout_executions.*, (SELECT sessions FROM training_weeks tw WHERE tw.athlete_name=workout_executions.athlete_name AND tw.week_start=workout_executions.week_start LIMIT 1) AS planned_sessions FROM workout_executions WHERE athlete_name = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 30",
     ).bind(athleteName, desde).all();
     return Response.json({ executions: result.results.map(executionWithResult), days: dias });
   }
@@ -2608,21 +2612,20 @@ async function studentWorkoutExecutionsApi(request: Request, env: Env, athleteNa
     .bind(athleteName, source, externalId).first() as { id?: string } | null : null;
   if (prior && !Number(input.actualMinutes) && !Number(input.actualKm) && !note) {
     const saved = object(prior);
-    return Response.json({ ...saved, ...executionWithResult(prior), status: "Concluído", correct: saved.correct_percentage, wrong: saved.wrong_percentage,
+    return Response.json({ ...saved, ...executionWithResult(prior), status: "Concluído", correct: executionWithResult(prior).correct_percentage, wrong: executionWithResult(prior).wrong_percentage,
       measured: saved.classification !== "Concluído sem medição", fromIntegration: true,
       actualMinutes: saved.actual_minutes, actualKm: saved.actual_km, averageHeartRate: saved.average_heart_rate,
       averagePaceSeconds: saved.average_pace_seconds, createdAt: saved.created_at });
   }
 
-  const safeActualMinutes = Number.isFinite(actualMinutes) && actualMinutes > 0 && actualMinutes <= 1440 ? Math.round(actualMinutes) : null;
+  const safeActualMinutes = Number.isFinite(actualMinutes) && actualMinutes > 0 && actualMinutes <= 1440 ? Math.round(actualMinutes*100)/100 : null;
   const safeActualKm = Number.isFinite(actualKm) && actualKm > 0 && actualKm <= 500 ? Math.round(actualKm * 100) / 100 : null;
 
   // Concluir sem número continua valendo: registra a conclusão e deixa claro
   // que não houve como medir, em vez de recusar o registro por completo.
-  const temMedida = (plannedMinutes && safeActualMinutes !== null) || (plannedKm && safeActualKm !== null);
-  const analysis = temMedida
-    ? workoutAccuracy(plannedMinutes, plannedKm, safeActualMinutes, safeActualKm)
-    : { correct: 0, wrong: 0, classification: "Concluído sem medição" };
+  const resolved = await treinoResolvido(env,athleteName,weekStart,workoutDay,false);
+  const analysis = calculateWorkoutAccuracy(parseActivityResult(importada?.activity_result)?.stages ?? expandStages(resolved.treino?.steps ?? session.steps), {durationSeconds:safeActualMinutes? safeActualMinutes*60:undefined,distanceMeters:safeActualKm?safeActualKm*1000:undefined}, {plannedMinutes,plannedKm});
+  const temMedida=analysis.measured;
 
   if (safeActualMinutes !== null && safeActualKm !== null && paceSeconds === null) {
     paceSeconds = Math.round((safeActualMinutes * 60) / safeActualKm);
@@ -2646,6 +2649,26 @@ async function studentWorkoutExecutionsApi(request: Request, env: Env, athleteNa
     source, fromIntegration: Boolean(importada), note: note || null, createdAt: now,
     activity_result: parseActivityResult(importada?.activity_result),
   }, { status: 201 });
+}
+
+async function workoutMessagesApi(request: Request, env: Env, student?: string): Promise<Response> {
+  await ensureTables(env, schema.workoutMessages, schema.workoutExecutions);
+  if (!["GET","POST"].includes(request.method)) return new Response("Method not allowed", {status:405});
+  const input = request.method === "POST" ? await request.json() as Record<string,unknown> : {};
+  const id = boundedText(input.executionId ?? new URL(request.url).searchParams.get("executionId"),100);
+  const execution = await env.DB.prepare("SELECT id,athlete_name,coach_note,coach_reviewed_at,created_at FROM workout_executions WHERE id=? LIMIT 1").bind(id).first<Record<string,unknown>>();
+  if (!execution || (student && execution.athlete_name !== student)) return Response.json({error:"execution_not_found"},{status:404});
+  if (!student) { const forbidden = await foraDaCarteira(env,request,String(execution.athlete_name)); if(forbidden)return forbidden; }
+  if (request.method === "POST") {
+    const message = typeof input.message === "string" ? input.message.trim() : "";
+    if (!message || message.length>2000) return Response.json({error:"invalid_message"},{status:400});
+    const statements = [env.DB.prepare("INSERT INTO workout_messages (id,execution_id,author_role,body,created_at) VALUES (?,?,?,?,?)").bind(crypto.randomUUID(),id,student?"student":"coach",message,Date.now())];
+    statements.push(env.DB.prepare(student?"UPDATE workout_executions SET last_message_role='student',last_message_at=?,coach_reviewed_at=NULL,coach_reviewed_by=NULL WHERE id=?":"UPDATE workout_executions SET last_message_role='coach',last_message_at=? WHERE id=?").bind(Date.now(),id));
+    await env.DB.batch(statements);
+  }
+  const rows = await env.DB.prepare("SELECT id,author_role,body,created_at FROM workout_messages WHERE execution_id=? ORDER BY created_at,id").bind(id).all();
+  const legacy = execution.coach_note ? [{id:"legacy",author_role:"coach",body:execution.coach_note,created_at:execution.coach_reviewed_at ?? execution.created_at}] : [];
+  return Response.json({messages:[...legacy,...rows.results]});
 }
 
 async function workoutExecutionsApi(request: Request, env: Env): Promise<Response> {
@@ -2679,7 +2702,7 @@ async function workoutExecutionsApi(request: Request, env: Env): Promise<Respons
     return Response.json({ execution: executionWithResult(updated) });
   }
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
-  const result = await env.DB.prepare(`SELECT * FROM workout_executions WHERE ${carteira.clausula} ORDER BY created_at DESC LIMIT 100`).bind(...carteira.valores).all();
+  const result = await env.DB.prepare(`SELECT workout_executions.*, (SELECT sessions FROM training_weeks tw WHERE tw.athlete_name=workout_executions.athlete_name AND tw.week_start=workout_executions.week_start LIMIT 1) AS planned_sessions FROM workout_executions WHERE ${carteira.clausula} ORDER BY created_at DESC LIMIT 100`).bind(...carteira.valores).all();
   return Response.json({ executions: result.results.map(executionWithResult) });
 }
 
@@ -3188,8 +3211,7 @@ async function recordImportedExecution(env: Env, athleteName: string, provider: 
   const plannedKm = Number(matched.session.estimatedKm) > 0 ? Number(matched.session.estimatedKm) : null;
   const minutes = activity.movingSeconds !== null && activity.movingSeconds > 0 ? Math.round(activity.movingSeconds / 60 * 100) / 100 : null;
   const km = activity.distanceMeters !== null && activity.distanceMeters > 0 ? Math.round(activity.distanceMeters / 10) / 100 : null;
-  const measured = Boolean((plannedMinutes && minutes !== null) || (plannedKm && km !== null));
-  const analysis = measured ? workoutAccuracy(plannedMinutes, plannedKm, minutes, km) : { correct: 0, wrong: 0, classification: "Concluído sem medição" };
+  const analysis = calculateWorkoutAccuracy(details.stages, details.summary, {plannedMinutes,plannedKm});
   const label = PROVIDERS[provider].label;
   // Enriquece também a conclusão manual que chegou antes do relógio.
   const prior = await env.DB.prepare(`SELECT id FROM workout_executions WHERE athlete_name=? AND week_start=? AND workout_day=?
@@ -3216,6 +3238,10 @@ async function storeActivity(env: Env, athleteName: string, provider: ProviderId
     .bind(PROVIDERS[provider].label, activity.externalId).first() as { athlete_name?: string } | null;
   if (owner?.athlete_name && owner.athlete_name !== athleteName) return false;
   const matched = await matchImportedWorkout(env, athleteName, provider, raw, activity.startedAt, activity.sport);
+  if(matched&&!matched.hasSentSnapshot){
+    const resolved=await treinoResolvido(env,athleteName,matched.weekStart,matched.day,false);
+    if(resolved.treino?.steps)matched.steps=resolved.treino.steps;
+  }
   const details = buildActivityResult({ provider: PROVIDERS[provider].label, activityId: activity.externalId,
     startedAt: activity.startedAt, raw, plannedSteps: matched?.steps, workoutMatch: matched?.match,
     complete: raw.detailsComplete !== false, allowGarminStepIndexes: matched?.hasSentSnapshot ?? false });
@@ -4772,6 +4798,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
         if (url.pathname === "/api/student/performance-tests") return await studentPerformanceTestsApi(request, env, identity.athleteName);
         if (url.pathname === "/api/student/pain-reports") return await studentPainApi(request, env, identity.athleteName);
         if (url.pathname === "/api/student/feedbacks") return await studentFeedbacksApi(request, env, identity.athleteName);
+        if (url.pathname === "/api/student/workout-messages") return await workoutMessagesApi(request, env, identity.athleteName);
         if (url.pathname === "/api/student/workout-executions") return await studentWorkoutExecutionsApi(request, env, identity.athleteName);
         if (url.pathname === "/api/student/integration-preference") return await studentIntegrationPreferenceApi(request, env, identity.athleteName);
         if (url.pathname === "/api/student/integrations") return await studentIntegrationsApi(request, env, identity.athleteName, identity.email);
@@ -4887,6 +4914,10 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
     if (url.pathname === "/api/feedbacks") {
       try { return await feedbacksApi(request, env); }
       catch (falha) { return await applicationFailure(env, request, "feedbacks", "database_unavailable", falha); }
+    }
+    if (url.pathname === "/api/workout-messages") {
+      try { return await workoutMessagesApi(request, env); }
+      catch (falha) { return await applicationFailure(env,request,"conversa do treino","database_unavailable",falha); }
     }
     if (url.pathname === "/api/workout-executions") {
       try { return await workoutExecutionsApi(request, env); }

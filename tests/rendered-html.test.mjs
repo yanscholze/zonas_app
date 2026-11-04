@@ -1953,9 +1953,7 @@ test("compares each completed workout with the released plan and shows both perc
   const client = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   const worker = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
   assert.match(worker, /status = 'Liberada'/);
-  assert.match(worker, /100 - Math\.abs\(actualMinutes - plannedMinutes\)/);
-  assert.match(worker, /correct >= 80 \? "Dentro do planejado"/);
-  assert.match(worker, /wrong: 100 - correct/);
+  assert.match(worker, /calculateWorkoutAccuracy/);
   assert.match(client, /Concluí este treino/);
   assert.match(client, /treino certo/);
   assert.match(client, /fora do planejado/);
@@ -2227,10 +2225,9 @@ test("counts programmed workouts, not available days", async () => {
   // disponíveis do aluno: o número aparecia mesmo com a semana em branco.
   assert.match(client, /plural\(readyWorkoutCount,"treino programado","treinos programados"\)/);
   assert.doesNotMatch(client, /\{current\.days\.length\} treinos programados/);
-  // Sem dias cadastrados a tela explica o que falta em vez de mostrar sete
-  // quadros apagados sem motivo.
-  assert.match(client, /Nenhum dia de treino cadastrado para este aluno/);
-  assert.match(client, /available-note\$\{current\.days\.length\?"":" sem-dias"\}/);
+  // As preferências orientam a montagem, mas não impedem exceções semanais.
+  assert.match(client, /Dias preferidos:/);
+  assert.match(client, /Você pode adicionar ou mover treinos para qualquer dia desta semana/);
 });
 
 test("keeps a single Pix form on the finance screen", async () => {
@@ -2627,9 +2624,9 @@ test("marks the days the athlete can train but has no workout", async () => {
   // O buraco da semana é o dia disponível e vazio: é o que falta preencher.
   assert.match(client, /const vazioEDisponivel=podeReceber&&\(!sessions\[day\]\|\|sessions\[day\]\.removed\)/);
   assert.match(css, /\.week>article\.dia-vazio/);
-  // E o arrasto recusa o dia em que o aluno não treina, dizendo isso.
+  // O treinador pode abrir exceção nos sete dias da semana.
   assert.match(client, /if\(podeReceber\)\{evento\.preventDefault\(\)/);
-  assert.match(client, /!current\.days\.includes\(destino\)\)return/);
+  assert.match(client, /!labels\.includes\(destino\)\)return/);
   assert.match(css, /\.week>article\.recusa-arrasto/);
 });
 
@@ -3395,7 +3392,7 @@ test("lets the student finish a workout without typing any number", async () => 
   // avisar o treinador de que tinha feito o treino.
   assert.doesNotMatch(worker, /actual_result_required/);
   assert.match(worker, /Concluído sem medição/);
-  assert.match(worker, /const temMedida =/);
+  assert.match(worker, /const temMedida\s*=/);
   // E quem não treinou também precisa conseguir registrar.
   assert.match(worker, /if \(acao === "skip"\)/);
   assert.match(worker, /'Não realizado'/);
@@ -3840,10 +3837,10 @@ test("does not report a percentage for a workout nobody measured and offers coac
   assert.match(client, /item\.classification==="Concluído sem medição"\?<div className="accuracy-numbers"><em>Sem medição<\/em><\/div>/);
   // A conferência mostra os maiores desvios e guarda a lista inteira atrás de
   // um clique, em vez de ocupar um terço da página.
-  assert.match(client, /const destaque=\[\.\.\.pendentes\.filter\(item=>item\.classification!=="Dentro do planejado"/);
+  assert.match(client, /const destaque=\[\.\.\.pendentes\.filter\(item=>item\.last_message_role==="student"\|\|item\.classification!=="Dentro do planejado"/);
   assert.match(client, /className="accuracy-toggle"/);
   assert.match(client, /action:"comment"\|"review"\|"reopen"/);
-  assert.match(client, /Comentário de retorno para o aluno/);
+  assert.match(client, /WorkoutChat/);
   assert.match(client, /Marcar como revisado/);
 });
 

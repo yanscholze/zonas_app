@@ -130,3 +130,43 @@ test('a Garmin workout from another platform is kept apart from the released pla
   assert.equal(f.sqlite.prepare('SELECT matched_week_start FROM external_activities').get().matched_week_start,null);
  }finally{globalThis.fetch=original;f.sqlite.close()}
 });
+
+test('workout conversation preserves both authors, reopens review and blocks other portfolios and students',async()=>{
+ const f=await fixture();const now=Date.now();
+ f.insert("INSERT INTO workout_executions (id,athlete_name,week_start,workout_day,correct_percentage,wrong_percentage,classification,source,created_at,status,coach_note,coach_reviewed_at) VALUES ('chat','Aluno Teste',?,?,100,0,'Dentro do planejado','Garmin',?,'Concluído','Comentário original',?)",weekStart,day,now,now);
+ const coach='c'.repeat(64),other='d'.repeat(64);
+ let response=await f.request('/api/workout-messages','POST',{executionId:'chat',message:'Como você se sentiu?'},coach);assert.equal(response.status,200);
+ response=await f.request('/api/student/workout-messages','POST',{executionId:'chat',message:'Bem, posso caminhar amanhã?'});assert.equal(response.status,200);
+ const messages=(await response.json()).messages;assert.deepEqual(messages.map(m=>m.author_role),['coach','coach','student']);assert.equal(messages[0].body,'Comentário original');
+ assert.equal(f.sqlite.prepare("SELECT coach_reviewed_at FROM workout_executions WHERE id='chat'").get().coach_reviewed_at,null);
+ response=await f.request('/api/workout-messages?executionId=chat','GET',null,other);assert.equal(response.status,403);
+ response=await f.request('/api/workout-messages','POST',{executionId:'chat',message:'Outro treinador'},other);assert.equal(response.status,403);
+ f.insert("INSERT INTO workout_executions (id,athlete_name,week_start,workout_day,correct_percentage,wrong_percentage,classification,source,created_at) VALUES ('private','Outro Aluno',?,?,0,0,'Sem medição','Manual',?)",weekStart,day,now);
+ response=await f.request('/api/student/workout-messages?executionId=private');assert.equal(response.status,404);
+ response=await f.request('/api/student/workout-messages','POST',{executionId:'private',message:'Acesso indevido'});assert.equal(response.status,404);
+ f.sqlite.close();
+});
+
+test('coach can persist a workout outside student preferred days and preserve the removed origin',async()=>{
+ const f=await fixture();
+ const sessions={TER:{type:'Descanso',removed:true},DOM:plan};
+ const response=await f.request('/api/training-weeks','POST',{athleteName:'Aluno Teste',weekStart,plan:'Plano',phase:'Base',weekLabel:'Semana 1',trainingDays:['DOM'],sessions,status:'Liberada'},'c'.repeat(64));
+ assert.equal(response.status,201,await response.text());
+ const saved=f.sqlite.prepare('SELECT training_days,sessions FROM training_weeks WHERE athlete_name=? AND week_start=?').get('Aluno Teste',weekStart);
+ assert.deepEqual(JSON.parse(saved.training_days),['DOM']);assert.equal(JSON.parse(saved.sessions).TER.removed,true);assert.deepEqual(JSON.parse(saved.sessions).DOM,plan);
+ f.sqlite.close();
+});
+
+test('historical imported pace in range and manual timed workouts ignore estimated distance in both views',async()=>{
+ const f=await fixture(),now=Date.now();
+ const metrics={durationSeconds:1200,distanceMeters:3750,paceSeconds:320};
+ const result={version:1,provider:'Garmin',summary:metrics,laps:[],stages:[{index:0,label:'Leve',activity:'run',seconds:1200,meters:null,paceFastSeconds:300,paceSlowSeconds:360,metrics,lapIndexes:[0]}]};
+ f.insert("INSERT INTO workout_executions (id,athlete_name,week_start,workout_day,actual_minutes,actual_km,correct_percentage,wrong_percentage,classification,source,created_at,status,activity_result) VALUES ('old-score','Aluno Teste',?,?,20,'3.75',70,30,'Parcialmente correto','Garmin',?,'Concluído',?)",weekStart,day,now,JSON.stringify(result));
+ f.insert("INSERT INTO workout_executions (id,athlete_name,week_start,workout_day,actual_minutes,actual_km,correct_percentage,wrong_percentage,classification,source,created_at,status) VALUES ('manual-score','Aluno Teste',?,?,2,'0.25',70,30,'Parcialmente correto','Manual',?,'Concluído')",weekStart,day,now);
+ for(const [url,token] of [['/api/student/workout-executions?days=30','b'.repeat(64)],['/api/workout-executions','c'.repeat(64)]]){
+  const response=await f.request(url,'GET',null,token);assert.equal(response.status,200);
+  const executions=(await response.json()).executions;assert.equal(executions.length,2);
+  assert.ok(executions.every(row=>row.correct_percentage===100));assert.ok(executions.every(row=>!('planned_sessions' in row)));
+ }
+ f.sqlite.close();
+});

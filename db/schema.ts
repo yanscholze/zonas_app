@@ -224,12 +224,21 @@ export const workoutExecutions = sqliteTable("workout_executions", {
   averagePaceSeconds: integer("average_pace_seconds"),
   externalActivityId: text("external_activity_id"),
   activityResult: text("activity_result"),
+  lastMessageRole: text("last_message_role"),
+  lastMessageAt: integer("last_message_at"),
   coachNote: text("coach_note"),
   coachReviewedAt: integer("coach_reviewed_at", { mode: "timestamp_ms" }),
   coachReviewedBy: text("coach_reviewed_by"),
 }, (table) => ({
   athleteIdx: index("workout_executions_athlete_created_idx").on(table.athleteName, table.createdAt),
 }));
+
+/** Conversa por execução; mensagens são preservadas na ordem de envio. */
+export const workoutMessages = sqliteTable("workout_messages", {
+  id: text("id").primaryKey(), executionId: text("execution_id").notNull(),
+  authorRole: text("author_role").notNull(), body: text("body").notNull(),
+  createdAt: integer("created_at").notNull(),
+}, table => ({ executionIdx: index("workout_messages_execution_idx").on(table.executionId, table.createdAt) }));
 
 export const externalIntegrations = sqliteTable("external_integrations", {
   id: text("id").primaryKey(), athleteName: text("athlete_name").notNull(), provider: text("provider").notNull(),
