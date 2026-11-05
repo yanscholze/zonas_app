@@ -1285,11 +1285,11 @@ test("links the structured workout to an athlete and shows the released steps to
 test("uses approved Tempo Run paces as first-class workout intensities", async () => {
   const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   assert.match(source, /"Tempo Run 5 km","Tempo Run 10 km","Tempo Run Meia maratona","Tempo Run Maratona"/);
-  assert.match(source, /JSON\.parse\(approved\.tempo_runs\|\|"\[\]"\)/);
+  assert.match(source, /parsedList\(approved\?\.tempo_runs\)/);
   assert.match(source, /ritmo individual aprovado/);
   assert.match(source, /Este aluno ainda não tem \$\{missingTempoRun\} aprovado/);
   assert.match(source, /intensity\.startsWith\("Tempo Run"\)\?`no \$\{intensity\}`/);
-  assert.match(source, /Ritmo individual:/);
+  assert.match(source, /paceOrigin\(step\.effortZone\)/);
 });
 
 test("builds workout steps by minutes or meters without separating the recovery", async () => {
@@ -1447,7 +1447,7 @@ test("approves a 5-minute result without zones and stores the coach observation"
   workerUrl.searchParams.set("approve-performance-test-5min", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
   const writes=[];
-  const prepare=(sql)=>({values:[],bind(...values){this.values=values;return this},async first(){return sql.includes("SELECT test_type FROM performance_tests")?{test_type:"5min"}:null},async all(){return{results:[]}},async run(){writes.push({sql,values:this.values});return{success:true}}});
+  const prepare=(sql)=>({values:[],bind(...values){this.values=values;return this},async first(){return sql.includes("SELECT test_type,athlete_name FROM performance_tests")?{test_type:"5min"}:null},async all(){return{results:[]}},async run(){writes.push({sql,values:this.values});return{success:true}}});
   const env={ASSETS:{fetch:async()=>new Response("Not found",{status:404})},DB:{prepare:withSession(prepare),async batch(items){for(const item of items)await item.run();return[];}}};
   const response=await worker.fetch(new Request("https://zonasapp.example/api/performance-tests",{method:"POST",headers:{"content-type":"application/json",...coachCookie},body:JSON.stringify({id:"five-minute-test",action:"approve",zones:[],tempoRuns:[],coachNote:"Boa execução"})}),env,{waitUntil(){},passThroughOnException(){}});
   assert.equal(response.status,200);
@@ -1457,7 +1457,7 @@ test("approves a 5-minute result without zones and stores the coach observation"
 
 test("approves only complete and valid coach-reviewed zones", async () => {
   const workerUrl=new URL("../dist/server/index.js",import.meta.url);workerUrl.searchParams.set("approve-zones",`${process.pid}-${Date.now()}`);const{default:worker}=await import(workerUrl.href);
-  const writes=[];const prepare=(sql)=>({values:[],bind(...values){this.values=values;return this},async first(){return null},async all(){return{results:[]}},async run(){writes.push({sql,values:this.values});return{success:true}}});const env={ASSETS:{fetch:async()=>new Response("Not found",{status:404})},DB:{prepare:withSession(prepare),async batch(items){for(const item of items)await item.run();return[];}}};
+  const writes=[];const prepare=(sql)=>({values:[],bind(...values){this.values=values;return this},async first(){return sql.includes("SELECT test_type,athlete_name")?{test_type:"3km"}:null},async all(){return{results:[]}},async run(){writes.push({sql,values:this.values});return{success:true}}});const env={ASSETS:{fetch:async()=>new Response("Not found",{status:404})},DB:{prepare:withSession(prepare),async batch(items){for(const item of items)await item.run();return[];}}};
   const zones=[1,2,3,4,5].map((n)=>({z:`Z${n}`,label:"Zona",slow:480-n*35,fast:450-n*35}));
   const tempoRuns=[["5 km",240],["10 km",250],["Meia maratona",265],["Maratona",280]].map(([label,targetPace])=>({label,targetPace,projectedTotal:3600}));
   const response=await worker.fetch(new Request("https://zonasapp.example/api/performance-tests",{method:"POST",headers:{"content-type":"application/json",...coachCookie},body:JSON.stringify({id:"test-1",action:"approve",zones,tempoRuns})}),env,{waitUntil(){},passThroughOnException(){}});

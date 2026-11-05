@@ -3,6 +3,7 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } fr
 import handler from "vinext/server/app-router-entry";
 import { treinoParaGarmin } from "./garmin-treino";
 import { entrar as entrarNoGarmin, renovar as renovarGarmin, subirTreino as subirTreinoNoGarmin, agendarTreino as agendarTreinoNoGarmin, listarAtividades as listarAtividadesGarmin, lerAtividade as lerAtividadeGarmin, type Sessao as GarminSessao } from "./garmin-conexao";
+import { effectivePaceZones, parsePaceZones, validPaceZone } from "../shared/training-zones";
 import { calculateWorkoutAccuracy } from "../shared/workout-accuracy";
 import { expandStages, buildActivityResult, parseActivityResult, remoteWorkoutId, stepsFromGarminWorkout, object, type ActivityResult } from "../shared/activity-results";
 import { calculateFiveMinuteTest } from "../shared/five-minute-test";
@@ -105,6 +106,7 @@ const allowedBodyKeys: Record<string, Set<string>> = {
   "/api/athletes": new Set(["name","initials","distance","phase","week","nextWorkout","status","phone","email","trainingDays","integration","action","reason","confirmName"]),
   "/api/plans": new Set(["action","planId","name","distance","weeks","frequency","level","goal","phases","plans"]),
   "/api/athlete-profile": new Set(["athleteName","phone","birthDate","objective","integration","trainingDays","noTargetRace"]),
+  "/api/training-zone-defaults": new Set(["zones"]),
   "/api/athlete-planning": new Set(["athleteName","plan","phase","weekNumber","totalWeeks"]),
   "/api/performance-tests": new Set(["athleteName","testDate","testType","distanceKm","resultDistanceMeters","minutes","seconds","age","id","action","zones","tempoRuns","executionType","effortClassification","completionStatus","elapsedSeconds","coachNote"]),
   "/api/training-weeks": new Set(["action","athleteName","weekStart","plan","phase","weekLabel","trainingDays","sessions","status","auditDifferences","expectedUpdatedAt"]),
@@ -496,7 +498,7 @@ function isCoachLevel(identity: ApiIdentity | null): boolean {
 
 
 
-const recoverableTables = ["athletes", "athlete_profiles", "athlete_planning", "performance_tests", "training_weeks", "pain_reports", "training_feedbacks", "workout_executions", "workout_messages", "athlete_races", "personal_records", "financial_settings", "student_payments"] as const;
+const recoverableTables = ["athletes", "athlete_profiles", "athlete_planning", "performance_tests", "training_weeks", "pain_reports", "training_feedbacks", "workout_executions", "workout_messages", "coach_pace_defaults", "athlete_races", "personal_records", "financial_settings", "student_payments"] as const;
 
 
 /**
@@ -662,7 +664,7 @@ function nomeDaTabela(tabela: Parameters<typeof tableSql>[0]): string {
 }
 
 async function ensureRecoverableData(env: Env) {
-  await ensureTables(env, schema.athletes, schema.athleteProfiles, schema.athletePlanning, schema.performanceTests, schema.trainingWeeks, schema.painReports, schema.trainingFeedbacks, schema.workoutExecutions, schema.athleteRaces, schema.personalRecords, schema.financialSettings, schema.studentPayments, schema.dataBackups);
+  await ensureTables(env, schema.athletes, schema.athleteProfiles, schema.athletePlanning, schema.performanceTests, schema.trainingWeeks, schema.painReports, schema.trainingFeedbacks, schema.workoutExecutions, schema.workoutMessages, schema.coachPaceDefaults, schema.athleteRaces, schema.personalRecords, schema.financialSettings, schema.studentPayments, schema.dataBackups);
 }
 
 async function ensureTrafficProtection(env: Env) {
@@ -1627,7 +1629,7 @@ async function studentPerformanceTestsApi(request: Request, env: Env, athleteNam
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
   await ensureTables(env, schema.performanceTests);
   const tests = await env.DB.prepare("SELECT id,test_type,test_date,distance_km,result_distance_meters,total_seconds,vam,vo2,fc_max,pace_seconds,zones,tempo_runs,status,effort,athlete_note,source_format,source_km,execution_type,effort_classification,completion_status,elapsed_seconds,mean_speed_kmh,mean_pace_seconds,estimated_vam_kmh,coach_note FROM performance_tests WHERE athlete_name = ? ORDER BY test_date DESC,created_at DESC").bind(athleteName).all();
-  return Response.json({ tests: tests.results });
+  return Response.json({ trainingZones:(await trainingZonesFor(env,athleteName)).zones, tests: tests.results });
 }
 
 async function studentIntegrationPreferenceApi(request: Request, env: Env, athleteName: string): Promise<Response> {
@@ -1703,7 +1705,7 @@ async function athletesApi(request: Request, env: Env): Promise<Response> {
       if (fora) return fora;
       await ensureTables(env, schema.userAccounts, schema.userSessions, schema.performanceTests, schema.trainingWeeks,
         schema.trainingWeekPublications, schema.painReports, schema.painReportUpdates, schema.trainingFeedbacks,
-        schema.workoutExecutions, schema.workoutMessages, schema.externalIntegrations, schema.oauthFlows, schema.externalActivities,
+        schema.workoutExecutions, schema.workoutMessages, schema.paceRefreshJobs, schema.externalIntegrations, schema.oauthFlows, schema.externalActivities,
         schema.deviceIngestTokens, schema.studentPayments, schema.athleteRaces, schema.personalRecords,
         schema.accessAuditLog, schema.trainingWeekAudit);
 
@@ -1716,7 +1718,7 @@ async function athletesApi(request: Request, env: Env): Promise<Response> {
         ["DELETE FROM pain_report_updates WHERE report_id IN (SELECT id FROM pain_reports WHERE athlete_name = ?)", alvo],
         ...["training_week_audit", "access_audit_log", "athlete_access", "athlete_profiles", "athlete_planning",
           "performance_tests", "training_week_publications", "pain_reports", "training_feedbacks",
-          "workout_executions", "external_integrations", "oauth_flows", "external_activities",
+          "pace_refresh_jobs", "workout_executions", "external_integrations", "oauth_flows", "external_activities",
           "device_ingest_tokens", "student_payments", "athlete_races", "personal_records", "training_weeks"]
           .map(table => [`DELETE FROM ${table} WHERE athlete_name = ?`, alvo] as const),
         ["DELETE FROM user_accounts WHERE role = 'student' AND athlete_name = ?", alvo],
@@ -1895,6 +1897,39 @@ async function planTemplateOverridesApi(request:Request,env:Env):Promise<Respons
   return new Response("Method not allowed",{status:405});
 }
 
+async function trainingZonesFor(env:Env, athlete:string){
+  await ensureTables(env,schema.coachPaceDefaults,schema.performanceTests);
+  const [test,defaults]=await Promise.all([
+     env.DB.prepare("SELECT zones,tempo_runs,fc_max FROM performance_tests WHERE athlete_name=? AND status='Aprovado' AND zones IS NOT NULL AND zones NOT IN ('[]','') ORDER BY test_date DESC,created_at DESC LIMIT 1").bind(athlete).first<{zones?:string;tempo_runs?:string;fc_max?:number}>(),
+     env.DB.prepare("SELECT zones FROM coach_pace_defaults WHERE coach_email=(SELECT coach_email FROM athletes WHERE name=? LIMIT 1)").bind(athlete).first<{zones?:string}>()
+  ]);
+  const zones=effectivePaceZones(test?.zones,defaults?.zones);
+  return {zones,tempoRuns:(()=>{try{return JSON.parse(test?.tempo_runs||"[]") as Array<Record<string,unknown>>}catch{return[]}})(),fcMax:test?.fc_max??null};
+}
+
+async function queuePaceRefresh(env:Env,athlete:string){
+  await ensureTables(env,schema.trainingWeekPublications,schema.paceRefreshJobs);
+  await env.DB.prepare("INSERT INTO pace_refresh_jobs (id,athlete_name,week_start,requested_at,lease_until) SELECT p.id,p.athlete_name,p.week_start,?,0 FROM training_week_publications p JOIN training_weeks w ON w.athlete_name=p.athlete_name AND w.week_start=p.week_start WHERE p.athlete_name=? AND p.provider='garmin' AND p.week_start>=? AND w.status='Liberada' AND p.status NOT IN ('not_connected','not_published') ON CONFLICT(athlete_name,week_start) DO UPDATE SET requested_at=excluded.requested_at,lease_until=0").bind(Date.now(),athlete,weekStartOf(Date.now())).run();
+}
+
+async function trainingZoneDefaultsApi(request:Request,env:Env):Promise<Response>{
+  const coach=carteiraDe(request);
+  if(!coach)return Response.json({error:'coach_scope_required'},{status:403});
+  await ensureTables(env,schema.coachPaceDefaults);
+  if(request.method==='GET'){
+    const row=await env.DB.prepare('SELECT zones,updated_at FROM coach_pace_defaults WHERE coach_email=?').bind(coach).first<{zones?:string;updated_at?:number}>();
+    return Response.json({zones:parsePaceZones(row?.zones),updatedAt:row?.updated_at??null});
+  }
+  if(request.method!=='POST')return new Response('Method not allowed',{status:405});
+  const body=await request.json() as {zones?:unknown};
+  if(!Array.isArray(body.zones)||body.zones.length!==5||body.zones.some((z,index)=>!validPaceZone(z)||z.z!==`Z${index+1}`))return Response.json({error:'invalid_paces'},{status:400});
+  const zones=body.zones.map(z=>({z:z.z,label:boundedText(z.label,40),slow:z.slow,fast:z.fast}));
+  await env.DB.prepare('INSERT INTO coach_pace_defaults (coach_email,zones,updated_at) VALUES (?,?,?) ON CONFLICT(coach_email) DO UPDATE SET zones=excluded.zones,updated_at=excluded.updated_at').bind(coach,JSON.stringify(zones),Date.now()).run();
+  const athletes=await env.DB.prepare("SELECT name FROM athletes WHERE coach_email=? AND NOT EXISTS(SELECT 1 FROM performance_tests t WHERE t.athlete_name=athletes.name AND t.status='Aprovado' AND t.zones NOT IN ('[]',''))").bind(coach).all();
+  await Promise.all((athletes.results as Array<{name:string}>).map(athlete=>queuePaceRefresh(env,athlete.name)));
+  return Response.json({saved:true,zones});
+}
+
 async function performanceTestsApi(request: Request, env: Env): Promise<Response> {
   await ensureTables(env, schema.performanceTests);
   const url = new URL(request.url);
@@ -1906,7 +1941,7 @@ async function performanceTestsApi(request: Request, env: Env): Promise<Response
       return Response.json({ tests:result.results });
     }
     const result = await env.DB.prepare(`SELECT * FROM performance_tests WHERE athlete_name = ? AND ${carteira.clausula} ORDER BY test_date DESC, created_at DESC LIMIT 20`).bind(athleteName, ...carteira.valores).all();
-    return Response.json({ tests:result.results });
+    return Response.json({ trainingZones:(await trainingZonesFor(env,athleteName)).zones, tests:result.results });
   }
   if (request.method === "POST") {
     const input = await request.json() as Record<string,unknown>;
@@ -1947,8 +1982,9 @@ async function performanceTestsApi(request: Request, env: Env): Promise<Response
       const id = boundedText(input.id,80);
       const zones = Array.isArray(input.zones) ? input.zones : [];
       const tempoRuns = Array.isArray(input.tempoRuns) ? input.tempoRuns : [];
-      const target=id?await env.DB.prepare("SELECT test_type FROM performance_tests WHERE id = ? LIMIT 1").bind(id).first() as {test_type?:string}|null:null;
-      const fiveMinute=target?.test_type==="5min";
+      const target=id?await env.DB.prepare(`SELECT test_type,athlete_name FROM performance_tests WHERE id = ? AND ${carteira.clausula} LIMIT 1`).bind(id,...carteira.valores).first() as {test_type?:string;athlete_name?:string}|null:null;
+      if(!target)return Response.json({error:"test_not_found"},{status:404});
+      const fiveMinute=target.test_type==="5min";
       if (!id || (fiveMinute ? zones.length!==0||tempoRuns.length!==0 : zones.length !== 5 || tempoRuns.length !== 4)) return Response.json({error:"invalid_review"},{status:400});
       const normalizedZones = zones.map((zone:any,index)=>({z:`Z${index+1}`,label:boundedText(zone?.label,40),slow:Number(zone?.slow),fast:Number(zone?.fast)}));
       const normalizedTempoRuns = tempoRuns.map((tempo:any)=>({label:boundedText(tempo?.label,30),targetPace:Number(tempo?.targetPace),projectedTotal:Number(tempo?.projectedTotal)}));
@@ -1960,6 +1996,7 @@ async function performanceTestsApi(request: Request, env: Env): Promise<Response
         return Response.json({id,status,zones:[],tempoRuns:[],coachNote});
       }
       await env.DB.prepare("UPDATE performance_tests SET zones = ?, tempo_runs = ?, status = ? WHERE id = ?").bind(JSON.stringify(normalizedZones),JSON.stringify(normalizedTempoRuns),status,id).run();
+      if(action==="approve"&&target?.athlete_name)await queuePaceRefresh(env,target.athlete_name);
       return Response.json({id,status,zones:normalizedZones,tempoRuns:normalizedTempoRuns});
     }
     const athleteName = boundedText(input.athleteName,120);
@@ -3443,8 +3480,26 @@ async function importarAtividadesGarmin(env: Env, athleteName: string, dias = 30
   return { imported, scanned: list.valor.length, updated, remaining: Math.max(0, candidates.length - updated), ...(error ? { error } : {}) };
 }
 
+async function refreshPendingPaces(env:Env){
+  await ensureTables(env,schema.paceRefreshJobs);
+  const week=weekStartOf(Date.now());
+  const pending=await env.DB.prepare("SELECT j.id,j.athlete_name,j.requested_at,w.training_days,w.sessions FROM pace_refresh_jobs j JOIN training_weeks w ON w.athlete_name=j.athlete_name AND w.week_start=j.week_start JOIN athletes a ON a.name=j.athlete_name JOIN external_integrations i ON i.athlete_name=a.name AND i.provider='Garmin' LEFT JOIN athlete_profiles profile ON profile.athlete_name=a.name WHERE j.week_start=? AND j.lease_until<? AND w.status='Liberada' AND a.archived_at IS NULL AND i.status='Conectado' AND COALESCE(NULLIF(profile.integration,''),a.integration)='Garmin' ORDER BY j.requested_at LIMIT 1").bind(week,Date.now()).all();
+  for(const row of pending.results as Array<{id:string;athlete_name:string;requested_at:number;training_days:string;sessions:string}>){
+    const claimed=await env.DB.prepare("UPDATE pace_refresh_jobs SET lease_until=? WHERE id=? AND requested_at=? AND lease_until<?").bind(Date.now()+10*60_000,row.id,row.requested_at,Date.now()).run();
+    if(!claimed.meta.changes)continue;
+    try{
+      const today=DIAS_DA_SEMANA.indexOf(workoutDayOf(Date.now()));
+      const sessions=object(JSON.parse(row.sessions));
+      const days=diasDeTreino(JSON.parse(row.training_days)).filter(day=>DIAS_DA_SEMANA.indexOf(day)>=today&&!object(sessions[day]).removed);
+      const result=days.length?await publicarSemanaGarmin(env,new Request('https://zonasapp.cloudfapp.workers.dev/api/integrations'),row.athlete_name,week,days):{status:'sent'};
+      if(result.status==='sent')await env.DB.prepare("DELETE FROM pace_refresh_jobs WHERE id=? AND requested_at=?").bind(row.id,row.requested_at).run();
+    }catch(error){await recordApplicationError(env,new Request('https://zonasapp.cloudfapp.workers.dev/api/integrations'),'atualização de ritmos Garmin','pace_refresh_failed',502,error instanceof Error?error:new Error(String(error)));}
+  }
+  return pending.results.length;
+}
+
 /** O Connect não fornece webhook por este caminho. O cron consulta em lotes. */
-async function receberResultadosGarminAutomaticamente(env: Env): Promise<void> {
+async function receberResultadosGarminAutomaticamente(env: Env, maxAccounts=5): Promise<void> {
   await ensureIntegrationTables(env);
   await ensureTables(env, schema.athletes, schema.athleteProfiles);
   const connections = await env.DB.prepare(`SELECT integration.athlete_name FROM external_integrations integration
@@ -3453,8 +3508,8 @@ async function receberResultadosGarminAutomaticamente(env: Env): Promise<void> {
     WHERE integration.provider='Garmin' AND integration.status='Conectado' AND athlete.archived_at IS NULL
     AND COALESCE(NULLIF(profile.integration,''),NULLIF(athlete.integration,''),'Sem integração')='Garmin'
     AND (integration.last_import_attempt_at IS NULL OR integration.last_import_attempt_at<?)
-    ORDER BY COALESCE(integration.last_import_attempt_at,0),integration.athlete_name LIMIT 5`)
-    .bind(Date.now() - 9 * 60_000).all();
+    ORDER BY COALESCE(integration.last_import_attempt_at,0),integration.athlete_name LIMIT ?`)
+    .bind(Date.now() - 9 * 60_000,maxAccounts).all();
   const request = new Request("https://zonasapp.cloudfapp.workers.dev/api/integrations");
   for (const row of connections.results as Array<{ athlete_name: string }>) {
     try {
@@ -3638,7 +3693,7 @@ async function treinoResolvido(
   weekStart: string,
   diaChave: string,
   exigirLiberacao = true,
-): Promise<{ treino: Record<string, unknown> | null; motivo?: string; plano?: Record<string, unknown> }> {
+): Promise<{ treino: Record<string, unknown> | null; motivo?: string; missingZones?:string[]; plano?: Record<string, unknown> }> {
   const semana = await env.DB.prepare(
     "SELECT sessions, status, plan, phase, week_label FROM training_weeks WHERE athlete_name = ? AND week_start = ? LIMIT 1",
   ).bind(atleta, weekStart).first() as { sessions?: string; status?: string; plan?: string; phase?: string; week_label?: string } | null;
@@ -3653,24 +3708,18 @@ async function treinoResolvido(
   const sessao = sessoes[diaChave] as Record<string, unknown> | undefined;
   if (!sessao || sessao.removed) return { treino: null, motivo: "rest_day" };
 
-  /* As zonas do teste aprovado mais recente. Sem teste, as etapas vão sem alvo
-     de ritmo: o relógio ainda consegue guiar por tempo e distância, que é melhor
-     que não mandar nada. */
-  const teste = await env.DB.prepare(
-    "SELECT zones, fc_max FROM performance_tests WHERE athlete_name = ? AND status = 'Aprovado' AND zones IS NOT NULL AND zones NOT IN ('[]','') ORDER BY test_date DESC, created_at DESC LIMIT 1",
-  ).bind(atleta).first() as { zones?: string; fc_max?: number } | null;
-
-  const faixas = new Map<string, { label: string; slow: number; fast: number }>();
-  try {
-    for (const zona of JSON.parse(String(teste?.zones ?? "[]")) as Array<Record<string, unknown>>) {
-      faixas.set(String(zona.z), { label: String(zona.label ?? ""), slow: Number(zona.slow), fast: Number(zona.fast) });
-    }
-  } catch { /* sem zonas: segue sem alvo */ }
-
-  const alvo = (zona?: unknown) => {
-    const faixa = zona ? faixas.get(String(zona).toUpperCase()) : undefined;
-    if (!faixa || !Number.isFinite(faixa.slow) || !Number.isFinite(faixa.fast)) return null;
-    return { zone: String(zona).toUpperCase(), label: faixa.label, paceSlowSeconds: faixa.slow, paceFastSeconds: faixa.fast };
+  const effective=await trainingZonesFor(env,atleta);
+  const faixas=new Map(effective.zones.map(zone=>[zone.z.toUpperCase(),zone]));
+  const missingZones=new Set<string>();
+  const alvo=(zona?:unknown)=>{
+    if(!zona||String(zona).toLowerCase()==="livre")return null;
+    const name=String(zona).toUpperCase();
+    const range=faixas.get(name);
+    if(range)return {zone:name,label:range.label,paceSlowSeconds:range.slow,paceFastSeconds:range.fast,source:range.source};
+    const tempo=effective.tempoRuns.find(item=>`TEMPO RUN ${String(item.label).toUpperCase()}`===name);
+    const pace=Number(tempo?.targetPace);
+    if(Number.isFinite(pace)&&pace>=120&&pace<=1200)return {zone:String(zona),label:String(tempo?.label),paceSlowSeconds:pace,paceFastSeconds:pace,source:"individual"};
+    missingZones.add(String(zona));return null;
   };
 
   /* As etapas viram um formato plano, sem "kind" e sem zona solta: cada uma diz
@@ -3709,12 +3758,13 @@ async function treinoResolvido(
   }
 
   return {
+    missingZones:[...missingZones],
     treino: {
       title: String(sessao.title ?? sessao.type ?? "Treino do dia"),
       description: String(sessao.description ?? ""),
       estimatedSeconds: Number.isFinite(Number(sessao.durationMinutes)) ? Math.round(Number(sessao.durationMinutes) * 60) : null,
       estimatedMeters: Number.isFinite(Number(sessao.estimatedKm)) ? Math.round(Number(sessao.estimatedKm) * 1000) : null,
-      maxHeartRate: Number(teste?.fc_max) || null,
+      maxHeartRate: Number(effective.fcMax) || null,
       steps: etapas,
     },
     plano: { name: semana.plan ?? null, phase: semana.phase ?? null, week: semana.week_label ?? null },
@@ -3844,18 +3894,19 @@ async function marcaGarminParaReconectar(env: Env, atleta: string): Promise<void
  * ter conectado não é erro e não deve virar linha no monitor.
  */
 async function publicarSemanaGarmin(env: Env, request: Request, atleta: string, weekStart: string, dias: string[]): Promise<Record<string, unknown>> {
-  const sessao = await sessaoGarminDoAtleta(env, atleta);
+  const [existente,sessao]=await Promise.all([
+    env.DB.prepare("SELECT remote_workouts FROM training_week_publications WHERE athlete_name = ? AND week_start = ? AND provider = ? LIMIT 1").bind(atleta,weekStart,PROVIDERS.garmin.id).first<{remote_workouts?:string}>(),
+    sessaoGarminDoAtleta(env,atleta),
+  ]);
   if (!sessao) {
     const status = "reconnect_required";
-    await gravarPublicacao(env, atleta, weekStart, PROVIDERS.garmin.id, status, "A sessão Garmin expirou ou não pôde ser renovada.", "{}");
+    await gravarPublicacao(env, atleta, weekStart, PROVIDERS.garmin.id, status, "A sessão Garmin expirou ou não pôde ser renovada.", existente?.remote_workouts??"{}");
     return { provider: PROVIDERS.garmin.id, status, message: "A sessão Garmin expirou ou não pôde ser renovada. Reconecte e tente novamente." };
   }
 
   const inicio = new Date(`${weekStart}T12:00:00Z`);
   let enviados = 0;
   const problemas: string[] = [];
-  const existente = await env.DB.prepare("SELECT remote_workouts FROM training_week_publications WHERE athlete_name = ? AND week_start = ? AND provider = ? LIMIT 1")
-    .bind(atleta, weekStart, PROVIDERS.garmin.id).first() as { remote_workouts?: string } | null;
   let remoto: Record<string, { workoutId: number; fingerprint: string; steps?: unknown }> = {};
   try { remoto = JSON.parse(String(existente?.remote_workouts ?? "{}")) as typeof remoto; } catch { remoto = {}; }
 
@@ -3863,6 +3914,7 @@ async function publicarSemanaGarmin(env: Env, request: Request, atleta: string, 
     const indice = DIAS_DA_SEMANA.indexOf(dia);
     const resolvido = await treinoResolvido(env, atleta, weekStart, dia, false);
     if (!resolvido.treino) { problemas.push(`${dia}: treino não encontrado na semana salva`); continue; }
+    if(resolvido.missingZones?.length){problemas.push(`${dia}: faltam faixas para ${resolvido.missingZones.join(", ")}. Defina zonas padrão do professor ou aprove as zonas individuais.`);continue;}
 
     const data = new Date(inicio.getTime() + indice * 86400000).toISOString().slice(0, 10);
     const traduzido = treinoParaGarmin(resolvido.treino as never, `${resolvido.treino.title} · ${dia}`);
@@ -4899,6 +4951,9 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
       try { return await planTemplateOverridesApi(request, env); }
       catch (falha) { return await applicationFailure(env, request, "biblioteca de treinos", "database_unavailable", falha); }
     }
+    if (url.pathname === "/api/training-zone-defaults") {
+      try{return await trainingZoneDefaultsApi(request,env)}catch(error){return await applicationFailure(env,request,"zonas padrão","database_unavailable",error)}
+    }
     if (url.pathname === "/api/performance-tests") {
       try { return await performanceTestsApi(request, env); }
       catch (falha) { return await applicationFailure(env, request, "testes de desempenho", "database_unavailable", falha); }
@@ -4980,7 +5035,7 @@ async function routeRequest(request: Request, env: Env, ctx: ExecutionContext): 
 
 const worker = {
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    if (controller.cron === "*/10 * * * *") ctx.waitUntil(receberResultadosGarminAutomaticamente(env));
+    if (controller.cron === "*/10 * * * *") ctx.waitUntil((async()=>{await garanteEsquema(env);const pending=await refreshPendingPaces(env);await receberResultadosGarminAutomaticamente(env,pending?3:5)})());
     else ctx.waitUntil(liberarSemanaVigenteAutomaticamente(env, controller.scheduledTime));
   },
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {

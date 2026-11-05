@@ -170,3 +170,75 @@ test('historical imported pace in range and manual timed workouts ignore estimat
  }
  f.sqlite.close();
 });
+
+const referenceZones=Array.from({length:5},(_,i)=>({z:`Z${i+1}`,label:`Zona ${i+1}`,fast:360-i*30,slow:400-i*30}));
+const referenceTempos=Array.from({length:4},(_,i)=>({label:['5 km','10 km','Meia maratona','Maratona'][i],targetPace:300+i*15,projectedTotal:1500}));
+function insertZoneTest(f,id,zones,status='Aprovado'){
+ f.insert("INSERT INTO performance_tests (id,athlete_name,test_date,test_type,distance_km,total_seconds,age,vam,vo2,fc_max,pace_seconds,zones,tempo_runs,status,created_at) VALUES (?,'Aluno Teste','2026-10-01','3km',3,900,30,'12','40',190,'300',?,?,?,?)",id,JSON.stringify(zones),JSON.stringify(referenceTempos),status,Date.now());
+}
+
+test('teacher defaults reach student and Garmin; personal zones win; Livre stays without target',async()=>{
+ const f=await fixture();const coach='c'.repeat(64),other='d'.repeat(64),now=Date.now();
+ let response=await f.request('/api/training-zone-defaults','POST',{zones:referenceZones},coach);assert.equal(response.status,200);
+ await f.request('/api/training-zone-defaults','POST',{zones:referenceZones.map(z=>({...z,fast:z.fast+100,slow:z.slow+100}))},other);
+ let body=await(await f.request('/api/student/performance-tests')).json();assert.equal(body.trainingZones[0].source,'default');assert.equal(body.trainingZones[0].fast,360);
+ response=await f.request('/api/training-zone-defaults','POST',{zones:referenceZones});assert.equal(response.status,403);
+ const sessions={[day]:{...plan,steps:[{kind:'simple',label:'Z1',seconds:60,zone:'Z1'},{kind:'simple',label:'Livre',seconds:60,zone:null},{kind:'repeat',repetitions:2,effortSeconds:60,effortZone:'Z4',recoverySeconds:60,recoveryZone:'Z1'}]}};
+ f.insert('UPDATE training_weeks SET sessions=?',JSON.stringify(sessions));
+ f.insert("INSERT INTO external_integrations (id,athlete_name,provider,scopes,access_token_encrypted,refresh_token_encrypted,expires_at,status,updated_at) VALUES ('integration','Aluno Teste','Garmin','',?,'',?,'Conectado',?)",await encrypt('test-mobile-token'),now+3600000,now);
+ const original=globalThis.fetch;const sent=[];
+ globalThis.fetch=async(url,options)=>{if(String(url).endsWith('/workout-service/workout')){sent.push(JSON.parse(options.body));return Response.json({workoutId:123})}return Response.json({})};
+ try{
+  response=await f.request('/api/training-weeks','POST',{action:'publish',athleteName:'Aluno Teste',weekStart},coach);assert.equal(response.status,200);
+  let steps=sent[0].workoutSegments[0].workoutSteps;assert.equal(steps[0].targetType.workoutTargetTypeKey,'pace.zone');assert.equal(steps[0].targetValueOne,2.5);assert.equal(steps[1].targetType.workoutTargetTypeKey,'no.target');assert.equal(steps[2].workoutSteps[0].targetType.workoutTargetTypeKey,'pace.zone');
+  insertZoneTest(f,'individual',referenceZones.map(z=>({...z,fast:z.fast+30,slow:z.slow+30})));
+  body=await(await f.request('/api/student/performance-tests')).json();assert.equal(body.trainingZones[0].source,'individual');assert.equal(body.trainingZones[0].fast,390);
+  // New body avoids submitting the exact same operation within the security dedupe window.
+  f.insert('UPDATE request_deduplication SET expires_at=0');
+  response=await f.request('/api/training-weeks','POST',{action:'publish',athleteName:'Aluno Teste',weekStart},coach);assert.equal(response.status,200);
+  steps=sent[1].workoutSegments[0].workoutSteps;assert.equal(steps[0].targetValueOne,Number((1000/430).toFixed(6)));
+ }finally{globalThis.fetch=original;f.sqlite.close()}
+});
+
+test('approval queues current publication and cron updates future steps without touching past snapshots',async()=>{
+ const f=await fixture(),now=Date.now(),coach='c'.repeat(64);
+ const currentWeek=weekStartOf(now),currentDay=workoutDayOf(now);
+ f.insert('UPDATE training_weeks SET week_start=?,training_days=?',currentWeek,JSON.stringify([currentDay]));
+ const oldWeek=new Date(new Date(currentWeek+'T12:00:00Z').getTime()-7*86400000).toISOString().slice(0,10);
+ f.insert("INSERT INTO training_week_publications (id,athlete_name,week_start,provider,status,remote_workouts) VALUES ('current','Aluno Teste',?,'garmin','sent','{}'),('past','Aluno Teste',?,'garmin','sent','{\"saved\":true}')",currentWeek,oldWeek);
+ f.insert('UPDATE training_weeks SET sessions=?',JSON.stringify({[currentDay]:{...plan,steps:[{kind:'simple',seconds:120,zone:'Z2'}]}}));
+ insertZoneTest(f,'awaiting',referenceZones,'Aguardando revisão');
+ const denied=await f.request('/api/performance-tests','POST',{id:'awaiting',action:'approve',zones:referenceZones,tempoRuns:referenceTempos},'d'.repeat(64));assert.equal(denied.status,404);
+ let response=await f.request('/api/performance-tests','POST',{id:'awaiting',action:'approve',zones:referenceZones,tempoRuns:referenceTempos},coach);assert.equal(response.status,200);
+ assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM pace_refresh_jobs').get().n,1);assert.equal(f.sqlite.prepare('SELECT week_start FROM pace_refresh_jobs').get().week_start,currentWeek);
+ f.insert("INSERT INTO external_integrations (id,athlete_name,provider,scopes,access_token_encrypted,refresh_token_encrypted,expires_at,status,updated_at,last_import_attempt_at) VALUES ('integration','Aluno Teste','Garmin','',?,'',?,'Conectado',?,?)",await encrypt('test-mobile-token'),now+3600000,now,now);
+ const original=globalThis.fetch;const sent=[];
+ globalThis.fetch=async(url,options)=>{if(String(url).endsWith('/workout-service/workout')){sent.push(JSON.parse(options.body));return Response.json({workoutId:222})}return Response.json({})};
+ try{await f.worker.scheduled({cron:'*/10 * * * *',scheduledTime:now},f.env,f.ctx);await Promise.all(f.pending);assert.equal(sent.length,1);assert.equal(sent[0].workoutSegments[0].workoutSteps[0].targetType.workoutTargetTypeKey,'pace.zone');assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM pace_refresh_jobs').get().n,0);assert.equal(f.sqlite.prepare("SELECT remote_workouts FROM training_week_publications WHERE id='past'").get().remote_workouts,'{"saved":true}');}
+ finally{globalThis.fetch=original;f.sqlite.close()}
+});
+
+test('a normal zone without individual or default ranges is reported instead of silently uploaded without pace',async()=>{
+ const f=await fixture(),now=Date.now(),coach='c'.repeat(64);
+ f.insert('UPDATE training_weeks SET sessions=?',JSON.stringify({[day]:{...plan,steps:[{kind:'simple',seconds:120,zone:'Z1'}]}}));
+ f.insert("INSERT INTO external_integrations (id,athlete_name,provider,scopes,access_token_encrypted,refresh_token_encrypted,expires_at,status,updated_at) VALUES ('integration','Aluno Teste','Garmin','',?,'',?,'Conectado',?)",await encrypt('test-mobile-token'),now+3600000,now);
+ const original=globalThis.fetch;let calls=0;globalThis.fetch=async()=>{calls++;return Response.json({})};
+ try{const response=await f.request('/api/training-weeks','POST',{action:'publish',athleteName:'Aluno Teste',weekStart},coach);assert.equal(response.status,200);const body=await response.json();assert.equal(body.providers[0].status,'failed');assert.match(body.providers[0].message,/faltam faixas para Z1/);assert.equal(calls,0);}
+ finally{globalThis.fetch=original;f.sqlite.close()}
+});
+
+test('failed pace refresh keeps the queue and lease prevents immediate duplicate publication',async()=>{
+ const f=await fixture(),now=Date.now(),currentWeek=weekStartOf(now),currentDay=workoutDayOf(now);
+ f.insert('UPDATE training_weeks SET week_start=?,training_days=?,sessions=?',currentWeek,JSON.stringify([currentDay]),JSON.stringify({[currentDay]:{...plan,steps:[{kind:'simple',seconds:120,zone:'Z2'}]}}));
+ f.insert("INSERT INTO training_week_publications (id,athlete_name,week_start,provider,status,remote_workouts) VALUES ('pub','Aluno Teste',?,'garmin','sent','{}')",currentWeek);
+ f.insert("INSERT INTO pace_refresh_jobs (id,athlete_name,week_start,requested_at,lease_until) VALUES ('job','Aluno Teste',?,?,0)",currentWeek,now);
+ f.insert("INSERT INTO external_integrations (id,athlete_name,provider,scopes,access_token_encrypted,refresh_token_encrypted,expires_at,status,updated_at,last_import_attempt_at) VALUES ('integration','Aluno Teste','Garmin','',?,'',?,'Conectado',?,?)",await encrypt('test-mobile-token'),now+3600000,now,now);
+ insertZoneTest(f,'approved',referenceZones);
+ const original=globalThis.fetch;let writes=0;
+ globalThis.fetch=async()=>{writes++;return new Response('',{status:503})};
+ try{
+  await f.worker.scheduled({cron:'*/10 * * * *',scheduledTime:now},f.env,f.ctx);await Promise.all(f.pending);
+  assert.equal(writes,1);assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM pace_refresh_jobs').get().n,1);assert.ok(f.sqlite.prepare('SELECT lease_until FROM pace_refresh_jobs').get().lease_until>now);
+  await f.worker.scheduled({cron:'*/10 * * * *',scheduledTime:now},f.env,f.ctx);await Promise.all(f.pending);assert.equal(writes,1);
+ }finally{globalThis.fetch=original;f.sqlite.close()}
+});

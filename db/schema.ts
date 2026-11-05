@@ -591,3 +591,14 @@ export const planTemplateOverrides = sqliteTable("plan_template_overrides", {
 }, (table) => ({
   planWeekIdx: uniqueIndex("plan_template_overrides_coach_plan_week_idx").on(table.coachEmail, table.planName, table.weekNumber),
 }));
+
+/** Faixas padrão explicitamente definidas por cada treinador. */
+export const coachPaceDefaults = sqliteTable("coach_pace_defaults", {
+  coachEmail: text("coach_email").primaryKey(), zones: text("zones").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const paceRefreshJobs = sqliteTable("pace_refresh_jobs", {
+  id: text("id").primaryKey(), athleteName:text("athlete_name").notNull(), weekStart:text("week_start").notNull(),
+  requestedAt:integer("requested_at").notNull(), leaseUntil:integer("lease_until").notNull(),
+}, table=>({athleteWeekIdx:uniqueIndex("pace_refresh_jobs_athlete_week_idx").on(table.athleteName,table.weekStart)}));

@@ -15489,3 +15489,6 @@ p, span, b, strong, small, em, li, td, th, label {
 .workout-chat-messages article{display:block!important;align-self:flex-start;max-width:90%;padding:10px 14px;border-radius:12px;background:var(--bg);border:1px solid var(--line)}
 .workout-chat-messages article.mine{align-self:flex-end;border-color:var(--gold);background:var(--panel)}.workout-chat p{white-space:pre-wrap;overflow-wrap:anywhere;margin:6px 0}.workout-chat small{color:var(--muted)}
 .workout-chat form{display:grid;gap:8px}.workout-chat textarea{display:block;width:100%;box-sizing:border-box;background:var(--bg);color:var(--text);border:1px solid var(--line);padding:10px;border-radius:8px}.workout-chat button{justify-self:end}
+
+.training-zone-defaults{border:1px solid var(--line);padding:20px;border-radius:14px;background:var(--panel);margin-bottom:20px;color:var(--text)}
+.default-zone-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:18px 0}.default-zone-grid fieldset{min-width:0;border:1px solid var(--line);border-radius:10px;padding:12px}.default-zone-grid label{display:block;margin:8px 0;font-size:var(--fs-xs)}.default-zone-grid input{display:block;width:100%;box-sizing:border-box;padding:8px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:6px}
