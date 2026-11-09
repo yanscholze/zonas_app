@@ -3000,6 +3000,33 @@ p, span, b, strong, small, em, li, td, th, label {
   font-size: var(--fs-sm);
 }
 
+.current-training-zones {
+  margin: 18px 0;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  color: var(--text);
+}
+
+.current-training-zones>header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.current-training-zones h2 { margin: 4px 0; font-size: var(--fs-lg); }
+.current-training-zones p { color: var(--muted); font-size: var(--fs-sm); }
+.current-training-zones button { min-height: 44px; }
+.current-zone-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,160px),1fr)); gap: 10px; }
+.current-zone-grid article { display: grid; gap: 8px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.current-zone-grid b { color: var(--gold); font-size: var(--fs-sm); }
+.current-zone-grid strong { font-size: var(--fs-base); }
+.current-zone-grid small { color: var(--muted); }
+
 .workout-builder .stage-order-controls {
   grid-column: 1 / -1;
   display: flex;

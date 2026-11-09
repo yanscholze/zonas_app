@@ -217,6 +217,48 @@ function insertZoneTest(f,id,zones,status='Aprovado'){
  f.insert("INSERT INTO performance_tests (id,athlete_name,test_date,test_type,distance_km,total_seconds,age,vam,vo2,fc_max,pace_seconds,zones,tempo_runs,status,created_at) VALUES (?,'Aluno Teste','2026-10-01','3km',3,900,30,'12','40',190,'300',?,?,?,?)",id,JSON.stringify(zones),JSON.stringify(referenceTempos),status,Date.now());
 }
 
+test('custom approval survives reload and an approved test cannot silently lose its active ranges through draft save',async()=>{
+ const f=await fixture(),coach='c'.repeat(64);
+ try{
+  await f.request('/api/training-zone-defaults','POST',{zones:referenceZones},coach);
+  insertZoneTest(f,'custom-edit',referenceZones,'Aguardando revisão');
+  const custom=referenceZones.map(z=>({...z,slow:z.slow+70,fast:z.fast+70}));
+  let response=await f.request('/api/performance-tests','POST',{id:'custom-edit',action:'approve',zones:custom,tempoRuns:referenceTempos},coach);
+  assert.equal(response.status,200);
+  for(const [route,token] of [['/api/performance-tests?athlete=Aluno%20Teste',coach],['/api/student/performance-tests','b'.repeat(64)]]){
+   const data=await(await f.request(route,'GET',null,token)).json();
+   assert.deepEqual(data.trainingZones,custom.map(z=>({...z,source:'individual'})));
+   assert.deepEqual(JSON.parse(data.tests[0].zones),custom);
+  }
+  response=await f.request('/api/performance-tests','POST',{id:'custom-edit',action:'review',zones:referenceZones,tempoRuns:referenceTempos},coach);
+  assert.equal(response.status,409);
+  assert.equal((await response.json()).error,'approved_test_requires_approval');
+  const active=await(await f.request('/api/student/performance-tests')).json();
+  assert.deepEqual(active.trainingZones,custom.map(z=>({...z,source:'individual'})));
+  assert.equal(active.tests[0].status,'Aprovado');
+  const editedAgain=custom.map(z=>({...z,slow:z.slow+10,fast:z.fast+10}));
+  response=await f.request('/api/performance-tests','POST',{id:'custom-edit',action:'approve',zones:editedAgain,tempoRuns:referenceTempos},coach);
+  assert.equal(response.status,200);
+  const reapproved=await(await f.request('/api/student/performance-tests')).json();
+  assert.deepEqual(reapproved.trainingZones,editedAgain.map(z=>({...z,source:'individual'})));
+  // Simulate another tab approving between the review's status read and write.
+  f.insert('UPDATE request_deduplication SET expires_at=0');
+  const prepare=f.env.DB.prepare.bind(f.env.DB);
+  f.env.DB.prepare=sql=>{
+   const statement=prepare(sql);
+   if(sql.startsWith('SELECT test_type,athlete_name,status FROM performance_tests')){
+    const first=statement.first;
+    statement.first=async()=>({...await first.call(statement),status:'Aguardando revisão'});
+   }
+   return statement;
+  };
+  response=await f.request('/api/performance-tests','POST',{id:'custom-edit',action:'review',zones:referenceZones,tempoRuns:referenceTempos},coach);
+  assert.equal(response.status,409);
+  const unchanged=f.sqlite.prepare("SELECT status,zones FROM performance_tests WHERE id='custom-edit'").get();
+  assert.equal(unchanged.status,'Aprovado');assert.deepEqual(JSON.parse(unchanged.zones),editedAgain);
+ }finally{f.sqlite.close()}
+});
+
 test('teacher defaults reach student and Garmin; personal zones win; Livre stays without target',async()=>{
  const f=await fixture();const coach='c'.repeat(64),other='d'.repeat(64),now=Date.now();
  let response=await f.request('/api/training-zone-defaults','POST',{zones:referenceZones},coach);assert.equal(response.status,200);

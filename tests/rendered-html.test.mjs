@@ -1440,7 +1440,7 @@ test("approves a 5-minute result without zones and stores the coach observation"
   workerUrl.searchParams.set("approve-performance-test-5min", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
   const writes=[];
-  const prepare=(sql)=>({values:[],bind(...values){this.values=values;return this},async first(){return sql.includes("SELECT test_type,athlete_name FROM performance_tests")?{test_type:"5min"}:null},async all(){return{results:[]}},async run(){writes.push({sql,values:this.values});return{success:true}}});
+  const prepare=(sql)=>({values:[],bind(...values){this.values=values;return this},async first(){return sql.includes("SELECT test_type,athlete_name,status FROM performance_tests")?{test_type:"5min"}:null},async all(){return{results:[]}},async run(){writes.push({sql,values:this.values});return{success:true}}});
   const env={ASSETS:{fetch:async()=>new Response("Not found",{status:404})},DB:{prepare:withSession(prepare),async batch(items){for(const item of items)await item.run();return[];}}};
   const response=await worker.fetch(new Request("https://zonasapp.example/api/performance-tests",{method:"POST",headers:{"content-type":"application/json",...coachCookie},body:JSON.stringify({id:"five-minute-test",action:"approve",zones:[],tempoRuns:[],coachNote:"Boa execução"})}),env,{waitUntil(){},passThroughOnException(){}});
   assert.equal(response.status,200);

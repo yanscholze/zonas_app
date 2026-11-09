@@ -1982,9 +1982,11 @@ async function performanceTestsApi(request: Request, env: Env): Promise<Response
       const id = boundedText(input.id,80);
       const zones = Array.isArray(input.zones) ? input.zones : [];
       const tempoRuns = Array.isArray(input.tempoRuns) ? input.tempoRuns : [];
-      const target=id?await env.DB.prepare(`SELECT test_type,athlete_name FROM performance_tests WHERE id = ? AND ${carteira.clausula} LIMIT 1`).bind(id,...carteira.valores).first() as {test_type?:string;athlete_name?:string}|null:null;
+      const target=id?await env.DB.prepare(`SELECT test_type,athlete_name,status FROM performance_tests WHERE id = ? AND ${carteira.clausula} LIMIT 1`).bind(id,...carteira.valores).first() as {test_type?:string;athlete_name?:string;status?:string}|null:null;
       if(!target)return Response.json({error:"test_not_found"},{status:404});
       const fiveMinute=target.test_type==="5min";
+      const approvedReviewError=()=>Response.json({error:"approved_test_requires_approval",motivo:"Este teste já fornece os ritmos em uso. Salvar como rascunho retiraria essa aprovação.",saida:"Use Salvar e usar ritmos personalizados para confirmar a alteração, ou feche a edição para manter os ritmos atuais."},{status:409});
+      if(action==="review"&&target.status==="Aprovado"&&!fiveMinute)return approvedReviewError();
       if (!id || (fiveMinute ? zones.length!==0||tempoRuns.length!==0 : zones.length !== 5 || tempoRuns.length !== 4)) return Response.json({error:"invalid_review"},{status:400});
       const normalizedZones = zones.map((zone:any,index)=>({z:`Z${index+1}`,label:boundedText(zone?.label,40),slow:Number(zone?.slow),fast:Number(zone?.fast)}));
       const normalizedTempoRuns = tempoRuns.map((tempo:any)=>({label:boundedText(tempo?.label,30),targetPace:Number(tempo?.targetPace),projectedTotal:Number(tempo?.projectedTotal)}));
@@ -1995,7 +1997,8 @@ async function performanceTestsApi(request: Request, env: Env): Promise<Response
         await env.DB.prepare("UPDATE performance_tests SET zones = '[]', tempo_runs = '[]', coach_note = ?, status = ? WHERE id = ?").bind(coachNote||null,status,id).run();
         return Response.json({id,status,zones:[],tempoRuns:[],coachNote});
       }
-      await env.DB.prepare("UPDATE performance_tests SET zones = ?, tempo_runs = ?, status = ? WHERE id = ?").bind(JSON.stringify(normalizedZones),JSON.stringify(normalizedTempoRuns),status,id).run();
+      const saved=await env.DB.prepare(`UPDATE performance_tests SET zones = ?, tempo_runs = ?, status = ? WHERE id = ?${action==="review"?" AND status <> 'Aprovado'":""}`).bind(JSON.stringify(normalizedZones),JSON.stringify(normalizedTempoRuns),status,id).run();
+      if(action==="review"&&saved.meta?.changes===0)return approvedReviewError();
       if(action==="approve"&&target?.athlete_name)await queuePaceRefresh(env,target.athlete_name);
       return Response.json({id,status,zones:normalizedZones,tempoRuns:normalizedTempoRuns});
     }
