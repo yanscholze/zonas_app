@@ -1258,21 +1258,15 @@ test("uses permanent library edits when loading or advancing an athlete week", a
 test("links the structured workout to an athlete and shows the released steps to the student", async () => {
   const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   assert.match(source, /TREINO DE \{athleteName\.toUpperCase\(\)\} · \{day\}/);
-  assert.match(source, /steps:\[\.\.\.\(warmupEnabled&&warmup\.amount>0\?\[payloadForFixedStep\(warmup\)\]/);
-  assert.match(source, /cooldownEnabled&&cooldown\.amount>0\?\[payloadForFixedStep\(cooldown\)\]/);
+  assert.match(source, /steps:saveEditorSteps\(steps,savedPace\)/);
   assert.match(source, /value="km">Distância \(km\)<\/option>/);
   assert.match(source, /value="m">Distância \(m\)<\/option>/);
-  assert.match(source, /type FixedStepUnit = "min"\|"m"\|"km"/);
-  assert.match(source, /meters:Math\.round\(step\.amount\*\(step\.unit==="km"\?1000:1\)\),distanceUnit:step\.unit/);
-  assert.match(source, /step\?\.distanceUnit==="m"\?meters/);
-  assert.match(source, /aria-label="Remover aquecimento"/);
-  assert.match(source, /aria-label="Remover desaquecimento"/);
-  assert.match(source, /warmupEnabled\?kmFor\(warmup\.amount/);
-  assert.match(source, /cooldownEnabled\?kmFor\(cooldown\.amount/);
+  assert.match(source, /addSimple\("Aquecimento"\)/);
+  assert.match(source, /addSimple\("Desaquecimento"\)/);
   assert.match(source, /Após cada repetição:/);
   assert.match(source, /Este é o mesmo treino montado e liberado pelo treinador/);
   assert.match(source, /todaySession&&\(todaySession\.steps\?\.length\?<StructuredWorkoutCard/);
-  assert.match(source, /initialRepeats\.map/);
+  assert.match(source, /readEditorSteps\(initial\?\.steps/);
   assert.match(source, /Editar treino por etapas/);
   assert.match(source, /Atualizar treino completo de/);
   assert.match(source, /Confirmar troca/);
@@ -1296,21 +1290,20 @@ test("builds workout steps by minutes or meters without separating the recovery"
   const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
   assert.match(source, /<option value="min">Minutos<\/option><option value="m">Metros<\/option>/);
   assert.match(source, /effortUnit:"s",effortZone:"Z5",effortActivity:"run",recovery:40,recoveryUnit:"s",recoveryZone:"Z1",recoveryActivity:"run"/);
-  assert.match(source, /effortMeters:step\.effort/);
-  assert.match(source, /meters:Math\.round\(step\.amount\*\(step\.unit==="km"\?1000:1\)\),distanceUnit:step\.unit/);
+  const editor = await readFile(new URL("../shared/workout-editor.ts", import.meta.url), "utf8");
+  assert.match(editor, /effortMeters: step\.effort/);
+  assert.match(editor, /distanceUnit: step\.unit/);
   assert.match(source, /A recuperação acontece após cada repetição, inclusive a última/);
   assert.match(source, /step\.effortMeters\?`\$\{step\.effortMeters\} m`/);
 });
 
 test("allows a continuous workout without mandatory repeats or fixed blocks", async () => {
   const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
-  assert.match(source, /setRepeatSteps\(current=>current\.filter\(step=>step\.id!==series\.id\)\)/);
-  assert.match(source, /Remover série/);
+  assert.match(source, /current\.filter\(item=>item\.id!==step\.id\)/);
   assert.match(source, /Treino contínuo/);
-  assert.match(source, /Remover aquecimento/);
-  assert.match(source, /Remover desaquecimento/);
-  assert.match(source, /warmupEnabled&&warmup\.amount>0\?\[payloadForFixedStep\(warmup\)\]/);
-  assert.match(source, /cooldownEnabled&&cooldown\.amount>0\?\[payloadForFixedStep\(cooldown\)\]/);
+  assert.match(source, /steps:saveEditorSteps\(steps,savedPace\)/);
+  assert.match(source, /const hasSteps=steps\.length>0/);
+
 });
 
 test("selects and persists the real calendar week instead of a fixed date", async () => {
@@ -2745,10 +2738,10 @@ test("prevents incomplete workouts and gives the coach one clear finish action",
   assert.match(client, /O aluno receberá o treino completo\?/);
   assert.match(client, /Aquecimento/);
   assert.match(client, /Parte principal/);
-  assert.match(client, /Recuperações/);
+  assert.match(client, /A recuperação acontece após cada repetição/);
   assert.match(client, /Desaquecimento/);
-  assert.match(client, /if\(!hasMainBlock\)/);
-  assert.match(client, /Adicione a parte principal antes de concluir o treino/);
+  assert.match(client, /if\(!hasSteps\)/);
+  assert.match(client, /Adicione pelo menos uma etapa antes de concluir o treino/);
   assert.match(client, /onClick=\{close\}>Cancelar/);
   assert.match(client, /Usar treino completo no dia/);
   assert.match(css, /\.workout-completeness\{/);
@@ -4191,11 +4184,11 @@ test("etapas Livre chegam ao Garmin sem alvo de ritmo", async () => {
 
 test("o editor representa Livre como ausência de zona e mantém o seletor", async () => {
   const source = await readFile(new URL("../app/ZonasAppClient.tsx", import.meta.url), "utf8");
-  assert.match(source, /const FREE_ZONE="__free__"/);
-  assert.match(source, /const savedZone=\(zone:string\)=>isFreeZone\(zone\)\?null:zone/);
+  const editor = await readFile(new URL("../shared/workout-editor.ts", import.meta.url), "utf8");
   assert.match(source, /<option value=\{FREE_ZONE\}>Livre<\/option>/);
-  assert.match(source, /zone:savedZone\(step\.zone\)/);
-  assert.match(source, /effortZone:savedZone\(step\.effortZone\)/);
+  assert.match(source, /steps:saveEditorSteps\(steps,savedPace\)/);
+  assert.match(editor, /value === FREE_ZONE \? null : value/);
+
 });
 
 test("a ordem dos passos é contínua, inclusive dentro da série", async () => {

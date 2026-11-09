@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import * as schema from '../db/schema.ts';
 import { tableSql } from '../db/sql.ts';
 import { weekStartOf, workoutDayOf } from '../worker/integrations.ts';
+import { readEditorSteps, saveEditorSteps, moveEditorStep } from '../shared/workout-editor.ts';
 
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const encryptionKey='test-only-encryption-key';
@@ -41,6 +42,45 @@ async function fixture(provider='Garmin'){
  return{sqlite,worker,env,ctx,pending,insert,request};
 }
 async function encrypt(value){const key=await crypto.subtle.importKey('raw',await crypto.subtle.digest('SHA-256',new TextEncoder().encode(encryptionKey)),{name:'AES-GCM'},false,['encrypt']);const iv=crypto.getRandomValues(new Uint8Array(12));const bytes=await crypto.subtle.encrypt({name:'AES-GCM',iv},key,new TextEncoder().encode(value));return`${Buffer.from(iv).toString('base64')}.${Buffer.from(bytes).toString('base64')}`}
+
+test('edited stage order persists through the API and reaches Garmin and the Zepp device endpoint unchanged',async()=>{
+ const f=await fixture(),now=Date.now(),coach='c'.repeat(64),currentWeek=weekStartOf(now),currentDay=workoutDayOf(now);
+ const editor=readEditorSteps([
+  {kind:'simple',label:'Aquecimento',meters:1234,distanceUnit:'km',zone:null,activity:'walk'},
+  {kind:'repeat',label:'Tiros A',repetitions:2,effortSeconds:60,effortZone:null,recoverySeconds:30,recoveryZone:null},
+  {kind:'simple',label:'Desaquecimento',minutes:5,zone:null},
+  {kind:'repeat',label:'Tiros B',repetitions:3,effortMeters:200,effortZone:null,recoverySeconds:45,recoveryZone:null},
+  {kind:'simple',label:'Aquecimento',seconds:30,zone:null},
+ ]);
+ const steps=saveEditorSteps(moveEditorStep(editor,editor[2].id,0),()=>undefined);
+ const sessions={[currentDay]:{...plan,steps}};
+ const sent=[],original=globalThis.fetch;
+ globalThis.fetch=async(url,options)=>{if(String(url).endsWith('/workout-service/workout')){sent.push(JSON.parse(options.body));return Response.json({workoutId:321})}return Response.json({})};
+ try{
+  let response=await f.request('/api/training-weeks','POST',{athleteName:'Aluno Teste',weekStart:currentWeek,plan:'Plano',phase:'Base',weekLabel:'Semana 1',trainingDays:[currentDay],sessions,status:'Liberada'},coach);
+  assert.ok(response.ok);
+  const saved=f.sqlite.prepare('SELECT sessions FROM training_weeks WHERE week_start=?').get(currentWeek);
+  assert.deepEqual(JSON.parse(saved.sessions)[currentDay].steps,steps);
+  f.insert("INSERT INTO external_integrations (id,athlete_name,provider,scopes,access_token_encrypted,refresh_token_encrypted,expires_at,status,updated_at) VALUES ('integration','Aluno Teste','Garmin','',?,'',?,'Conectado',?)",await encrypt('test-mobile-token'),now+3600000,now);
+  response=await f.request('/api/training-weeks','POST',{action:'publish',athleteName:'Aluno Teste',weekStart:currentWeek},coach);
+  assert.equal(response.status,200);assert.equal(sent.length,1);
+  const garmin=sent[0].workoutSegments[0].workoutSteps;
+  assert.deepEqual(garmin.map(step=>step.stepType.stepTypeKey),['cooldown','warmup','repeat','repeat','warmup']);
+  assert.deepEqual(garmin.map(step=>step.stepOrder),[1,2,3,6,9]);
+  assert.equal(garmin[1].endConditionValue,1234);
+  assert.equal(garmin[2].numberOfIterations,2);assert.equal(garmin[3].numberOfIterations,3);
+  assert.equal(garmin[2].workoutSteps[0].targetType.workoutTargetTypeKey,'no.target');
+  const token='e'.repeat(48);
+  f.insert("INSERT INTO device_ingest_tokens (token_hash,athlete_name,provider,created_at) VALUES (?,'Aluno Teste','zepp',?)",hash(token),now);
+  f.insert("UPDATE training_week_publications SET status='published' WHERE provider='zepp'");
+  response=await f.request('/api/ingest/device/workout','GET',null,undefined,{'x-zonas-ingest-token':token});
+  assert.equal(response.status,200);
+  const device=await response.json();
+  assert.deepEqual(device.workout.steps.map(step=>step.label),steps.map(step=>step.label));
+  assert.equal(device.workout.steps[1].meters,1234);assert.equal(device.workout.steps[1].activity,'walk');
+  assert.equal(device.workout.steps[4].seconds,30);
+ }finally{globalThis.fetch=original;f.sqlite.close()}
+});
 
 test('device completion is persisted once and the same stage metrics are visible to athlete and owning coach',async()=>{
  const f=await fixture('Amazfit / Zepp');const token='a'.repeat(48);

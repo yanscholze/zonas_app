@@ -2994,6 +2994,73 @@ p, span, b, strong, small, em, li, td, th, label {
   margin: 18px 0;
 }
 
+.stage-order-hint {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.workout-builder .stage-order-controls {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+  width: 100%;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.stage-order-controls label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.stage-order-controls button,
+.stage-order-controls select {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text);
+}
+
+.stage-order-controls button:focus-visible,
+.stage-order-controls select:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.workout-builder .stage-order-controls .remove-step {
+  margin-left: auto;
+}
+
+.stage-order-controls button:disabled {
+  opacity: .35;
+  cursor: not-allowed;
+}
+
+.series-title input {
+  max-width: 100%;
+  width: 100%;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 7px;
+}
+
+.workout-builder .series-title>span,
+.workout-builder .editable-block>span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .fixed-block,
 .series-title {
   display: flex;
@@ -10734,6 +10801,11 @@ p, span, b, strong, small, em, li, td, th, label {
 @media(max-width:760px) {
   .workout-drawer {
     padding: 18px 14px 22px;
+  }
+  .workout-drawer>footer {
+    bottom: -22px;
+    margin: 22px -14px -22px;
+    padding: 15px 14px;
   }
   .workout-drawer>header {
     align-items: flex-start;
