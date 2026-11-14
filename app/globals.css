@@ -2994,6 +2994,23 @@ p, span, b, strong, small, em, li, td, th, label {
   margin: 18px 0;
 }
 
+.workout-drawer>.next-race-card { order:1; }
+.next-race-card { margin:12px 0; padding:16px; border:1px solid var(--gold); border-radius:var(--radius-md); background:var(--panel); color:var(--text); }
+.next-race-card header,.student-race-list>header,.student-race-list article>header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; }
+.next-race-card h3,.student-race-list h3 { margin:8px 0; overflow-wrap:anywhere; }
+.next-race-card header>b { color:var(--gold); font-size:var(--fs-sm); }
+.next-race-card dl { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,120px),1fr)); gap:12px; margin:12px 0; }
+.next-race-card dt,.student-race-list small { color:var(--muted); font-size:var(--fs-xs); }
+.next-race-card dd { margin:4px 0 0; font-weight:700; }
+.next-race-card p { margin:8px 0 0; color:var(--muted); font-size:var(--fs-sm); overflow-wrap:anywhere; }
+.next-race-card button { min-height:44px; }
+.student-race-list { margin:20px 0; }
+.student-race-list h2 { margin:0; font-size:var(--fs-lg); }
+.student-race-list article { margin:10px 0; padding:16px; border:1px solid var(--line); border-radius:var(--radius-md); background:var(--panel); }
+.student-race-list p { margin:8px 0; overflow-wrap:anywhere; }
+.student-race-list header>span { color:var(--muted); font-size:var(--fs-xs); }
+.race-save-success { padding:12px; border:1px solid var(--gold); border-radius:var(--radius-sm); }
+
 .stage-order-hint {
   margin: 0 0 8px;
   color: var(--muted);
@@ -15591,3 +15608,9 @@ p, span, b, strong, small, em, li, td, th, label {
 
 .training-zone-defaults{border:1px solid var(--line);padding:20px;border-radius:14px;background:var(--panel);margin-bottom:20px;color:var(--text)}
 .default-zone-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:18px 0}.default-zone-grid fieldset{min-width:0;border:1px solid var(--line);border-radius:10px;padding:12px}.default-zone-grid label{display:block;margin:8px 0;font-size:var(--fs-xs)}.default-zone-grid input{display:block;width:100%;box-sizing:border-box;padding:8px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:6px}
+
+.workout-chat summary{min-height:44px;display:flex;align-items:center;color:var(--gold);gap:8px}
+.workout-chat .workout-chat-intro{font-size:var(--fs-sm);color:var(--muted)}
+.workout-chat-messages article{flex-shrink:0}.workout-chat button{min-height:44px;padding:10px 16px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--panel);color:var(--text)}
+.workout-chat form>button{background:var(--gold);color:#17130b;font-weight:700}.workout-chat button:disabled{opacity:.5;cursor:not-allowed}
+.workout-chat textarea:focus-visible,.workout-chat button:focus-visible,.workout-chat summary:focus-visible{outline:2px solid var(--gold);outline-offset:2px}

@@ -43,6 +43,31 @@ async function fixture(provider='Garmin'){
 }
 async function encrypt(value){const key=await crypto.subtle.importKey('raw',await crypto.subtle.digest('SHA-256',new TextEncoder().encode(encryptionKey)),{name:'AES-GCM'},false,['encrypt']);const iv=crypto.getRandomValues(new Uint8Array(12));const bytes=await crypto.subtle.encrypt({name:'AES-GCM',iv},key,new TextEncoder().encode(value));return`${Buffer.from(iv).toString('base64')}.${Buffer.from(bytes).toString('base64')}`}
 
+test('student can register several races, read all of them and keep records isolated from other portfolios',async()=>{
+ const f=await fixture();
+ try{
+  const first={kind:'race',name:'Prova A',raceDate:'2027-01-10',distance:'10 km',city:'Cidade A',goal:'Concluir'};
+  let response=await f.request('/api/student/races-records','POST',{...first,athleteName:'Outro Aluno'});
+  assert.equal(response.status,400);assert.equal((await response.json()).error,'unexpected_field');
+  response=await f.request('/api/student/races-records','POST',first);assert.equal(response.status,201);
+  const second={kind:'race',name:'Prova B',raceDate:'2027-02-14',distance:'21,1 km'};
+  response=await f.request('/api/student/races-records','POST',second);assert.equal(response.status,201);
+  response=await f.request('/api/student/races-records');let data=await response.json();
+  assert.deepEqual(data.races.map(race=>race.name),['Prova A','Prova B']);
+  assert.ok(data.races.every(race=>race.athlete_name==='Aluno Teste'));
+  response=await f.request('/api/student/races-records','POST',{...first,goal:'Recorde'});assert.equal(response.status,201);
+  data=await(await f.request('/api/student/races-records?athlete=Outro%20Aluno')).json();
+  assert.equal(data.races.length,2);assert.equal(data.races[0].goal,'Recorde');
+  const own=await(await f.request('/api/races-records?athlete=Aluno%20Teste','GET',null,'c'.repeat(64))).json();
+  assert.equal(own.races.length,2);
+  const other=await(await f.request('/api/races-records?athlete=Aluno%20Teste','GET',null,'d'.repeat(64))).json();
+  assert.equal(other.races.length,0);
+  response=await f.request('/api/student/races-records','POST',{...second,raceDate:'2027-02-30'});assert.equal(response.status,400);
+  response=await f.request('/api/student/races-records','POST',{kind:'record',distance:'10 km',resultTime:'00:55:00'});assert.equal(response.status,201);
+  data=await(await f.request('/api/student/races-records')).json();assert.equal(data.races.length,2);assert.equal(data.records.length,1);
+ }finally{f.sqlite.close()}
+});
+
 test('edited stage order persists through the API and reaches Garmin and the Zepp device endpoint unchanged',async()=>{
  const f=await fixture(),now=Date.now(),coach='c'.repeat(64),currentWeek=weekStartOf(now),currentDay=workoutDayOf(now);
  const editor=readEditorSteps([

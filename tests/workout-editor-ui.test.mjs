@@ -18,6 +18,7 @@ test('real mobile editor moves, duplicates, removes, edits, saves and reopens st
  import {useEffect,useState} from 'react';
  import {createRoot} from 'react-dom/client';
  import {FREE_ZONE,readEditorSteps,saveEditorSteps,moveEditorStep} from './shared/workout-editor';
+ const NextRaceCard=()=>null;
  const avise=()=>{};const parsedList=value=>Array.isArray(value)?value:[];const paceInput=value=>String(value);
  window.fetch=async()=>({ok:true,json:async()=>({tests:[],trainingZones:[]})});
  ${parser}
