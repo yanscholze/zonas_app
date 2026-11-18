@@ -15614,3 +15614,6 @@ p, span, b, strong, small, em, li, td, th, label {
 .workout-chat-messages article{flex-shrink:0}.workout-chat button{min-height:44px;padding:10px 16px;border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--panel);color:var(--text)}
 .workout-chat form>button{background:var(--gold);color:#17130b;font-weight:700}.workout-chat button:disabled{opacity:.5;cursor:not-allowed}
 .workout-chat textarea:focus-visible,.workout-chat button:focus-visible,.workout-chat summary:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+
+.athlete-zones-pending{border:1px solid var(--gold)!important;color:var(--gold)!important;background:var(--panel)!important;white-space:normal!important;min-height:44px;padding:8px!important;border-radius:8px}
+.athlete-row-action{flex-wrap:wrap}.athlete-row-action .athlete-zones-pending{flex-basis:100%;text-align:left}

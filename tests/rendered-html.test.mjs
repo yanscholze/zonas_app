@@ -405,7 +405,7 @@ test("serves the day's workout to a watch, with zones already resolved into pace
     const [aquecimento, serie] = corpo.workout.steps;
     assert.equal(aquecimento.type, "simple");
     assert.equal(aquecimento.seconds, 600);
-    assert.deepEqual(aquecimento.target, { zone: "Z1", label: "Recuperação", paceSlowSeconds: 420, paceFastSeconds: 360 });
+    assert.deepEqual(aquecimento.target, { zone: "Z1", label: "Recuperação", paceSlowSeconds: 420, paceFastSeconds: 360,source:"individual" });
 
     assert.equal(serie.type, "repeat");
     assert.equal(serie.repetitions, 8);
@@ -4077,12 +4077,12 @@ const treinoDeIntervalo = () => ({
   maxHeartRate: 188,
   steps: [
     { type: "simple", label: "Aquecimento", seconds: 600, meters: null,
-      target: { zone: "Z1", label: "Recuperação", paceSlowSeconds: 420, paceFastSeconds: 360 } },
+      target: { zone: "Z1", label: "Recuperação", paceSlowSeconds: 420, paceFastSeconds: 360,source:"individual" } },
     { type: "repeat", label: "Série principal", repetitions: 6,
       effort: { seconds: null, meters: 400,
         target: { zone: "Z5", label: "VO₂ máximo", paceSlowSeconds: 270, paceFastSeconds: 250 } },
       recovery: { seconds: 60, meters: null,
-        target: { zone: "Z1", label: "Recuperação", paceSlowSeconds: 420, paceFastSeconds: 360 } } },
+        target: { zone: "Z1", label: "Recuperação", paceSlowSeconds: 420, paceFastSeconds: 360,source:"individual" } } },
     { type: "simple", label: "Desaquecimento", seconds: 480, meters: null, target: null },
   ],
 });

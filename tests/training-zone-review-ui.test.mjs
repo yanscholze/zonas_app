@@ -18,6 +18,7 @@ test('reviewed custom ranges remain visible after save and remount; a new draft 
  const script=`
  import {useState,useEffect,useRef,useCallback} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';
  import CurrentTrainingZones from './app/CurrentTrainingZones';import {parsePaceZones} from './shared/training-zones';
+ const AthletePaceZoneEditor=()=>null;
  const avise=()=>{};const pergunte=async()=>true;const plural=(n,label)=>n+' '+label;const describeError=(error,fallback)=>error.message||fallback;
  ${format}
  ${helpers}
@@ -40,7 +41,7 @@ test('reviewed custom ranges remain visible after save and remount; a new draft 
  (async()=>{try{
  mount('first');await until(()=>document.querySelector('.current-training-zones')?.textContent.includes('6:40 – 6:00/km')); 
  check(document.querySelector('.current-training-zones').textContent.includes('6:40 – 6:00/km'),'saved zones displayed instead of calculator');
- await click(button('Editar ritmos individuais'));await until(()=>document.querySelectorAll('.review-zone-grid input').length===10);
+ await click(button('Revisar avaliação salva'));await until(()=>document.querySelectorAll('.review-zone-grid input').length===10);
  check(!button('Salvar rascunho'),'approved ranges cannot be demoted accidentally');
  let fields=document.querySelectorAll('.review-zone-grid input');
  await set(fields[0],'8:10');await set(fields[1],'7:25');
@@ -50,7 +51,7 @@ test('reviewed custom ranges remain visible after save and remount; a new draft 
  check(reads>=2,'canonical data read after save, including duplicate acknowledgement');
  check(document.querySelector('.current-training-zones').textContent.includes('8:10 – 7:25/km'),'custom ranges visible after approval');
  mount('reload');await until(()=>document.querySelector('.current-training-zones')?.textContent.includes('8:10 – 7:25/km')); 
- await click(button('Editar ritmos individuais'));await until(()=>document.querySelectorAll('.review-zone-grid input').length===10);
+ await click(button('Revisar avaliação salva'));await until(()=>document.querySelectorAll('.review-zone-grid input').length===10);
  fields=document.querySelectorAll('.review-zone-grid input');check(fields[0].value==='8:10'&&fields[1].value==='7:25','reopening preserves saved custom ranges');
  await set(fields[0],'8:99');await click(button('Salvar e usar ritmos personalizados ✓'));await until(()=>document.querySelector('[role=alert]'));
  check(posts.length===1,'invalid seconds rejected without applying another range');

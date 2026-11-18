@@ -238,6 +238,27 @@ test('historical imported pace in range and manual timed workouts ignore estimat
 
 const referenceZones=Array.from({length:5},(_,i)=>({z:`Z${i+1}`,label:`Zona ${i+1}`,fast:360-i*30,slow:400-i*30}));
 const referenceTempos=Array.from({length:4},(_,i)=>({label:['5 km','10 km','Meia maratona','Maratona'][i],targetPace:300+i*15,projectedTotal:1500}));
+test('individual manual zones survive default changes and new test calculations, and clear the missing-zones alert',async()=>{
+ const f=await fixture(),coach='c'.repeat(64),other='d'.repeat(64);
+ try{
+  let response=await f.request('/api/athletes','GET',null,coach);
+  assert.equal((await response.json()).athletes[0].has_individual_zones,0);
+  await f.request('/api/training-zone-defaults','POST',{zones:referenceZones},coach);
+  response=await f.request('/api/athletes','GET',null,coach);assert.equal((await response.json()).athletes[0].has_individual_zones,0);
+  const personal=referenceZones.map(z=>({...z,slow:z.slow+60,fast:z.fast+60}));
+  response=await f.request('/api/athlete-pace-zones','POST',{athleteName:'Aluno Teste',zones:personal},other);assert.equal(response.status,403);
+  response=await f.request('/api/athlete-pace-zones','POST',{athleteName:'Aluno Teste',zones:personal},coach);assert.equal(response.status,200);
+  const data=await response.json();assert.equal(data.origin,'manual');assert.deepEqual(data.zones,personal.map(z=>({...z,source:'individual'})));
+  response=await f.request('/api/athletes','GET',null,coach);assert.equal((await response.json()).athletes[0].has_individual_zones,1);
+  response=await f.request('/api/performance-tests','POST',{athleteName:'Aluno Teste',testDate:'2026-11-18',testType:'3km',distanceKm:3,minutes:15,seconds:0,age:30},coach);assert.equal(response.status,201);
+  let student=await(await f.request('/api/student/performance-tests')).json();assert.deepEqual(student.trainingZones,personal.map(z=>({...z,source:'individual'})));
+  await f.request('/api/training-zone-defaults','POST',{zones:referenceZones.map(z=>({...z,slow:z.slow+10,fast:z.fast+10}))},coach);
+  student=await(await f.request('/api/student/performance-tests')).json();assert.deepEqual(student.trainingZones,personal.map(z=>({...z,source:'individual'})));
+  response=await f.request('/api/athlete-pace-zones?athlete=Aluno%20Teste','GET',null,other);assert.equal(response.status,403);
+  response=await f.request('/api/performance-tests?athlete=Aluno%20Teste','GET',null,other);assert.equal(response.status,403);
+  response=await f.request('/api/athlete-pace-zones','POST',{athleteName:'Aluno Teste',zones:personal.slice(0,4)},coach);assert.equal(response.status,400);
+ }finally{f.sqlite.close()}
+});
 function insertZoneTest(f,id,zones,status='Aprovado'){
  f.insert("INSERT INTO performance_tests (id,athlete_name,test_date,test_type,distance_km,total_seconds,age,vam,vo2,fc_max,pace_seconds,zones,tempo_runs,status,created_at) VALUES (?,'Aluno Teste','2026-10-01','3km',3,900,30,'12','40',190,'300',?,?,?,?)",id,JSON.stringify(zones),JSON.stringify(referenceTempos),status,Date.now());
 }

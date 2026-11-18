@@ -1,3 +1,4 @@
+import {paceSegments,measuredPaceEvidence,type PaceEvidence} from './pace-adherence.ts';
 /** Dados medidos ficam separados da associação ao plano. Ausência nunca vira zero. */
 export type Metrics = Partial<Record<string, number>>;
 export type PlannedStage = {
@@ -13,7 +14,7 @@ export type ActivityResult = {
   version: 1; activityId: string; provider: string; title: string; startedAt: number; importedAt: number;
   workoutId: string | null; workoutMatch: "workout-id" | "date" | "unmatched";
   complete: boolean; mappingVersion?: number; summary: Metrics; laps: ResultLap[];
-  stages: Array<PlannedStage & { metrics: Metrics | null; lapIndexes: number[] }>;
+  stages: Array<PlannedStage & { metrics: Metrics | null; lapIndexes: number[]; paceEvidence?:PaceEvidence }>;
   charts?: ActivityChartSeries[];
   zones?: Array<{ label: string; seconds: number }>;
   otherMetrics?: Array<{ label: string; value: number }>;
@@ -155,18 +156,21 @@ export function expandStages(steps: unknown): PlannedStage[] {
   const append = (raw: Record<string, unknown>, label: string, intensity = intensityOf(label)) => {
     if (stages.length >= 500) return;
     const target = object(raw.target);
+    const savedRange=String(raw.pace||'').match(/(\d{1,2}):([0-5]\d)\s*[–-]\s*(\d{1,2}):([0-5]\d)/);
+    const savedPaces=savedRange?[Number(savedRange[1])*60+Number(savedRange[2]),Number(savedRange[3])*60+Number(savedRange[4])]:[];
+    const free=raw.zone===null||String(raw.zone).toLowerCase()==='livre';
     stages.push({ index: stages.length, label: label.slice(0, 160), intensity,
       activity: raw.activity === "walk" ? "walk" : "run",
       seconds: positive(raw.seconds) ?? (positive(raw.minutes) ? Number(raw.minutes) * 60 : null),
       meters: positive(raw.meters ?? raw.distanceMeters), zone: String(target.zone ?? raw.zone ?? "") || null,
-      paceFastSeconds: positive(target.paceFastSeconds), paceSlowSeconds: positive(target.paceSlowSeconds),
+      paceFastSeconds:free?null:positive(target.paceFastSeconds)??(savedPaces.length?Math.min(...savedPaces):null), paceSlowSeconds:free?null:positive(target.paceSlowSeconds)??(savedPaces.length?Math.max(...savedPaces):null),
     });
   };
   for (const value of Array.isArray(steps) ? steps.slice(0, 100) : []) {
     const raw = object(value);
     if (raw.kind !== "repeat" && raw.type !== "repeat") { append(raw, String(raw.label ?? "Etapa")); continue; }
-    const effort = raw.effort ? object(raw.effort) : { seconds: raw.effortSeconds, minutes: raw.effortMinutes, meters: raw.effortMeters, activity: raw.effortActivity, zone: raw.effortZone };
-    const recovery = raw.recovery ? object(raw.recovery) : { seconds: raw.recoverySeconds, minutes: raw.recoveryMinutes, meters: raw.recoveryMeters, activity: raw.recoveryActivity, zone: raw.recoveryZone };
+    const effort = raw.effort ? object(raw.effort) : { seconds: raw.effortSeconds, minutes: raw.effortMinutes, meters: raw.effortMeters, activity: raw.effortActivity, zone: raw.effortZone,pace:raw.effortPace };
+    const recovery = raw.recovery ? object(raw.recovery) : { seconds: raw.recoverySeconds, minutes: raw.recoveryMinutes, meters: raw.recoveryMeters, activity: raw.recoveryActivity, zone: raw.recoveryZone,pace:raw.recoveryPace };
     const repetitions = Math.min(100, Math.max(1, Math.floor(Number(raw.repetitions) || 1)));
     for (let repeat = 0; repeat < repetitions; repeat++) {
       append(effort, `${String(raw.label ?? "Tiro")} · ${repeat + 1}/${repetitions}`, "active");
@@ -315,10 +319,13 @@ export function buildActivityResult(input: {
   const sequence = planned.length > 0 && laps.length === planned.length &&
     (input.workoutMatch === "workout-id" || hasMarkers) && laps.every((lap, index) => closeToPlan(lap, planned[index]));
   if (sequence) for (const lap of laps) if (lap.stageIndex === null) { lap.stageIndex = lap.index; lap.association = "sequence"; }
+  const samples=paceSegments(raw.charts);
+  let clock=0;
+  const windows=laps.map(lap=>{const start=clock;clock+=Number(lap.metrics.durationSeconds)||0;return {start,end:clock}});
   return {
     version: 1, provider: input.provider, activityId: input.activityId, startedAt: input.startedAt, importedAt: Date.now(),
     title: String(raw.activityName ?? raw.title ?? "Atividade concluída").slice(0, 160),
-    workoutId: remoteWorkoutId(raw), workoutMatch: input.workoutMatch ?? "unmatched", complete: input.complete ?? true, mappingVersion: 3,
+    workoutId: remoteWorkoutId(raw), workoutMatch: input.workoutMatch ?? "unmatched", complete: input.complete ?? true, mappingVersion: 4,
     summary: readMetrics(summaryRaw), laps,
     charts: input.provider === "Garmin" ? chartSeries(raw.charts) : [],
     zones: input.provider === "Garmin" ? connectZones(summaryRaw) : [],
@@ -326,7 +333,8 @@ export function buildActivityResult(input: {
     stages: planned.map(stage => {
       const stageLaps = laps.filter(lap => lap.stageIndex === stage.index);
       const measured = stageLaps.length === 1 ? stageLaps[0].metrics : stageLaps.length > 1 ? combineMetrics(stageLaps.map(lap => lap.metrics)) : null;
-      return { ...stage, lapIndexes: stageLaps.map(lap => lap.index), metrics: measured ? { ...measured, ...stageMetrics.get(stage.index) } : null };
+      const paceEvidence=measuredPaceEvidence(samples,stageLaps.map(lap=>windows[lap.index]),stage.paceFastSeconds,stage.paceSlowSeconds);
+      return { ...stage, lapIndexes: stageLaps.map(lap => lap.index), metrics: measured ? { ...measured, ...stageMetrics.get(stage.index) } : null,...(paceEvidence?{paceEvidence}:{}) };
     }),
   };
 }
@@ -347,6 +355,17 @@ function combineMetrics(parts: Metrics[]): Metrics {
   }
   if (combined.durationSeconds && combined.distanceMeters) combined.paceSeconds = combined.durationSeconds / (combined.distanceMeters / 1000);
   return combined;
+}
+
+/** Reprocess stored raw pace points without changing historical stage mapping/targets. */
+export function enrichPaceEvidence(result:ActivityResult,charts:unknown):ActivityResult{
+ const segments=paceSegments(charts);let clock=0;
+ const windows=result.laps.map(lap=>{const start=clock;clock+=Number(lap.metrics.durationSeconds)||0;return {start,end:clock}});
+ return {...result,mappingVersion:4,stages:result.stages.map(stage=>{
+  const ranges=stage.lapIndexes.map(index=>windows[index]).filter(Boolean);
+  const paceEvidence=measuredPaceEvidence(segments,ranges,stage.paceFastSeconds,stage.paceSlowSeconds);
+  return {...stage,paceEvidence};
+ })};
 }
 
 export function parseActivityResult(value: unknown): ActivityResult | null {

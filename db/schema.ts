@@ -598,6 +598,13 @@ export const coachPaceDefaults = sqliteTable("coach_pace_defaults", {
   updatedAt: integer("updated_at").notNull(),
 });
 
+/** Explicit individual settings survive later test calculations and defaults. */
+export const athletePaceZones = sqliteTable("athlete_pace_zones", {
+  athleteName:text("athlete_name").primaryKey(),zones:text("zones").notNull(),
+  sourceTestId:text("source_test_id"),origin:text("origin").notNull(),
+  updatedAt:integer("updated_at").notNull(),
+});
+
 export const paceRefreshJobs = sqliteTable("pace_refresh_jobs", {
   id: text("id").primaryKey(), athleteName:text("athlete_name").notNull(), weekStart:text("week_start").notNull(),
   requestedAt:integer("requested_at").notNull(), leaseUntil:integer("lease_until").notNull(),

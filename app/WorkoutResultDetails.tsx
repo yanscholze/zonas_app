@@ -61,13 +61,13 @@ export function WorkoutResultDetails({ result, expanded = false, className = "" 
       {!result.complete && <p>O resumo chegou. Alguns detalhes ainda aguardam nova sincronização.</p>}
       <MetricList metrics={result.summary}/>
       <ActivityCharts result={result}/>
-      {result.zones?.length ? <section className="workout-result-zones" aria-label="Zonas fornecidas pelo Garmin Connect"><h3>Tempo nas zonas informado pelo Connect</h3><dl>{result.zones.map(zone=><div key={zone.label}><dt>{zone.label}</dt><dd>{time(zone.seconds)}</dd></div>)}</dl></section> : null}
+      {result.zones?.length ? <section className="workout-result-zones" aria-label="Zonas fornecidas pelo Garmin Connect"><h3>Tempo nas zonas cardíacas informado pelo Connect</h3><dl>{result.zones.map(zone=><div key={zone.label}><dt>{zone.label}</dt><dd>{time(zone.seconds)}</dd></div>)}</dl></section> : null}
       {result.otherMetrics?.length ? <details className="workout-result-extra"><summary>Outras métricas fornecidas pelo Connect ({result.otherMetrics.length})</summary><dl>{result.otherMetrics.map(item=><div key={item.label}><dt>{item.label}</dt><dd>{item.value.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}</dd></div>)}</dl></details> : null}
       {result.stages.length > 0 && <section aria-label="Resultados por etapa"><h3>Etapas planejadas e realizadas</h3>
         {sequence && <p>Etapas relacionadas pela sequência e pelos limites das voltas registradas. Confira a correspondência abaixo.</p>}
         {result.stages.map(stage => <article className="workout-result-stage" key={stage.index}>
           <h4>{stage.index + 1}. {stage.label}</h4><p>Planejado: {planned(stage)}</p>
-          {stage.metrics ? <MetricList metrics={stage.metrics}/> : <p className="workout-result-missing">O relógio não enviou uma volta identificável para esta etapa.</p>}
+          {stage.paceEvidence&&<p>Tempo na zona de ritmo prescrita: {Math.round(stage.paceEvidence.inTargetSeconds/stage.paceEvidence.seconds*100)}% · {time(stage.paceEvidence.inTargetSeconds)} de {time(stage.paceEvidence.seconds)} medidos (margem de 3 s/km).</p>}{stage.metrics ? <MetricList metrics={stage.metrics}/> : <p className="workout-result-missing">O relógio não enviou uma volta identificável para esta etapa.</p>}
         </article>)}
       </section>}
       {unmatched.length > 0 && <section aria-label="Voltas registradas"><h3>Voltas registradas no relógio</h3>
